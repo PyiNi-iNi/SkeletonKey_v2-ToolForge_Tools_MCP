@@ -17,6 +17,7 @@ import os
 import re
 import shutil
 import stat
+import subprocess
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass, field
@@ -160,6 +161,8 @@ class Fs:
         self.max_read_bytes = max_read_bytes
         self.max_write_bytes = max_write_bytes
         self.journal = journal
+        if delete_mode not in ("journal", "os-trash", "delete"):
+            raise ValueError(f"delete_mode must be journal | os-trash | delete, got {delete_mode!r}")
         self.delete_mode = delete_mode
 
     # --------------------------------------------------------------------- read
@@ -637,15 +640,31 @@ class Fs:
                     details={"path": res.display, "children": len(os.listdir(res.real)),
                              "advice": "recursive=true; undo is available via the returned undo_token"},
                 )
-        snapshot = None
-        if self.journal is not None:
-            snapshot = self.journal.record_delete(res, recursive=recursive, task_id=task_id)
         mode = self.delete_mode
+        if mode == "os-trash" and not self._trash_available():
+            # Probe *before* anything is recorded: a host without a trash API must
+            # report it and delete nothing - not leave a journal entry for a
+            # deletion that never happened.
+            raise SkeletonKeyError(
+                E.UNSUPPORTED_PLATFORM,
+                "fs.trash = \"os-trash\" needs the platform recycle bin, and this host has no trash API on PATH",
+                details={"path": res.display, "fs_trash": mode,
+                         "advice": 'set fs.trash = "journal" for an undoable hard delete, '
+                                   "or install the platform trash API (glib provides `gio`)"},
+            )
+        snapshot = None
+        if self.journal is not None and mode != "delete":
+            # "delete" tier is the hard, unjournaled delete; the other tiers keep the
+            # journal - for os-trash it is the *second* copy, so the OS bin can be
+            # emptied without the change becoming irreversible.
+            snapshot = self.journal.record_delete(res, recursive=recursive, task_id=task_id)
         if dry_run:
             return {"path": res.display, "dry_run": True, "would_delete": True, "undo_token": snapshot,
                     "mode": mode}
         try:
-            if res.is_dir:
+            if mode == "os-trash":
+                self._os_trash(res)
+            elif res.is_dir:
                 shutil.rmtree(res.real)
             else:
                 os.unlink(res.real)
@@ -654,7 +673,63 @@ class Fs:
                 self.journal.discard(snapshot)
             raise SkeletonKeyError(E.IO, f"delete failed: {exc}", details={"path": res.display}) from exc
         return {"path": res.display, "deleted": True, "kind": "dir" if res.is_dir else "file",
-                "undo_token": snapshot, "recoverable": bool(snapshot), "mode": mode}
+                "undo_token": snapshot, "recoverable": bool(snapshot), "mode": mode,
+                **({"trash": "recycle bin"} if mode == "os-trash" else {})}
+
+    # ------------------------------------------------------------- deletion tiers
+    @staticmethod
+    def os_trash_command(abs_path: str, *, win: bool | None = None) -> list[str]:
+        """The argv that moves `abs_path` to the platform recycle bin.
+
+        Windows: PowerShell's Shell.Application (the recycle bin is namespace 10).
+        Everywhere else: `gio trash`. A pure function of the path so the rendered
+        payload is testable on any host; `win` overrides the platform for tests.
+        """
+        is_win = os.name == "nt" if win is None else win
+        if is_win:
+            pwsh = shutil.which("pwsh") or shutil.which("powershell") or "pwsh"
+            script = (
+                "$ErrorActionPreference = 'Stop';"
+                "$sh = New-Object -ComObject Shell.Application;"
+                f"$parent = Split-Path -LiteralPath '{abs_path}';"
+                f"$leaf = Split-Path -LiteralPath '{abs_path}' -Leaf;"
+                "$item = $sh.Namespace($parent).ParseName($leaf);"
+                f"if ($null -eq $item) {{ throw 'path not found: {abs_path}' }};"
+                "$sh.Namespace(10).MoveHere($item.Path) | Out-Null;"
+                f"if (Test-Path -LiteralPath '{abs_path}') {{ throw 'still present after MoveHere: {abs_path}' }};"
+                "Write-Output 'trashed'"
+            )
+            return [pwsh, "-NoProfile", "-NonInteractive", "-Command", script]
+        return ["gio", "trash", abs_path]
+
+    def _trash_available(self) -> bool:
+        if os.name == "nt":
+            return bool(shutil.which("pwsh") or shutil.which("powershell"))
+        return bool(shutil.which("gio"))
+
+    def _os_trash(self, res: Resolved) -> None:
+        """Move the resolved path into the recycle bin (the file is already journaled)."""
+        argv = self.os_trash_command(res.real)
+        exe = os.path.basename(argv[0])
+        try:
+            proc = subprocess.run(argv, capture_output=True, text=True, timeout=60)
+        except subprocess.TimeoutExpired as exc:
+            raise SkeletonKeyError(
+                E.IO, f"the trash API timed out moving {res.display}",
+                details={"path": res.display,
+                         "note": "the file may still be in place - check it before retrying"},
+            ) from exc
+        except OSError as exc:
+            raise SkeletonKeyError(
+                E.UNSUPPORTED_PLATFORM, f"the trash API ({exe}) could not start: {exc}",
+                details={"path": res.display},
+            ) from exc
+        if proc.returncode != 0 or os.path.exists(res.real):
+            tail = (proc.stderr or proc.stdout or "").strip()[:200]
+            raise SkeletonKeyError(
+                E.IO, f"could not move {res.display} to the recycle bin: {tail or proc.returncode}",
+                details={"path": res.display, "exit_code": proc.returncode, "command": exe},
+            )
 
     def mkdir(self, path: str, *, parents: bool = True, dry_run: bool = False,
               task_id: str = "") -> dict[str, Any]:

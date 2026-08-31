@@ -294,7 +294,10 @@ _spec(
 
 _spec(
     id="fs.delete", title="Delete a path",
-    description="Delete a file or directory. Journaled first, so the result carries an undo token.",
+    description="Delete a file or directory. Default (fs.trash = \"journal\"): journaled first, so the "
+                "result carries an undo token. fs.trash = \"os-trash\" moves the path to the OS recycle bin "
+                "(the journal keeps a second copy; a host without a trash API refuses with UNSUPPORTED_PLATFORM "
+                "and deletes nothing). \"delete\" is a hard, unjournaled delete.",
     capability="fs.delete", risk="destructive", destructive=True, reversible=True, idempotent=False,
     parallel_safe=False, typical_latency_ms=15, approval="policy",
     tags=["delete", "remove", "rm", "unlink", "clean"],

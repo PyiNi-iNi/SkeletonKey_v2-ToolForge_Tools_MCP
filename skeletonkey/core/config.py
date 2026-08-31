@@ -110,7 +110,7 @@ class FsConfig:
     encoding: str = "utf-8"
     reject_device_names: bool = True
     long_path_prefix: bool = True           # \\?\ on Windows
-    trash: str = "journal"                  # journal | delete | off
+    trash: str = "journal"                  # journal | os-trash (recycle bin + journal) | delete
     backup_suffix: str | None = None
     ignore: list[str] = field(default_factory=lambda: [
         ".git/**", "node_modules/**", "__pycache__/**", ".venv/**", "venv/**",

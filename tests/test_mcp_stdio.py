@@ -356,6 +356,63 @@ def test_fs_redo_and_expect_sha_over_the_wire(client, ws):
     assert (ws / "redo-wire.txt").read_text(encoding="utf-8") == "v2\n", "file untouched"
 
 
+def test_os_trash_tier_over_the_wire(tmp_path):
+    """fs.trash = "os-trash" from the server's own skeletonkey.toml: on a host
+    without a trash API the delete refuses with UNSUPPORTED_PLATFORM and deletes
+    nothing; with `gio` on PATH the file lands in the bin and the journal keeps
+    a second copy that survives into a new server process."""
+    root = tmp_path / "trashws"
+    root.mkdir()
+    (root / "victim.txt").write_text("x\n", encoding="utf-8")
+    (root / "skeletonkey.toml").write_text('[fs]\ntrash = "os-trash"\n', encoding="utf-8")
+    empty = tmp_path / "emptybin"
+    empty.mkdir()
+    c = spawn(str(root), "--root", str(root),
+              env={"PATH": str(empty), "SKELETONKEY_AUTO_APPROVE": "1"})
+    c.start()
+    try:
+        r = c.request("tools/call", {"name": "fs.delete", "arguments": {"path": "victim.txt"}})
+        assert r["isError"] is True, r
+        assert "UNSUPPORTED_PLATFORM" in json.dumps(_payload(r))
+        assert (root / "victim.txt").exists(), "a no-trash host deletes nothing"
+    finally:
+        c.close()
+
+    bin_dir = tmp_path / "fakebin"
+    bin_dir.mkdir()
+    (bin_dir / "gio").write_text(
+        "#!/bin/sh\n"
+        'mkdir -p "$FAKE_TRASH_DIR"\n'
+        'mv "$2" "$FAKE_TRASH_DIR/$(basename "$2")" || exit 1\n',
+        encoding="utf-8", newline="\n")
+    os.chmod(bin_dir / "gio", 0o755)
+    fake_bin = tmp_path / "trashbin"
+    env = {"PATH": str(bin_dir) + os.pathsep + os.environ["PATH"],
+           "FAKE_TRASH_DIR": str(fake_bin), "SKELETONKEY_AUTO_APPROVE": "1"}
+    c = spawn(str(root), "--root", str(root), env=env)
+    c.start()
+    try:
+        r = c.request("tools/call", {"name": "fs.delete", "arguments": {"path": "victim.txt"}})
+        assert r["isError"] is False, r
+        body = _payload(r)
+        assert body["data"]["deleted"] is True and body["data"]["trash"] == "recycle bin"
+        assert not (root / "victim.txt").exists()
+        assert (fake_bin / "victim.txt").read_text(encoding="utf-8") == "x\n"
+        # the journal (the second copy) is on disk and visible to a *new* server
+        assert os.path.isdir(root / ".sk" / "journal")
+    finally:
+        c.close()
+    c = spawn(str(root), "--root", str(root))
+    c.start()
+    try:
+        rows = json.loads(c.request("resources/read", {"uri": "skeletonkey://journal"})
+                          ["contents"][0]["text"])
+        assert any(r["path"] == "victim.txt" and r.get("token") for r in rows), \
+            "the journal entry for the os-trash delete survives a restart"
+    finally:
+        c.close()
+
+
 # ------------------------------------------------------------------ prompts / resources
 def test_prompts_expose_bootstrap_and_skills(client):
     prompts = {p["name"] for p in client.request("prompts/list", {})["prompts"]}

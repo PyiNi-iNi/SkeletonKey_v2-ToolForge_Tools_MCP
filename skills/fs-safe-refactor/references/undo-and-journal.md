@@ -58,6 +58,12 @@ record, the journal is a working set. Each journal line carries `sha_before` and
 - `state.journal = false` disables snapshots but keeps the ledger. Then `fs.undo` and
   `fs.undo_task` return `NOT_IMPLEMENTED` naming that config key, and **deletes are
   permanent** — say so out loud before deleting anything.
+- The `trash` setting (under `[fs]`) picks the deletion tier: `journal` (default)
+  journals, then hard-deletes; `os-trash` journals **and** moves the path to the
+  platform recycle bin (the journal stays as a second copy, so emptying the OS bin is
+  not the end of the line); `delete` is hard and unjournaled — no undo token at all.
+  A host without a trash API under `os-trash` gets `UNSUPPORTED_PLATFORM` and deletes
+  nothing.
 
 ## Undo semantics you can rely on
 

@@ -216,6 +216,17 @@ after-image is a `CONFLICT` that says which state broke. Entries that predate af
 capture (or lost it to pruning) refuse the redo instead of guessing; a fresh
 `fs.journal_list` shows what is still reversible.
 
+### Deletion tiers
+
+`fs.delete` honours `fs.trash`: `journal` (default) journals then hard-deletes;
+`os-trash` journals *and* moves the path to the platform recycle bin (`gio trash`
+on Linux/macOS, PowerShell `Shell.Application` on Windows), so the OS bin is emptied
+without the change becoming irreversible; `delete` is hard and unjournaled. A
+host with no trash API under `os-trash` gets `UNSUPPORTED_PLATFORM` and deletes
+nothing — the refusal happens before anything is recorded, so there is no journal
+entry for a deletion that never happened. The result echoes `mode` (and `trash`
+for the os-trash tier).
+
 ## 7. Composition and caching
 
 - Tools may call other tools through `engine.call` (that is how `registry.search` and the

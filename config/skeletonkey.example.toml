@@ -30,7 +30,7 @@ newline = "preserve"              # preserve | lf | crlf | native (native = per-
 encoding = "utf-8"
 reject_device_names = true        # CON/NUL/COM1 on Windows are files you can hang on
 long_path_prefix = true           # \\?\ past 259 chars on Windows
-trash = "journal"                 # journal (undoable) | delete | off
+trash = "journal"                 # journal (undoable) | os-trash (recycle bin + journal) | delete (hard, unjournaled)
 # backup_suffix = ".bak"          # default: none
 allow_dotfiles = true
 # Defaults, written out so you can edit them rather than guess. Patterns are anchored

@@ -198,7 +198,7 @@ does not mean "nobody else can read this".
 | `shell.run` script content | deny on `script` glob only (over-matches, so not shipped as a default) | argv-prefix + secret-path matcher, deny stays non-overridable |
 | Rate limits | per-task caps only | per-tool (`fs.delete` ≤ 20/min) + mutation circuit breaker |
 | Undo safety | warns on divergence | hard `CONFLICT` on `expect_sha` mismatch; `fs.redo` re-applies the last undone change (journaled itself) |
-| Deletion | journal copy | recycle-bin tier (`fs.trash = "os-trash"`) |
+| Deletion | journal copy | `fs.trash` tiers: `journal` \| `os-trash` (recycle bin + journal) \| `delete`; no-trash host refuses, deletes nothing |
 | Grant audit | `metrics.approval_grant` | explicit `policy.grant` (P3) + ledger `receipt` |
 
 ## Test map

@@ -171,6 +171,7 @@ read, then patch.
 | new file | `fs.write {overwrite: false, create_dirs: true}` |
 | move/rename | `fs.move` (journals both sides) |
 | remove a scratch dir | `fs.delete {recursive: true}` (undo holds it) |
+| host wants a recycle bin | the `trash` setting under `[fs]`: `journal` \| `os-trash` \| `delete` |
 | "undo that" | `fs.undo_task {task_id}` |
 | "redo that" / the undo was wrong | `fs.redo {path?}` (journaled itself) |
 | undo a file that may have moved on | `fs.undo {token, expect_sha: <last read sha>}` |

@@ -188,6 +188,113 @@ def test_delete_dir_requires_recursive(rawfs, workspace):
     assert "recursive" in str(exc.value)
 
 
+# --------------------------------------------------------------- deletion tiers
+def _fake_gio_bin(tmp_path):
+    """A `gio` stand-in on PATH: `gio trash <p>` moves p into the fake bin."""
+    bin_dir = tmp_path / "fakebin"
+    bin_dir.mkdir()
+    script = bin_dir / "gio"
+    script.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" != "trash" ]; then echo "fake gio: unknown command" >&2; exit 2; fi\n'
+        'mkdir -p "$FAKE_TRASH_DIR"\n'
+        'mv "$2" "$FAKE_TRASH_DIR/$(basename "$2")" || exit 1\n',
+        encoding="utf-8", newline="\n")
+    os.chmod(script, 0o755)
+    return str(bin_dir)
+
+
+def test_os_trash_moves_to_the_recycle_bin_and_keeps_a_journal_copy(workspace, tmp_path,
+                                                                     monkeypatch):
+    bin_dir = _fake_gio_bin(tmp_path)
+    fake_bin = tmp_path / "trashbin"
+    monkeypatch.setenv("PATH", bin_dir + os.pathsep + os.environ.get("PATH", ""))
+    monkeypatch.setenv("FAKE_TRASH_DIR", str(fake_bin))
+    sb = PathSandbox([str(workspace)], SandboxPolicy())
+    jr = FsJournal(os.path.join(str(workspace), ".sk", "trash-journal"))
+    fs = Fs(sb, journal=jr, delete_mode="os-trash")
+    (workspace / "precious.txt").write_text("keep me\n", encoding="utf-8")
+    out = fs.delete("precious.txt")
+    assert out["deleted"] is True and out["mode"] == "os-trash" and out["trash"] == "recycle bin"
+    assert not (workspace / "precious.txt").exists(), "gone from the workspace"
+    assert (fake_bin / "precious.txt").read_text(encoding="utf-8") == "keep me\n", \
+        "landed in the recycle bin"
+    assert out["undo_token"], "the journal keeps a second copy"
+    # the journal entry survives a restart - and undo restores from the journal
+    # even if the OS bin has since been emptied
+    jr2 = FsJournal(os.path.join(str(workspace), ".sk", "trash-journal"))
+    (fake_bin / "precious.txt").unlink()
+    assert jr2.undo(out["undo_token"])["undone"] is True
+    assert (workspace / "precious.txt").read_text(encoding="utf-8") == "keep me\n"
+
+
+def test_os_trash_on_a_host_without_a_trash_api_deletes_and_records_nothing(workspace,
+                                                                            tmp_path, monkeypatch):
+    empty = tmp_path / "emptybin"
+    empty.mkdir()
+    monkeypatch.setenv("PATH", str(empty))
+    sb = PathSandbox([str(workspace)], SandboxPolicy())
+    jr = FsJournal(os.path.join(str(workspace), ".sk", "trash2-journal"))
+    fs = Fs(sb, journal=jr, delete_mode="os-trash")
+    (workspace / "safe.txt").write_text("safe\n", encoding="utf-8")
+    with pytest.raises(SkeletonKeyError) as exc:
+        fs.delete("safe.txt")
+    assert exc.value.code == "UNSUPPORTED_PLATFORM"
+    assert "trash" in str(exc.value).lower()
+    assert (workspace / "safe.txt").exists(), "it deleted nothing"
+    assert jr.list() == [], "and it recorded nothing for a deletion that never happened"
+
+
+def test_delete_tier_is_hard_and_unjournaled(workspace):
+    sb = PathSandbox([str(workspace)], SandboxPolicy())
+    jr = FsJournal(os.path.join(str(workspace), ".sk", "trash3-journal"))
+    fs = Fs(sb, journal=jr, delete_mode="delete")
+    (workspace / "gone.txt").write_text("bye\n", encoding="utf-8")
+    out = fs.delete("gone.txt")
+    assert out["deleted"] is True and out["mode"] == "delete"
+    assert out["undo_token"] is None and out["recoverable"] is False
+    assert not (workspace / "gone.txt").exists()
+    assert jr.list() == []
+
+
+def test_unknown_delete_mode_is_refused_at_construction(workspace):
+    sb = PathSandbox([str(workspace)], SandboxPolicy())
+    with pytest.raises(ValueError, match="journal \\| os-trash \\| delete"):
+        Fs(sb, delete_mode="off")
+
+
+def test_trash_payloads_render_for_both_platforms():
+    # Linux/macOS: gio trash <path>
+    argv = Fs.os_trash_command("/tmp/proj/junk.txt", win=False)
+    assert argv == ["gio", "trash", "/tmp/proj/junk.txt"]
+    # Windows: the recycle bin is Shell.Application namespace 10, and the rendered
+    # script must verify the path is actually gone before it reports success
+    win_argv = Fs.os_trash_command(r"C:\proj\junk.txt", win=True)
+    assert win_argv[0].endswith("pwsh") or win_argv[0].endswith("powershell")
+    assert win_argv[1:3] == ["-NoProfile", "-NonInteractive"]
+    script = win_argv[4]
+    assert "New-Object -ComObject Shell.Application" in script
+    assert "Namespace(10).MoveHere" in script
+    assert r"C:\proj\junk.txt" in script
+    assert "Test-Path" in script
+    # a path with braces and dollar signs must survive the rendering verbatim
+    odd = Fs.os_trash_command(r"C:\weird${x}y\file{1}.txt", win=True)[4]
+    assert r"C:\weird${x}y\file{1}.txt" in odd
+
+
+@pytest.mark.win
+def test_os_trash_on_windows_uses_the_real_recycle_bin(tmp_path):
+    pwsh = shutil.which("pwsh") or shutil.which("powershell")
+    if not pwsh:
+        pytest.skip("no powershell on this host")
+    victim = tmp_path / "win-junk.txt"
+    victim.write_text("trash me\n", encoding="utf-8")
+    proc = subprocess.run(Fs.os_trash_command(str(victim)), capture_output=True, text=True,
+                          timeout=60)
+    assert proc.returncode == 0, proc.stderr
+    assert not victim.exists(), "the file must be out of the workspace"
+
+
 def test_move_and_undo(rawfs, workspace):
     fs, journal = rawfs
     out = fs.move("README.md", "docs/README.md")
