@@ -17,11 +17,10 @@ python -m skeletonkey.mcp         # stdio server: 30 tools, prompts, resources
 Measured on this box: 32 tools registered / 30 advertised / **1 909 tokens** of
 advertisement (`digest d5de0fcc7cb61eb5`), 10 probed capabilities, 2 skills discovered,
 0 load errors. Code: 10 102 lines in `skeletonkey/`, 16 files in `tests/` (377 passing,
-2 skipped, 1 xfailed), 1 859 lines of docs (this plan, four contract docs, six ADRs,
-README). No workflow file is committed on
-this branch — the pushing token cannot write to `.github/workflows/`, and the pipeline is
-specified in §6 for whoever lands it (one command reproduces it locally:
-`ruff check . && pytest -q -m "not slow"`).
+2 skipped, 1 xfailed), 1,919 lines of docs (this plan, four contract docs,
+README; seven ADRs). No workflow file is committed on this branch — the pushing token
+cannot write to `.github/workflows/` — and the pipeline is specified in §6 for whoever
+lands it (one command reproduces it locally: `ruff check . && pytest -q -m "not slow"`).
 
 Contracts live in `docs/` (`TOOL-CONTRACT`, `SHELL-DIALECTS`, `SKILLS-SPEC`,
 `SECURITY-MODEL`), decisions in `docs/adr/`, knobs in `config/skeletonkey.example.toml`,
@@ -514,6 +513,13 @@ rather than re-deciding:
 | Job | Matrix / runner | Steps |
 | --- | --- | --- |
 | `core-constraint` | ubuntu-latest, py3.11 | `pip install -e ".[dev]"`, then a stdlib-only import check that **fails if `mcp`, `mcp_types`, `pydantic`, `watchfiles` or `jsonschema` is importable**, then `pytest tests/test_core_contracts.py tests/test_envelope.py tests/test_ledger_redaction.py tests/test_dialects.py`. This is ADR-0001 enforced, not ADR-0001 asserted. |
+`slow` is registered in `pyproject.toml` and currently marks **nothing**: the two
+process-spawning files (`test_shell_runner.py`, `test_tools_builtin.py` — 95 tests) cost
+~10 s of the ~19 s suite, which is cheap enough to keep inside the default gate, and a marker
+that quietly excluded them from CI would be a worse gate. The
+`-m "not slow"` in the commands exists so a future stress/E2E suite can opt out without
+editing the pipeline spec.
+
 | `test` | ubuntu-latest + windows-latest × py3.11 + py3.13 | `pip install -e ".[dev,mcp]"` → `ruff check .` → `pytest -q -m "not slow" --tb=short` → `sk describe` (prints what that host advertises, so a gating regression shows up as a diff in a log line) |
 | `smoke` | ubuntu + windows, py3.11, **`.[mcp]` only** (no dev extra) | `sk --version`, `sk profile`, `sk tools list`, `sk skills list`; then a real turn through the CLI — `fs search`, `fs patch` with an edits file, `grep` the patched file, `fs write` from stdin, `sk shell "echo sentineled" --dialect bash`; then pipe `initialize` + `notifications/initialized` + `tools/list` (protocol `2025-06-18`) into `python -m skeletonkey.mcp --cwd <tmp>` and assert `fs.patch`/`shell.run` came back. All four commands were run locally on Linux before this branch was pushed. |
 | `audit` | ubuntu-latest, `continue-on-error` | `pip-audit` after `pip install -e ".[all]"`; the core declares nothing to audit, so this is advisories in the extras only, and it must not block a docs PR until the floor is pinned in a lockfile |
