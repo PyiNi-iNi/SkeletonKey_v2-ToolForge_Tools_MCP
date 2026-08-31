@@ -44,17 +44,23 @@ class ApprovalRequired(Exception):
     TUI prompt, or autopilot auto-approve). Carries everything needed to ask."""
 
     def __init__(self, tool: str, reason: str, *, args: dict[str, Any], manifest: ToolManifest,
-                 token: str = "", risk: str = "") -> None:
+                 token: str = "", risk: str = "", engine: Any = None) -> None:
         super().__init__(f"{tool}: {reason}")
         self.tool = tool
         self.reason = reason
-        self.args = args
+        # The call's arguments live in `call_args`, never in `self.args`:
+        # `BaseException.args` is a C-level attribute that turns anything assigned
+        # to it into a tuple, so a dict would come back as a tuple of its keys and
+        # the human would approve a shape, not the call. (prompt_payload rendered
+        # exactly that key-tuple as args_preview for this class's whole existence.)
+        self.call_args = args
         self.manifest = manifest
         self.token = token
         self.risk = risk or manifest.risk
+        self.engine = engine
 
     def prompt_payload(self) -> dict[str, Any]:
-        return {
+        out = {
             "kind": "approval_request",
             "tool": self.tool,
             "risk": self.risk,
@@ -62,10 +68,40 @@ class ApprovalRequired(Exception):
             "description": self.manifest.description,
             "destructive": self.manifest.destructive,
             "reversible": self.manifest.reversible,
-            "args_preview": compact_json(redact_obj(self.args))[:1500],
+            "args_preview": compact_json(redact_obj(self.call_args))[:1500],
             "approve_token": self.token,
             "grant_options": ["once", "task", "session", "deny"],
         }
+        preview = self._diff_preview()
+        if preview:
+            out["diff_preview"] = preview
+        return out
+
+    def _diff_preview(self) -> str | None:
+        """For write-risk tools, what will actually change - so a human approves
+        intent, not a hash. Best-effort on purpose: any problem here just omits
+        the preview; it must never fail the approval flow."""
+        man, eng = self.manifest, self.engine
+        if eng is None or getattr(eng, "_fs", None) is None or not man.is_mutating:
+            return None
+        args = self.call_args
+        try:
+            if man.id == "fs.write" and args.get("path") and isinstance(args.get("content"), str):
+                from ..fsx.ops import unified_diff
+
+                fs = eng._fs
+                res = fs.sb.resolve(args["path"], intent="read")
+                current = fs.read(args["path"]).content if res.exists else ""
+                note = "" if res.exists else f"(new file at {res.display})\n"
+                return (note + unified_diff(current, args["content"], res.display, max_lines=60))[:4000]
+            if man.id == "fs.patch" and args.get("path") and isinstance(args.get("edits"), list):
+                d = eng._fs.patch(args["path"], args["edits"], dry_run=True)
+                return (d.get("unified_diff") or "")[:4000] or None
+            if isinstance(args.get("content"), str) and args["content"]:
+                return args["content"][:4000]
+        except Exception:
+            return None
+        return None
 
 
 @dataclass
@@ -512,7 +548,7 @@ class Engine:
             raise SkeletonKeyError(E.READ_ONLY_MODE, f"{man.id} is a mutating tool and read_only is enabled")
         if self.approver is not None:
             req = ApprovalRequired(man.id, f"{risk}-risk action", args=args, manifest=man,
-                                   token=f"grant:{man.id}")
+                                   token=f"grant:{man.id}", engine=self)
             try:
                 granted = bool(self.approver(req))
             except Exception as exc:
@@ -532,7 +568,8 @@ class Engine:
             E.APPROVAL_REQUIRED,
             f"{man.id} requires approval for risk={risk} and no approver is configured",
             details={"prompt": ApprovalRequired(man.id, "no approver", args=args, manifest=man,
-                                                token=f"grant:{man.id}").prompt_payload(),
+                                                token=f"grant:{man.id}",
+                                                engine=self).prompt_payload(),
                      "grant_options": ["once", "task", "session"],
                      "advice": ("configure an approver, or set policy.auto_approve to include "
                                  '"' + risk + '" with policy.confirm_destructive=false for unattended runs')},

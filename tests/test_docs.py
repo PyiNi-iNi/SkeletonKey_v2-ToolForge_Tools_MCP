@@ -41,9 +41,10 @@ ENGINE_KWARGS = {"ctx", "dry_run", "max_output_bytes", "idempotency_key", "appro
 
 # Named deliberately in the docs as future work; each must cite a phase so this list cannot
 # quietly become a graveyard. (Checked by `test_pending_names_are_annotated`.)
+# A tool that is *built* leaves this register in the same commit: the lint fails
+# an entry nothing refers to, and a built name cited as "pending" is a lie.
 PENDING = {
     "fs.redo": "P3",
-    "policy.grant": "P3",
 }
 
 

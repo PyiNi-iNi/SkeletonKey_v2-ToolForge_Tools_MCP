@@ -121,6 +121,25 @@ a file edit.
   any flag, and `SANDBOX_VIOLATION` means "wrong root", not "try harder". Adding a
   root is a human decision; report the path you needed and stop.
 
+## 7b. When a call asks for permission
+
+- `APPROVAL_REQUIRED` is a *pause*, not a failure: the envelope's `prompt` carries
+  a `diff_preview` of what would change (for writes), an `approve_token`, and
+  `grant_options`. Replay the call with the token after the approval, or record a
+  standing grant with `policy.grant {tool, scope: "task"}` so the rest of the task
+  stops re-asking. A grant for a tool that itself needs approval is approval-gated
+  too, and its receipt (`data.receipt`) records who decided.
+- `DENY_RULE` names the rule in `error.details.rule`, which argument matched in
+  `details.matched`, and the operator's `reason` when one was written. Deny is not
+  negotiable by any token or flag: if a deny rule blocks the work, report the rule
+  and the need, and stop — do not route around it with another tool spelling the
+  same action.
+- `BUDGET_EXCEEDED` with `details.exceeded` naming a `rate_limit` means the tool
+  crossed its per-minute window (default: `fs.delete` at 20 per 60s): wait
+  `details.retry_after_s`, or batch the work into fewer calls. The mutation
+  breaker trips the same way across tools — when it does, summarize what you have
+  done rather than retrying.
+
 ## 8. Batch etiquette for autopilots
 
 1. Discover the target set once (`fs.glob`/`fs.search`), don't re-derive per file.
@@ -146,4 +165,5 @@ read, then patch.
 | move/rename | `fs.move` (journals both sides) |
 | remove a scratch dir | `fs.delete {recursive: true}` (undo holds it) |
 | "undo that" | `fs.undo_task {task_id}` |
+| asked to approve | replay with the `approve_token`, or `policy.grant {tool, scope: "task"}` |
 | not sure it's text | `fs.sniff` first |

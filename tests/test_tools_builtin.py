@@ -675,6 +675,94 @@ def test_read_only_mode_plans_instead_of_writing_and_still_previews(workspace):
     assert prev.data["dry_run"] is True and not (workspace / "nope.txt").exists()
 
 
+# ------------------------------------------------------- policy.grant (P3)
+def test_policy_grant_records_a_receipt_for_a_safe_target(writable_toolkit):
+    """A grant for a tool the caller could already run is record-keeping: it
+    goes through without an approver and hands back a receipt the ledger shows."""
+    eng = writable_toolkit.engine
+    ctx = CallContext(task_id="grant-task", cwd=str(writable_toolkit.workspace))
+    r = eng.call("policy.grant", {"tool": "fs.write", "scope": "task"}, ctx=ctx)
+    assert r.ok, r.error
+    d = r.data
+    assert d["granted"] is True and d["approval_token"] == "grant:fs.write"
+    assert "grant:fs.write" in ctx.granted
+    assert d["target_risk"] == "write"
+    assert d["receipt"]["granted_by"] == "no approval required for this target"
+    assert d["receipt"]["task_id"] == "grant-task" and d["receipt"]["ts"]
+
+
+def test_policy_grant_for_a_destructive_target_is_itself_approval_gated(workspace):
+    """The hole this tool closes: an unattended self-grant for a destructive
+    tool. With an approver the grant records who decided; without one it is
+    refused with a reason, and a declining approver is final."""
+    (workspace / "victim.txt").write_text("x\n", encoding="utf-8")
+    base = {"roots": [str(workspace)], "state": {"dir": str(workspace / ".sk")},
+            "log_level": "ERROR"}
+
+    tk_auto = build(config=Config.load(cwd=str(workspace),
+                                       overrides={**base, "policy": {"auto_approve": ["none", "read"]}}),
+                    approver=lambda req: True)
+    ctx = CallContext(task_id="g1", cwd=str(workspace))
+    r = tk_auto.engine.call("policy.grant", {"tool": "fs.delete", "scope": "task"}, ctx=ctx)
+    assert r.ok, r.error
+    assert r.data["target_risk"] == "destructive"
+    assert r.data["receipt"]["granted_by"] == "approver callback"
+    assert "grant:fs.delete" in ctx.granted
+    # and the grant does what a grant is for: the destructive call now passes
+    ok = tk_auto.engine.call("fs.delete", {"path": "victim.txt"}, ctx=ctx)
+    assert ok.ok, ok.error
+    assert not (workspace / "victim.txt").exists()
+    tk_auto.close()
+
+    tk_none = build(config=Config.load(cwd=str(workspace), overrides=base))
+    r2 = tk_none.engine.call("policy.grant", {"tool": "fs.delete", "scope": "task"},
+                             ctx=CallContext(task_id="g2", cwd=str(workspace)))
+    assert not r2.ok and r2.error.code == "APPROVAL_REQUIRED"
+    assert "approver" in r2.error.details["advice"]
+
+    tk_decline = build(config=Config.load(cwd=str(workspace), overrides=base),
+                       approver=lambda req: False)
+    r3 = tk_decline.engine.call("policy.grant", {"tool": "fs.delete", "scope": "task"},
+                                ctx=CallContext(task_id="g3", cwd=str(workspace)))
+    assert not r3.ok and r3.error.code == "APPROVAL_REQUIRED"
+    assert "declined" in r3.error.message
+    tk_none.close()
+    tk_decline.close()
+
+
+def test_policy_grant_unknown_target_suggests(writable_toolkit):
+    r = writable_toolkit.engine.call("policy.grant", {"tool": "fs.reed", "scope": "task"},
+                                     ctx=CallContext(task_id="g4"))
+    assert not r.ok and r.error.code == "UNKNOWN_TOOL"
+    assert "fs.read" in json.dumps(r.error.details.get("suggested", []))
+
+
+def test_approval_prompt_carries_real_args_and_a_diff_preview(workspace):
+    """args_preview must show the call's *values* (an Exception subclass once
+    returned a tuple of the dict's keys for this field), and write-risk
+    approvals carry what will change."""
+    (workspace / "f.txt").write_text("line one\nline two\n", encoding="utf-8")
+    cfg = Config.load(cwd=str(workspace), overrides={
+        "roots": [str(workspace)], "state": {"dir": str(workspace / ".sk")}, "log_level": "ERROR",
+        "policy": {"require_approval": ["write", "destructive"], "auto_approve": ["none", "read"]}})
+    eng = build(config=cfg).engine
+
+    r = eng.call("fs.write", {"path": "f.txt", "content": "line one\nLINE TWO\n"})
+    assert r.error.code == "APPROVAL_REQUIRED"
+    prompt = r.error.details["prompt"]
+    assert "f.txt" in prompt["args_preview"] and "LINE TWO" in prompt["args_preview"], \
+        "args_preview shows values, not the argument names"
+    assert prompt["diff_preview"] and "-line two" in prompt["diff_preview"] \
+        and "+LINE TWO" in prompt["diff_preview"]
+
+    newf = eng.call("fs.write", {"path": "brand-new.txt", "content": "fresh\n"})
+    assert "(new file" in newf.error.details["prompt"]["diff_preview"]
+
+    patch = eng.call("fs.patch", {"path": "f.txt",
+                                  "edits": [{"old_text": "line one", "new_text": "LINE ONE"}]})
+    assert "+LINE ONE" in patch.error.details["prompt"]["diff_preview"]
+
+
 def test_fs_delete_burst_hits_the_default_rate_limit(writable_toolkit):
     """Acceptance 2 (PLAN P3), at the scale the plan specifies: a burst of 21
     `fs.delete` calls. The 21st is BUDGET_EXCEEDED, `details.exceeded` names

@@ -8,8 +8,10 @@ reversibility / requirements are filled in for real, not decorative.
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
+from ..core.engine import ApprovalRequired
 from ..core.envelope import ToolResult
 from ..core.errors import E, SkeletonKeyError
 from ..core.manifest import Requirement, ToolManifest
@@ -449,6 +451,36 @@ _spec(
 )
 
 _spec(
+    id="policy.grant", title="Record an approval grant",
+    description="Grant approval for a tool for this task or the whole session, with a "
+                "receipt in the result and a row in the ledger, so an audit shows who "
+                "approved what. A grant for a tool that itself requires approval is "
+                "itself approval-gated: the approver is shown the target in the prompt "
+                "(args_preview carries tool + scope), because an unattended self-grant "
+                "for a destructive tool would be the hole this whole layer closes. A "
+                "grant for a tool the caller could already run is pure record-keeping. "
+                "Grants live in the calling task's context: a task grant does not outlive "
+                "the task.",
+    capability="policy.grant", risk="write", approval="policy", idempotent=True,
+    typical_latency_ms=1, stateful="session",
+    tags=["approval", "grant", "policy", "approve", "permission", "receipt", "audit"],
+    anti_patterns=["not a way to grant yourself a destructive tool unattended - "
+                   "the grant is approval-gated whenever the target is"],
+    see_also=["registry.describe"],
+    examples=[{"args": {"tool": "fs.delete", "scope": "task"}}],
+    input_schema={
+        "type": "object",
+        "properties": {
+            "tool": {"type": "string", "minLength": 1, "description": "Tool id the grant covers."},
+            "scope": {"type": "string", "enum": ["once", "task", "session"], "default": "task",
+                      "description": "once = no standing grant (the approval token of a "
+                                     "single call is the grant); task = until this CallContext "
+                                     "ends; session = for the lifetime of the shared context."},
+        },
+        "required": ["tool"], "additionalProperties": False},
+)
+
+_spec(
     id="registry.stats", title="Tool usage and reliability",
     description="Per-tool call counts, failure counts, and mean latency. Providers are ranked partly by "
                 "this, so check it when something seems to be failing a lot.",
@@ -750,6 +782,65 @@ def register(reg: Any, *, engine: Any, shells: Any, fs: Any, journal: Any, skill
     def registry_stats(tool: str | None = None) -> dict[str, Any]:
         return {"stats": engine.registry.stats(tool), "overview": engine.registry.overview()}
 
+    def policy_grant(tool: str, scope: str = "task", ctx: Any = None,
+                     engine: Any = None) -> dict[str, Any]:
+        """Record an approval grant with a receipt (PLAN P3: a receipt for every
+        grant, so the ledger shows who approved what).
+
+        A grant for a tool that itself requires approval is itself approval-gated:
+        the approver sees the target in the prompt. A grant for a tool the caller
+        could already run is record-keeping and needs no ceremony - granting
+        permission for something you already have is how self-approval holes
+        start, so only the dangerous grants go through the approver.
+        """
+        if ctx is None:
+            raise SkeletonKeyError(
+                E.BAD_ARGS, "policy.grant needs a task context to record the grant against",
+                details={"advice": "a grant with no owner is a grant to nothing; the host "
+                                   "must pass its CallContext"})
+        target = engine.registry.get(tool)   # UNKNOWN_TOOL with suggestions, like every tool id
+        pol = engine.config.policy
+        risk = target.risk
+        if target.id in pol.escalate or (target.group in pol.escalate):
+            risk = "privileged"
+        needs = engine._needs_approval(target, risk)
+        granted_by = "no approval required for this target"
+        if needs and scope != "once":
+            req = ApprovalRequired("policy.grant", f"grant {scope} approval for {tool}",
+                                   args={"tool": tool, "scope": scope}, manifest=target,
+                                   token="grant:policy.grant", risk=risk, engine=engine)
+            if engine.approver is None:
+                raise SkeletonKeyError(
+                    E.APPROVAL_REQUIRED,
+                    f"granting {scope} approval for {tool} requires an approver and none is configured",
+                    details={"prompt": req.prompt_payload(), "target_tool": tool,
+                             "target_risk": risk, "scope": scope,
+                             "advice": "run with an approver: --auto-approve on the CLI, "
+                                       "SKELETONKEY_AUTO_APPROVE=1 for the MCP server, or an "
+                                       "in-process approver in the autopilot"},
+                    next_actions=[{"tool": "registry.describe", "args": {"tool": tool}}],
+                )
+            try:
+                granted = bool(engine.approver(req))
+            except Exception as exc:
+                raise SkeletonKeyError(
+                    E.INTERNAL, f"approver raised {type(exc).__name__}: {exc}",
+                    details={"note": "an approver that throws is treated as a denial, never as consent"},
+                ) from exc
+            if not granted:
+                raise SkeletonKeyError(
+                    E.APPROVAL_REQUIRED, f"grant of {scope} approval for {tool} was declined",
+                    details={"target_tool": tool, "target_risk": risk, "scope": scope,
+                             "next": "ask the operator to approve the grant, or widen policy.auto_approve"},
+                )
+            granted_by = "approver callback"
+        out = dict(engine.grant(ctx, scope=scope, tool=tool))
+        out["target_risk"] = risk
+        out["receipt"] = {"granted_by": granted_by, "tool": tool, "scope": scope,
+                          "task_id": ctx.task_id, "session_id": ctx.session_id,
+                          "ts": round(time.time(), 3)}
+        return out
+
     add("shell.run", shell_run)
     add("shell.quote", shell_quote)
     add("shell.available", shell_available)
@@ -766,6 +857,7 @@ def register(reg: Any, *, engine: Any, shells: Any, fs: Any, journal: Any, skill
                      ("fs.undo_task", fs_undo_task),
                      ("fs.journal_list", fs_journal_list), ("profile.probe", profile_probe),
                      ("registry.list", registry_list), ("registry.search", registry_search),
-                     ("registry.describe", registry_describe), ("registry.stats", registry_stats)]:
+                     ("registry.describe", registry_describe), ("registry.stats", registry_stats),
+                     ("policy.grant", policy_grant)]:
         add(name, fn)
     return report

@@ -269,6 +269,56 @@ def test_method_not_found_is_a_jsonrpc_error(client):
     assert exc.value.code == -32601
 
 
+def test_policy_grant_over_the_wire(client, ws):
+    """The grant is advertised, answers with a receipt for a safe target, and
+    denies-with-reason for a destructive target on a host with no UI (the
+    default stdio posture)."""
+    listing = client.request("tools/list", {})
+    grant = next(t for t in listing["tools"] if t["name"] == "policy.grant")
+    assert set(grant["inputSchema"]["properties"]) == {"tool", "scope"}
+    assert grant["inputSchema"]["required"] == ["tool"]
+
+    safe = client.request("tools/call", {"name": "policy.grant",
+                                         "arguments": {"tool": "fs.write", "scope": "task"}})
+    assert safe["isError"] is False, safe
+    body = _payload(safe)
+    assert body["data"]["granted"] is True
+    assert body["data"]["receipt"]["granted_by"] == "no approval required for this target"
+    assert body["data"]["receipt"]["task_id"]
+
+    (ws / "wired.txt").write_text("x\n", encoding="utf-8")
+    guarded = client.request("tools/call", {"name": "policy.grant",
+                                            "arguments": {"tool": "fs.delete", "scope": "task"}})
+    assert guarded["isError"] is True, guarded
+    gbody = _payload(guarded)
+    assert gbody["error"]["code"] == "APPROVAL_REQUIRED", \
+        "a destructive self-grant on a UI-less stdio host is refused, not a hole"
+    assert (ws / "wired.txt").exists()
+
+
+def test_policy_grant_unblocks_the_same_connection_with_an_approver(ws):
+    """With SKELETONKEY_AUTO_APPROVE=1 (the explicit autopilot dial) the grant
+    records a receipt and the destructive call it covers then passes on the
+    same connection - one ctx, one ledger."""
+    root = ws / "grantws"
+    root.mkdir(exist_ok=True)
+    (root / "victim.txt").write_text("x\n", encoding="utf-8")
+    c = spawn(str(root), "--root", str(root), env={"SKELETONKEY_AUTO_APPROVE": "1"})
+    try:
+        c.start()
+        g = c.request("tools/call", {"name": "policy.grant",
+                                     "arguments": {"tool": "fs.delete", "scope": "task"}})
+        assert g["isError"] is False, g
+        body = _payload(g)
+        assert body["data"]["granted"] is True
+        assert body["data"]["receipt"]["granted_by"] == "approver callback"
+        d = c.request("tools/call", {"name": "fs.delete", "arguments": {"path": "victim.txt"}})
+        assert d["isError"] is False, d
+        assert not (root / "victim.txt").exists(), "the grant must actually cover the call"
+    finally:
+        c.close()
+
+
 # ------------------------------------------------------------------ prompts / resources
 def test_prompts_expose_bootstrap_and_skills(client):
     prompts = {p["name"] for p in client.request("prompts/list", {})["prompts"]}

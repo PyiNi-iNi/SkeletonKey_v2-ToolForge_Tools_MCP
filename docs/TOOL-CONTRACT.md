@@ -95,11 +95,51 @@ Every refusal names the fix. "Permission denied" without an advice string is a b
 carries booleans (`destructive`, `reversible`, `idempotent`, `parallel_safe`,
 `open_world`, `stateful`) that the engine, MCP annotations and the cache read.
 
-Resolution order in `Engine._authorize`: `tools.disable` → `deny` rules (never
-overridable) → `dry_run` → approval (`escalate`, `require_approval`, `auto_approve`,
-`confirm_destructive`, approver callback) → profile gate. A throwing approver is treated
-as `INTERNAL`, never as consent. `grant_options` are `once | task | session | deny`; a
-grant becomes `grant:<tool>` in `ctx.granted` and the same token replays the call.
+Gate stage (`_guard_gate`): `tools.disable` → `policy.read_only` withholding → profile
+gate. Authorize stage (`_authorize`), in order: **deny rules** → **escalation** →
+**rate limits** → `dry_run` preview → approval (allow rules → approval token →
+`auto_approve` → `read_only` re-check → approver callback). A throwing approver is
+treated as `INTERNAL`, never as consent. `grant_options` are `once | task | session |
+deny`; a grant becomes `grant:<tool>` in `ctx.granted` and the same token replays the
+call.
+
+## 4b. Policy rules and approval UX
+
+Rules as data: `[[policy.rule]]` tables (grammar in `core/policy.py`) plus the legacy
+`policy.deny` strings, `policy.escalate` list and `policy.rate_limits` map all compile
+to one rule list; a malformed rule is reported in the engine's policy errors and
+skipped, never guessed at.
+
+- **Deny is the first thing read** in the authorize stage - before any token, grant or
+  flag could be consulted - and stays non-overridable. A deny rule can key on the tool
+  (id or glob), a path glob (`paths`, tested against path-ish args and their
+  basenames), an argv prefix (`argv_prefix`, tested against the `argv` array arg -
+  content that merely *mentions* a word is not a match), or env-var *names* (`env`
+  globs over the keys of the `env` arg). Every denial carries `details.rule` (the rule
+  text including its `reason`), `details.matched` (which argument, which pattern) and
+  an advice string: a refusal without the rule and a fix is a bug.
+- **Allow** removes only the approval requirement for the matched call shape; it never
+  clears a deny, never overrides `policy.read_only`, and the decision is echoed in
+  `metrics.policy_allow` so the receipt shows which rule said yes.
+- **Rate limits** are sliding windows per tool (`policy.rate_limits`; default
+  `fs.delete` at 20 per `rate_window_s` = 60). A call that crosses the limit is
+  `BUDGET_EXCEEDED` *before dispatch* - the tool does not run - with the rule named in
+  `details.exceeded`, `details.retry_after_s`, and a `summarize_and_stop` next action.
+  Previews do not burn slots. A second breaker caps *successful* mutations per rolling
+  60s per engine (`policy.max_mutations_per_minute`), whatever the per-task caps say.
+- **Prompts show intent.** `APPROVAL_REQUIRED.details.prompt` carries `diff_preview`
+  for write-risk tools: `fs.write` gets a unified diff against the current file (or a
+  new-file marker), `fs.patch` gets its edits applied dry-run, and any other mutating
+  tool with a `content` arg gets the head of it. The human approves intent, not a hash.
+  Best-effort: a preview that cannot be computed is omitted, never fatal.
+- **Grants are receipts.** `policy.grant {tool, scope}` records a grant in the calling
+  task's context, returns `data.receipt` (`granted_by`, `tool`, `scope`, `task_id`,
+  `session_id`, `ts`) and writes its own ledger row - the audit shows who approved
+  what. A grant for a tool that itself requires approval is itself approval-gated, and
+  the approver sees the target in the prompt (`args_preview` carries `tool` +
+  `scope`): that is what closes the unattended self-grant hole. A grant for a tool the
+  caller could already run is record-keeping and needs no ceremony. Grants live in the
+  `CallContext`, so a `task` grant does not outlive the task.
 
 ## 5. `dry_run` is a promise
 
