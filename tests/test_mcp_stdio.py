@@ -66,7 +66,8 @@ class RpcClient:
                 if line.strip():
                     return line
 
-    def request(self, method: str, params: dict | None = None) -> dict:
+    def request(self, method: str, params: dict | None = None, *,
+                collect: list | None = None) -> dict:
         self._id += 1
         mine = self._id
         msg = {"jsonrpc": "2.0", "id": mine, "method": method}
@@ -80,7 +81,10 @@ class RpcClient:
                 if "error" in reply:
                     raise RpcError(reply["error"])
                 return reply["result"]
-            # notifications (logging/*, list_changed) share the stream; skip them
+            # notifications (logging/*, list_changed) share the stream; skip them, but a
+            # caller that passed `collect` is asserting on the notification, so keep it
+            if collect is not None:
+                collect.append(reply)
 
     def notify(self, method: str, params: dict | None = None) -> None:
         msg = {"jsonrpc": "2.0", "method": method}
@@ -324,6 +328,153 @@ def test_journal_resource_shows_the_mutation_that_ran(client):
     assert all("undo_token" not in json.dumps(r) or r.get("token") for r in rows)
 
 
+
+# ------------------------------------------------- dynamic tools, on the wire (P2 exit gate)
+_DEMO_SKILL_MD = '''---
+name: demo
+description: Count the words in a file, from a skill pack installed at runtime.
+when_to_use: A caller needs a word count of one file.
+version: "1"
+tags: [demo, text]
+---
+
+# Demo
+
+Call `skill.demo.wordcount` with a path.
+'''
+
+_DEMO_TOOL_TOML = '''[[tool]]
+name = "wordcount"
+title = "Count words"
+description = "Count the words in one file and return the count as JSON."
+capability = "demo.wordcount"
+risk = "read"
+idempotent = true
+parallel_safe = true
+expects = "json"
+args_via = "flags"
+handler_script = "scripts/wordcount.sh"
+
+input_schema = """
+{
+  "type": "object",
+  "properties": {"path": {"type": "string", "description": "File to count words in."}},
+  "required": ["path"],
+  "additionalProperties": false
+}
+"""
+'''
+
+_DEMO_SCRIPT = '''#!/usr/bin/env bash
+set -euo pipefail
+path=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --path) path="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+printf \'{"path":"%s","words":%s}\\n\' "$path" "$(wc -w < "$path" | tr -d \' \')"
+'''
+
+
+def _make_installable_pack(tmp_path, *, allow_install=True):
+    """A workspace with one uninstalled pack and, optionally, the gate unlocked."""
+    (tmp_path / "skills").mkdir()
+    src = tmp_path / "incoming" / "demo"
+    (src / "scripts").mkdir(parents=True)
+    (src / "SKILL.md").write_text(_DEMO_SKILL_MD, encoding="utf-8")
+    (src / "tool.toml").write_text(_DEMO_TOOL_TOML, encoding="utf-8")
+    (src / "scripts" / "wordcount.sh").write_text(_DEMO_SCRIPT, encoding="utf-8", newline="\n")
+    (tmp_path / "notes.txt").write_text("one two three four\n", encoding="utf-8")
+    gate = "allow_install = true\n" if allow_install else ""
+    (tmp_path / "skeletonkey.toml").write_text(
+        "[skills]\n" + gate + 'dirs = ["skills"]\n', encoding="utf-8")
+    return src
+
+
+def test_skills_install_re_advertises_on_the_same_connection(tmp_path):
+    """Criterion 1, over the wire: install -> `tools/list_changed` -> the tool is listed.
+
+    A client that has to reconnect to see a new tool does not have a dynamic tool set, so
+    this asserts the notification itself, on the connection that made the call.
+    """
+    src = _make_installable_pack(tmp_path)
+    c = spawn(str(tmp_path), "--root", str(tmp_path), env={"SKELETONKEY_AUTO_APPROVE": "1"})
+    c.start()
+    try:
+        # prime the digest: with no listing yet there is nothing for a change to be relative to
+        before = {t["name"] for t in c.request("tools/list", {})["tools"]}
+        assert "skills.install" in before and "skill.demo.wordcount" not in before
+
+        notes: list[dict] = []
+        res = c.request("tools/call", {"name": "skills.install",
+                                      "arguments": {"dir": str(src)}}, collect=notes)
+        assert not res.get("isError"), _payload(res)
+        data = _payload(res)["data"]
+        assert data["skill"] == "demo" and data["installed"] is True
+        assert "skill.demo.wordcount" in json.dumps(data["tools"])
+        assert not data["errors"], data["errors"]
+        assert "notifications/tools/list_changed" in [n.get("method") for n in notes], notes
+
+        listed = c.request("tools/list", {})["tools"]
+        names = {t["name"] for t in listed}
+        assert "skill.demo.wordcount" in names, "the advertisement must have moved"
+        man = next(t for t in listed if t["name"] == "skill.demo.wordcount")
+        assert man["inputSchema"]["required"] == ["path"]
+        assert man["_meta"]["sk"]["risk"] == "read"
+        assert man["annotations"]["readOnlyHint"] is True
+
+        # and the synthesized tool answers over the same connection
+        called = c.request("tools/call", {"name": "skill.demo.wordcount",
+                                         "arguments": {"path": "notes.txt"}})
+        body = _payload(called)
+        assert body["ok"] is True, body
+        assert body["data"]["result"] == {"path": "notes.txt", "words": 4}
+        assert body["data"]["argv"] == ["--path", "notes.txt"]
+
+        gone = c.request("tools/call", {"name": "skills.uninstall",
+                                       "arguments": {"name": "demo"}})
+        assert not gone.get("isError"), _payload(gone)
+        after = {t["name"] for t in c.request("tools/list", {})["tools"]}
+        assert "skill.demo.wordcount" not in after, "removal must re-advertise too"
+        assert (tmp_path / "skills" / "demo").exists() is False, "the files go with it"
+        assert "Traceback" not in c.stderr()
+    finally:
+        c.close()
+
+
+def test_install_gate_closed_is_visible_over_the_wire(tmp_path):
+    """`skills.allow_install = false` is an observable answer, not a silent absence.
+
+    The tool stays registered but unadvertised, so a client sees it missing from
+    `tools/list`, and if it calls the name anyway it gets the refusal with the setting
+    named - and, above all, nothing written. `dry_run` still answers, because reviewing a
+    plan is not the same risk as running it.
+    """
+    src = _make_installable_pack(tmp_path, allow_install=False)
+    c = spawn(str(tmp_path), "--root", str(tmp_path), env={"SKELETONKEY_AUTO_APPROVE": "1"})
+    c.start()
+    try:
+        names = {t["name"] for t in c.request("tools/list", {})["tools"]}
+        assert "skills.install" not in names, "the gated half of the pair stays hidden"
+        assert "skills.uninstall" in names, "removing capability needs no gate"
+
+        plan = _payload(c.request("tools/call", {"name": "skills.install",
+                                                 "arguments": {"dir": str(src),
+                                                               "dry_run": True}}))
+        assert plan["ok"] is True and plan["data"]["dry_run"] is True
+        assert "skill.demo.wordcount" in json.dumps(plan["data"]["tools"])
+
+        res = c.request("tools/call", {"name": "skills.install", "arguments": {"dir": str(src)}})
+        body = _payload(res)
+        assert res.get("isError") and body["ok"] is False
+        err = body["error"]
+        assert err["code"] == "DENY_RULE", err
+        assert err["details"]["setting"] == "skills.allow_install"
+        assert not (tmp_path / "skills" / "demo").exists(), "a refusal must not touch the tree"
+    finally:
+        c.close()
 # ------------------------------------------------------------------ lifecycle
 def test_server_exits_cleanly_when_stdin_closes(tmp_path):
     c = spawn(str(tmp_path), "--root", str(tmp_path))

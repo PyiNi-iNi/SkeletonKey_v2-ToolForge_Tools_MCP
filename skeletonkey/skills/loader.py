@@ -88,6 +88,12 @@ class Skill:
         return f"{head}\n\n{body.strip()}\n"
 
 
+# P1's matcher is deterministic lexical overlap. P5 swaps in the semantic router behind the
+# same call shape, and this key is how a caller can tell which one answered without reading the
+# version - a payload that says "these are the skills that matched" should name its own method.
+MATCH_STRATEGY = "lexical-v1"
+
+
 class SkillLoader:
     def __init__(self, dirs: list[str], *, max_body_bytes: int = 32_000,
                  profile: Any = None, respect_priority: bool = True,
@@ -101,6 +107,11 @@ class SkillLoader:
         self.max_inline_tokens = int(max_inline_tokens)
         self._cache: dict[str, Skill] = {}
         self.errors: list[dict[str, str]] = []
+        # `errors` is rebuilt on every discover, so it can only ever hold parse notes. A
+        # `[[tool]]` that fails to compile is the registry's complaint about a skill, and
+        # `skills.list` has to keep showing it after a refresh - otherwise the one listing tool
+        # an agent trusts goes quiet exactly when something is wrong.
+        self.tool_errors: list[dict[str, Any]] = []
 
     def discover(self, *, refresh: bool = False) -> list[Skill]:
         if self._cache and not refresh:
@@ -231,14 +242,15 @@ class SkillLoader:
             # Same keys either way: a caller that branches on `unused_budget` being
             # present is a caller that crashes on the empty case.
             return {"block": "", "skills": [], "tokens": 0, "budget": max_tokens,
-                    "unused_budget": max_tokens}
+                    "unused_budget": max_tokens, "strategy": MATCH_STRATEGY}
         # Per skill: the smaller of the caller's share and the configured per-skill cap,
         # so `max_inline_tokens` means what its name says even when one skill matched.
         per = min(self.max_inline_tokens, max_tokens // max(1, len(picked)))
         block = "\n\n".join(s.render_injection(max_tokens=per) for s in picked)
         return {"block": block, "skills": [s.to_dict() for s in picked],
                 "tokens": estimate_tokens(block),
-                "budget": max_tokens, "unused_budget": max(0, max_tokens - estimate_tokens(block))}
+                "budget": max_tokens, "unused_budget": max(0, max_tokens - estimate_tokens(block)),
+                "strategy": MATCH_STRATEGY}
 
     def manifest_candidates(self) -> list[dict[str, Any]]:
         out = []
@@ -246,6 +258,19 @@ class SkillLoader:
             for tool in skill.tools:
                 out.append({**tool, "group": tool.get("group") or f"skill.{skill.name}",
                             "source": f"skill:{skill.name}"})
+        return out
+
+    def tool_declarations(self) -> list[tuple[Skill, dict[str, Any]]]:
+        """`(skill, raw [[tool]] table)` pairs - what the compiler consumes.
+
+        `manifest_candidates` flattens the same data into manifest-shaped dicts and drops the
+        skill directory, which is the one thing a `handler_script` path has to be read against.
+        """
+        out: list[tuple[Skill, dict[str, Any]]] = []
+        for skill in self.discover():
+            for tool in skill.tools:
+                if isinstance(tool, dict):
+                    out.append((skill, tool))
         return out
 
 

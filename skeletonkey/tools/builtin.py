@@ -13,7 +13,7 @@ from typing import Any
 from ..core.envelope import ToolResult
 from ..core.errors import E, SkeletonKeyError
 from ..core.manifest import Requirement, ToolManifest
-from ..core.util import clip
+from ..shells.execute import run_script
 
 # --------------------------------------------------------------------- schemas
 
@@ -552,98 +552,14 @@ def register(reg: Any, *, engine: Any, shells: Any, fs: Any, journal: Any, skill
                   keep_script: bool = False, argv: list[Any] | None = None,
                   max_output_bytes: int | None = None,
                   ctx: Any = None) -> Any:
-        from ..shells.base import ShellRequest
-
-        resolved_cwd = cwd or (ctx.cwd if ctx else None) or engine.config.workspace
-        # cwd is sandbox-checked too: an agent must not `cd /` and keep going
-        if resolved_cwd:
-            try:
-                resolved_cwd = engine.fs.sb.resolve(resolved_cwd, intent="list").real
-            except SkeletonKeyError as exc:
-                if exc.code == "SANDBOX_VIOLATION":
-                    exc.details["note"] = "shell cwd is sandboxed like every other path"
-                raise
-        req = ShellRequest(script=script, dialect=dialect, cwd=resolved_cwd, env=env, env_mode=env_mode,
-                           timeout_s=float(timeout_s), strict=strict, expects=expects, session=session,
-                           background=background, stdin_text=stdin_text, capture_env=capture_env,
-                           cleanup_script=not keep_script, argv=list(argv) if argv else None,
-                           max_output_bytes=int(max_output_bytes or engine.config.shell.max_output_bytes))
-        out = shells.run(req)
-        data = _shell_payload(out, engine.config.shell.max_output_bytes)
-        if req.argv:
-            # echo what was passed: the envelope is the record of the call, and a
-            # reproduction needs the script *and* its arguments
-            data["argv"] = list(req.argv)
-        if background:
-            jid = out.session_state.get("job_id")
-            return ToolResult.success(data=data, next_actions=[{"tool": "shell.job_wait",
-                                                                "args": {"job_id": jid, "timeout_s": 30}}],
-                                      hints=["job is running detached; poll with shell.job_wait"],
-                                      context={"job_id": jid})
-        hints: list[str] = []
-        next_actions: list[dict[str, Any]] = []
-        if not out.completed and not out.timed_out:
-            hints.append("script did not reach its final line: the rest did not run. Read stdout for "
-                         "where it stopped before retrying the whole script.")
-        if out.timed_out:
-            hints.append(f"timed out after {timeout_s}s and the process tree was killed")
-            next_actions.append({"tool": "shell.run", "args": {"script": clip(script, 200),
-                                                                "timeout_s": min(1800, timeout_s * 3)},
-                                 "why": "raise the timeout or background=true"})
-            next_actions.insert(0, {"tool": "shell.run", "args": {"background": True},
-                                    "why": "or run it detached"})
-        if out.exit_code not in (0, None) and not out.timed_out:
-            hints.append(f"exit {out.exit_code}: read stderr_tail; the command ran, it just failed")
-        if expects == "json" and out.json_error:
-            hints.append(f"json parse failed: {out.json_error}")
-            next_actions.append({"tool": "shell.run", "args": {"expects": "text"},
-                                 "why": "inspect raw output instead of asserting json"})
-        result = ToolResult.success(data=data, hints=hints, next_actions=next_actions,
-                                    context={"session": session} if session else {})
-        if out.exit_code not in (0, None) or out.timed_out:
-            result.ok = False
-            result.error = _shell_error(out, timeout_s)
-            result.data = data  # keep the evidence attached to the failure
-        return result
-
-    def _shell_payload(out: Any, cap: int) -> dict[str, Any]:
-        payload: dict[str, Any] = {
-            "exit_code": out.exit_code, "completed": out.completed, "timed_out": out.timed_out,
-            "truncated": out.truncated, "duration_ms": out.duration_ms, "dialect": out.dialect,
-            "stdout": clip(out.stdout, cap), "stderr_tail": clip(out.stderr, min(cap, 6000)),
-            "stdout_lines": out.lines_out, "stderr_lines": out.lines_err,
-        }
-        if out.json is not None:
-            payload["json"] = out.json
-        if out.json_error:
-            payload["json_error"] = out.json_error
-        if out.clixml_decoded:
-            payload["clixml_decoded"] = True
-        st = out.session_state or {}
-        if st.get("cwd"):
-            payload["cwd_after"] = st["cwd"]
-        if st.get("job_id"):
-            payload["job_id"] = st["job_id"]
-        if out.notes:
-            payload["notes"] = out.notes
-        # only present when keep_script was asked for: the way a payload that failed in
-        # CI gets attached to a report without anyone retyping it
-        if getattr(out, "script_path", None):
-            payload["script_path"] = out.script_path
-        return payload
-
-    def _shell_error(out: Any, timeout_s: float) -> Any:
-        from ..core.errors import ToolError
-
-        if out.timed_out:
-            return ToolError.from_code(E.TIMEOUT, f"timed out after {timeout_s}s",
-                                       details={"exit_code": out.exit_code, "killed": out.killed,
-                                                "stderr_tail": clip(out.stderr, 1200)})
-        return ToolError.from_code(
-            E.NONZERO_EXIT, f"{'script aborted early' if not out.completed else 'command failed'} "
-                            f"(exit {out.exit_code})",
-            details={"exit_code": out.exit_code, "completed": out.completed, "dialect": out.dialect,
-                     "stderr_tail": clip(out.stderr, 1500), "stdout_tail": clip(out.stdout, 1500)})
+        # The real work lives in shells.execute.run_script because skill-synthesized tools
+        # call the same function: one payload, one error mapping, no drift between the two
+        # ways a script gets run.
+        return run_script(engine, shells, script=script, dialect=dialect, cwd=cwd,
+                          timeout_s=timeout_s, env=env, env_mode=env_mode, strict=strict,
+                          expects=expects, session=session, background=background,
+                          stdin_text=stdin_text, capture_env=capture_env, keep_script=keep_script,
+                          argv=argv, max_output_bytes=max_output_bytes, ctx=ctx)
 
     def shell_available(refresh: bool = False) -> dict[str, Any]:
         prof = engine.profile

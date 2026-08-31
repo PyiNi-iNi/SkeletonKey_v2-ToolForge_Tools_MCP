@@ -97,13 +97,17 @@ gate_by_profile = true             # withhold tools whose requirements this host
 
 # ------------------------------------------------------------------- skills
 [skills]
-dirs = ["skills"]                  # each dir holds <name>/SKILL.md
+dirs = ["skills"]                      # relative entries resolve against the workspace
 auto_load = true
 max_body_bytes = 32000
-max_inline_tokens = 1200           # the injection budget per task
+max_inline_tokens = 1200
 respect_priority = true
-
-# ---------------------------------------------------------------------- mcp
+# A skill pack can carry a script that becomes a callable tool, so installation is a door an
+# operator opens, not a default. While this is false, skills.install is unadvertised and every
+# call to it answers DENY_RULE (dry_run still answers, so a plan can be reviewed first).
+# PLAN.md keeps the ceiling here until P3's policy engine can scope what a skill may run.
+allow_install = false
+install_root = ""                      # empty = the first entry of `dirs`
 [mcp]
 name = "skeletonkey"
 instructions = "Adaptive filesystem + multi-shell toolkit. Prefer capability lookups over guessing names."

@@ -43,14 +43,28 @@ tk.engine.call("shell.run", {"script": 'printf "[%s]" "$@"', "dialect": "bash",
 | Group | Tools | Notes |
 | --- | --- | --- |
 | `fs.*` | 15 | read/write/patch/search/list/glob/stat/sniff/move/delete/mkdir/chmod + journal, undo, undo_task |
-| `shell.*` | 10 | run (with `argv`)/quote/available/jobs/job_wait/job_kill/sessions; bash, sh, zsh, fish, pwsh, powershell 5.1+7, python |
+| `shell.*` | 10 | run (with `argv`)/quote/quote_check/available/jobs/job_wait/job_kill/sessions; bash, sh, zsh, fish, pwsh, powershell 5.1+7, python |
 | `registry.*` | 4 | describe/list/search/stats — the agent's view of its own capabilities |
-| `skills.*` | 3 | list/load/match (progressive disclosure) |
+| `skills.*` | 5 | list/load/match/install/uninstall — progressive disclosure, plus a skill that ships a script becoming a callable tool |
 | `profile.probe` | 1 | host capability detection with receipts |
 
-33 registered, 31 advertised, ~2.2 k tokens of advertisement. Every call returns the same
+35 registered, 33 advertised, ~2.4 k tokens of advertisement. Every call returns the same
 envelope and the same error taxonomy: see
 [`docs/TOOL-CONTRACT.md`](docs/TOOL-CONTRACT.md).
+
+Two of the 35 are **synthesized from a skill pack**, which is the part a toolset usually makes
+you code: `skills/shell-crossplatform/tool.toml` declares `shell.quote_check` with an inline
+handler body and `shell.selftest` with `scripts/selftest.sh` (+ a PowerShell sibling), and the
+compiler turns each into a manifest whose handler runs one script through `shell.run`'s
+executor. Arguments bind to argv — never into the script text — and a declaration that would
+produce a callable-but-broken tool is a load error visible in `skills.list` instead. An agent
+can write a pack with `fs.write` and install it in the same process:
+
+```console
+$ sk skills install ./my-skill --dry-run      # files, tool ids, the argv that would run
+$ sk skills install ./my-skill                # needs skills.allow_install = true
+$ sk call skill.my-skill.wordcount '{"path": "notes.txt"}'
+```
 
 ## Documentation
 

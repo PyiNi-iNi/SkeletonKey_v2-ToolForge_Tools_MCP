@@ -6,11 +6,12 @@ description: >-
 when_to_use: >-
   Running any command; porting a command between platforms; when a command fails
   only on one host; when output looks mangled, empty, or full of CLIXML noise.
-version: "1"
+version: "2"
 tags: [shell, windows, linux, portability, pwsh, bash]
 priority: 70
 requires: [shell]
-allowed-tools: [shell.run, shell.available, shell.jobs, shell.job_wait, shell.job_kill]
+allowed-tools: [shell.run, shell.quote, shell.quote_check, shell.selftest, shell.available,
+                shell.jobs, shell.job_wait, shell.job_kill]
 ---
 
 # Cross-platform shell calls
@@ -99,8 +100,9 @@ shell.job_wait {job_id, timeout_s: 60, tail_bytes: 4000}
 shell.job_kill {job_id}
 ```
 
-Timeouts kill the whole process group (`on_timeout: "kill-tree"`); use
-`"kill-self"` only when the child manages its own children.
+Timeouts kill the whole process group; the `kill_tree` key in the `[shell]` section of config
+is what turns that off, and a single call cannot choose for itself, because a child that reaps
+its own children is rare enough not to earn a per-call escape hatch.
 
 ## 7. State across calls
 
@@ -109,6 +111,23 @@ same `session` id; the runner captures cwd (and env, on bash) in the appendix an
 replays it. `shell.sessions` shows what is held; `shell.session_reset` drops it.
 Prefer absolute paths over sessions when the task is short — sessions are shared
 state and an autopilot may reuse them.
+
+## 8. Tools this pack ships
+
+The pack is not only prose: `tool.toml` compiles two callables.
+
+- `shell.quote_check {script, target_dialect?}` — static pass over script text for the
+  hazards in the table below, with the line and the fix. Run it before a long or risky
+  script, not before every one-liner; it is lexical, so a match in a comment is still a
+  match.
+- `shell.selftest {}` (unadvertised, `tools`-visible) — this host's real behaviour as one
+  JSON object: separators, encoding, `pipefail`/`errexit` semantics, redirection
+  fidelity. Call it once per dialect and diff the two `result` objects when a script has
+  to run on both; that is cheaper than trusting any document, including this one.
+
+Both are ordinary manifests: they go through the sandbox, the budget, the ledger, and
+`expects` parsing like every other call. `docs/SKILLS-SPEC.md` is how you would add a
+third.
 
 ## Anti-patterns
 

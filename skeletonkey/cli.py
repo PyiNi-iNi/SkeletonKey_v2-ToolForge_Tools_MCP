@@ -92,9 +92,16 @@ def main(argv: list[str] | None = None) -> int:
     f.add_argument("-R", "--recursive", action="store_true",
                    help="with chmod: walk a directory (symlinks are never followed)")
 
-    sk = sub.add_parser("skills", help="list/load/match skills")
-    sk.add_argument("action", choices=["list", "load", "match"], nargs="?", default="list")
-    sk.add_argument("arg", nargs="?", default="")
+    sk = sub.add_parser("skills", help="list/load/match/install/uninstall skill packs")
+    sk.add_argument("action", choices=["list", "load", "match", "install", "uninstall"],
+                    nargs="?", default="list")
+    sk.add_argument("arg", nargs="?", default="",
+                    help="skill name (load, uninstall) or a skill directory (install)")
+    sk.add_argument("--dry-run", action="store_true",
+                    help="with install/uninstall: validate and report the plan, change nothing")
+    sk.add_argument("--name", default=None, help="with install: install under this skill name")
+    sk.add_argument("--keep-files", action="store_true",
+                    help="with uninstall: unregister the tools but leave the directory")
 
     sub.add_parser("describe", help="full toolkit/assembly report")
     e = sub.add_parser("call", help="call any tool directly: sk call <tool> '<json args>'")
@@ -176,6 +183,22 @@ def _dispatch(args: argparse.Namespace, tk: Any, call: Any, cfg: Config) -> int:
             return _emit(call("skills.list", {}), json_out=args.json)
         if args.action == "match":
             return _emit(call("skills.match", {"task": args.arg or ""}), json_out=args.json)
+        if args.action == "install":
+            if not args.arg:
+                print("sk skills install needs a directory: sk skills install ./my-skill --dry-run",
+                      file=sys.stderr)
+                return 2
+            payload: dict[str, Any] = {"dir": args.arg, "dry_run": args.dry_run}
+            if args.name:
+                payload["name"] = args.name
+            return _emit(call("skills.install", payload), json_out=args.json)
+        if args.action == "uninstall":
+            if not args.arg:
+                print("sk skills uninstall needs a skill name", file=sys.stderr)
+                return 2
+            return _emit(call("skills.uninstall", {"name": args.arg, "dry_run": args.dry_run,
+                                                   "remove_files": not args.keep_files}),
+                         json_out=args.json)
         return _emit(call("skills.load", {"name": args.arg or ""}), json_out=args.json, raw_key="injection")
     if cmd == "jobs":
         if args.action == "list":

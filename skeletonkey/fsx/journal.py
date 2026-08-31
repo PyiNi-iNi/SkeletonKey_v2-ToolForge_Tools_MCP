@@ -16,6 +16,7 @@ from __future__ import annotations
 import base64
 import json as _json
 import os
+import re
 import shutil
 import tarfile
 import time
@@ -54,6 +55,60 @@ class JournalEntry:
         if self.inline:
             d["inline_bytes"] = len(base64.b64decode(self.inline))
         return d
+
+
+def _extract_guarded(tf: tarfile.TarFile, dest: str) -> None:
+    """`filter="data"` by hand, for pythons that predate the backport (3.11.0-3.11.3).
+
+    `TarFile.extractall(..., filter=...)` exists only from 3.12 and 3.11.4, and this package's
+    `requires-python` is `>=3.11`, so the plain call would either raise TypeError mid-undo or
+    extract without asking. The check is not a formality: the tar was written from a directory the
+    caller chose, `tf.add` records links as links, and a workspace containing a symlink to
+    /etc/passwd is a working directory that a naive restore would write through. So every member
+    must land inside `dest`, and anything that is not a file, a directory, or an in-tree link is
+    refused.
+    """
+    root = os.path.abspath(dest)
+    bs = "\\"
+
+    def _escapes(name: str) -> bool:
+        if name.startswith("/") or name.startswith(bs) or re.match(r"^[A-Za-z]:[/\\]", name):
+            return True
+        parts = [seg for seg in name.replace(bs, "/").split("/") if seg not in ("", ".")]
+        return ".." in parts
+
+    for member in tf.getmembers():
+        if _escapes(member.name):
+            raise SkeletonKeyError(
+                E.CONFLICT,
+                f"the shadow archive names a path outside the restore target: {member.name}",
+                details={"member": member.name, "dest": root,
+                         "advice": "restore the directory by hand or from VCS; the journal kept "
+                                   "the entry, so this undo can be retried after fixing the tar"})
+        full = os.path.abspath(os.path.join(root, member.name.replace(bs, "/")))
+        if os.path.commonpath([full, root]) != root:
+            raise SkeletonKeyError(E.CONFLICT,
+                                   f"shadow member {member.name} resolves outside {root}",
+                                   details={"member": member.name, "resolves_to": full})
+        if member.issym() or member.islnk():
+            link = member.linkname.replace(bs, "/")
+            base = os.path.dirname(full) if member.issym() else root
+            target = os.path.abspath(os.path.join(base, link))
+            if _escapes(member.linkname) or os.path.commonpath([target, root]) != root:
+                raise SkeletonKeyError(
+                    E.CONFLICT,
+                    f"shadow member {member.name} links outside the restore target: "
+                    f"{member.linkname}",
+                    details={"member": member.name, "links_to": member.linkname,
+                             "advice": "the link is refused rather than followed; recreate it "
+                                       "yourself if the directory really needs it"})
+        elif not (member.isfile() or member.isdir()):
+            kind = member.type.decode(errors="replace") if isinstance(member.type, bytes) \
+                else str(member.type)
+            raise SkeletonKeyError(E.CONFLICT,
+                                   f"shadow member {member.name} is neither a file nor a directory",
+                                   details={"member": member.name, "type": kind})
+    tf.extractall(root)
 
 
 class FsJournal:
@@ -353,7 +408,11 @@ class FsJournal:
             shadow = plan["from"]
             if shadow.endswith(".tar"):
                 with tarfile.open(shadow) as tf:
-                    tf.extractall(os.path.dirname(target), filter="data")
+                    dest = os.path.dirname(target)
+                    if hasattr(tarfile, "data_filter"):
+                        tf.extractall(dest, filter="data")
+                    else:
+                        _extract_guarded(tf, dest)
                 done.append(f"re-extracted directory {plan['display']}")
             else:
                 shutil.copy2(shadow, target)

@@ -340,3 +340,92 @@ def test_undo_still_works_for_paths_inside_the_roots(tree, tmp_path):
     target.write_text("changed\n", encoding="utf-8")
     assert j.undo(token)["undone"] is True
     assert target.read_text(encoding="utf-8") == "print('a')\n"
+
+
+# ------------------------------------------------------- directory restore (the extractor)
+def _tree_tar(journal, token):
+    return os.path.join(journal.shadow_dir, f"{token}__tree.tar")
+
+
+def test_directory_undo_round_trips_an_in_tree_symlink(tree, tmp_path):
+    """A tree undo runs `tarfile`'s extractor, so it is the one path with a way out.
+
+    The guard must be what decides, not `tarfile`'s defaults: a legitimate link inside the
+    restored directory comes back as a link, and the poisoned-archive test below proves the
+    version of this code that trusts the extractor would have written through both.
+    """
+    import shutil
+    import tarfile
+
+    link = tree / "dir" / "link.txt"
+    try:
+        os.symlink("one.txt", link)
+    except (OSError, NotImplementedError):        # Windows without developer mode
+        pytest.skip("this platform refuses unprivileged symlinks")
+    j = FsJournal(str(tmp_path / "j"))
+    token = j.record_delete(res_for(tree / "dir"), recursive=True, task_id="t")
+    with tarfile.open(_tree_tar(j, token)) as tf:
+        assert any(m.issym() for m in tf.getmembers()), "the archive is supposed to carry the link"
+    shutil.rmtree(tree / "dir")
+    out = j.undo(token)
+    assert out["undone"] is True and out["action"] == "delete"
+    assert (tree / "dir" / "one.txt").read_text(encoding="utf-8") == "one\n"
+    assert (tree / "dir" / "two.txt").read_text(encoding="utf-8") == "two\n"
+    assert os.path.islink(link), "restoring a link as a copy changes what the tree means"
+    assert os.readlink(link) == "one.txt"
+
+
+@pytest.mark.parametrize("shape", ["dotdot", "absolute", "escaping-link"])
+def test_poisoned_shadow_archive_is_refused_whole(tree, tmp_path, shape):
+    """Every member is checked before *anything* is written, and the refusal is specific.
+
+    The archive is attacker-writable in principle (the state dir is a directory like any
+    other, and a journal written by one user can be read by the next), so a partial restore
+    would be the bug: `one.txt` must still be gone when this call returns.
+    """
+    import io
+    import shutil
+    import tarfile
+
+    j = FsJournal(str(tmp_path / "j"))
+    token = j.record_delete(res_for(tree / "dir"), recursive=True, task_id="t")
+    path = _tree_tar(j, token)
+    shutil.rmtree(tree / "dir")
+
+    with tarfile.open(path) as tf:
+        members = list(tf.getmembers())
+        payload = {m.name: (tf.extractfile(m).read() if m.isfile() else b"") for m in members}
+    os.remove(path)
+    with tarfile.open(path, "w") as tf:
+        for m in members:
+            if m.isfile():
+                info = tarfile.TarInfo(name=m.name)
+                info.size = len(payload[m.name])
+                tf.addfile(info, io.BytesIO(payload[m.name]))
+        if shape == "dotdot":
+            info = tarfile.TarInfo(name="../escape.txt")
+            info.size = 5
+            tf.addfile(info, io.BytesIO(b"PWNED"))
+        elif shape == "absolute":
+            info = tarfile.TarInfo(name=str(tmp_path / "abs-escape.txt"))
+            info.size = 5
+            tf.addfile(info, io.BytesIO(b"PWNED"))
+        else:
+            info = tarfile.TarInfo(name="dir/sneaky")
+            info.type = tarfile.SYMTYPE
+            info.linkname = "../../../../etc/passwd"
+            tf.addfile(info)
+
+    with pytest.raises(SkeletonKeyError) as exc:
+        j.undo(token)
+    assert exc.value.code == E.CONFLICT.code, str(exc.value)
+    expected = {"dotdot": "outside the restore target",
+                "absolute": "outside the restore target",
+                "escaping-link": "links outside the restore target"}[shape]
+    assert expected in str(exc.value)
+    assert exc.value.details["member"]
+    assert not (tmp_path / "escape.txt").exists() and not (tmp_path / "abs-escape.txt").exists()
+    assert not (tree / "dir" / "one.txt").exists(), "a refused restore must not leave half a tree"
+    # the entry is left unrestored, so a human can fix the archive and retry: that is the
+    # difference between a refusal and a swallowed undo
+    assert any(r["token"] == token and not r.get("restored") for r in j.list())

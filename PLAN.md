@@ -3,22 +3,23 @@
 **Dynamic toolset + skills + MCP server for autopilot and autonomous agents.**
 Adaptive by host, reversible by default, bounded in bytes and tokens.
 
-Status: **P0 shipped, P1 shipped**, and documented. CI is specified (§6) but not
+Status: **P0, P1 and P2 shipped**, and documented. CI is specified (§6) but not
 committed as a workflow file yet.
 
 ```bash
 pip install -e ".[dev,mcp]"
 ruff check .                      # All checks passed!
-pytest -q -m "not slow"           # 448 passed, 2 skipped, 1 xfailed  (~18 s)
+pytest -q -m "not slow"           # 495 passed, 2 skipped, 1 xfailed  (~23 s)
 sk describe                       # what this host advertises, with probe receipts
-python -m skeletonkey.mcp         # stdio server: 31 tools, prompts, resources
+sk skills install ./my-skill      # an agent-authored tool, in this process
+python -m skeletonkey.mcp         # stdio server: 33 tools, prompts, resources
 ```
 
-Measured on this box: 33 tools registered / 31 advertised / **2 178 tokens** of
-advertisement (`digest 37174690ee154168`), 10 probed capabilities, 2 skills discovered,
-0 load errors. Code: 10 394 lines in `skeletonkey/`, 16 files in `tests/` (448 passing,
-2 skipped, 1 xfailed), 1941 lines of docs (this plan, four contract docs,
-README; seven ADRs). No workflow file is committed on this branch — the pushing token
+Measured on this box: 35 tools registered / 33 advertised / **2 424 tokens** of
+advertisement (`digest fc1ca30868f2e469`), 10 probed capabilities, 4 skills discovered
+(one of them shipping two scripts that compile into callable tools), 0 load errors. Code:
+11 738 lines in `skeletonkey/`, 15 files in `tests/` (495 passing, 2 skipped,
+1 xfailed), 2 230 lines of docs (this plan, four contract docs, README; seven ADRs). No workflow file is committed on this branch — the pushing token
 cannot write to `.github/workflows/` — and the pipeline is specified in §6 for whoever
 lands it (one command reproduces it locally: `ruff check . && pytest -q -m "not slow"`).
 
@@ -104,10 +105,11 @@ skeletonkey/
   mcp/         adapter.py (low-level MCPServer)  __main__.py (stdio/http)
   toolkit.py   build() -> Toolkit(engine, fs, journal, shells, skills, sandbox)
   cli.py       `sk` — the same engine, no MCP, for humans and smoke tests
-skills/        fs-safe-refactor/  shell-crossplatform/   (SKILL.md + references/ + tool.toml)
+skills/        4 packs: fs-safe-refactor, shell-crossplatform (+ tool.toml, scripts/),
+               vcs-git-safely, python-env-bootstrap   (SKILL.md + references/)
 schemas/       tool-manifest.schema.json  tool-result.schema.json  skill-frontmatter.schema.json
 config/        skeletonkey.example.toml
-tests/         16 files, 448 tests, incl. a raw-JSON-RPC MCP stdio client
+tests/         15 files, 495 tests, incl. a raw-JSON-RPC MCP stdio client
 docs/          TOOL-CONTRACT, SHELL-DIALECTS, SKILLS-SPEC, SECURITY-MODEL, adr/0001-0007
 ```
 
@@ -209,7 +211,8 @@ of a fixed tool list.
   files), `tools/listChanged` advertised, `initialize` untouched.
 - **CLI**: `sk profile|tools|shell|jobs|fs|skills|describe|call|mcp` for humans and CI.
 
-**Acceptance (all green).** 448 tests including a raw JSON-RPC stdio client that proves:
+**Acceptance (all green).** 448 tests at P1's close (495 with P2), including a raw
+JSON-RPC stdio client that proves:
 stdout carries only protocol frames; `fs.read` of `../../../etc/passwd` is a *tool*
 error (`isError: true`, `SANDBOX_VIOLATION`) and the session survives; `registry.stats`
 counts successes; a spill artifact's `fetch_rest` is a legal `fs.read`; a denied dialect
@@ -222,11 +225,63 @@ self-describing tool set; every advertised tool was called at least once in test
 tests that need no Windows).
 
 **What P1 deliberately does not do.** No semantic (embedding) routing; no tool
-synthesis at runtime; no per-tool rate limits; no OS-level sandbox (see Non-goals).
+synthesis at runtime (that is P2, and it landed); no per-tool rate limits; no OS-level
+sandbox (see Non-goals).
 
 ---
 
-### P2 — Skills subsystem and dynamic tool synthesis
+### P2 — Skills subsystem and dynamic tool synthesis (shipped)
+
+**Status at ship time — what differs from the plan above, and why.**
+
+- The binding surface is `args_via`, not `entry`/`returns`. A `[[tool]]` names
+  `handler_script` (+ `handler_script_windows`, or one `handler_body` inlined into the
+  payload), and `args_via` is one of `flags` / `argv_json` / `stdin_json` / `none`;
+  `expects` replaced `returns`. Anything else is a compile error, because a declaration
+  that *silently ignores* a property is the failure mode this phase had to design out.
+  `--flag {name}` interpolation is gone by design: values ride in `argv` and never meet
+  script text (see ADR-0007 for why this phase made that rule absolute).
+- `dialect` is the interpreter selector, so a tool may not both pin it and expose it.
+  That combination shipped in `skills/shell-crossplatform` for a day: a caller passing
+  `dialect: "bash"` overrode the pinned python interpreter and got `MISSING_SHELL`. It is
+  now refused at compile time, and the tool's own input is called `target_dialect`.
+- `registry.alias` was **not** built; shadowing is instead "refused unless
+  `tools.override_builtin = true`". Aliasing is a discovery concern, so it belongs with
+  P5's router work rather than being half-built here.
+- `skills.match` stayed lexical. The P5 router interface is the same call shape, so P5
+  will not need a migration; building the seam twice helped nothing.
+- `install {git_ref}` answers `NOT_IMPLEMENTED` with the phase that owns it (P6), because
+  a network fetch and a trust decision belong with signing, not with a file copy.
+- One wire bug was found by the acceptance test, not by review: `McpBridge.resolve_name`
+  cached its name map, so a tool added after the first `tools/list` was advertised but
+  not callable (`UNKNOWN_TOOL`). The map is now rebuilt once on a miss. This is the
+  argument for the "wire-level test" standing rule.
+- `tests/test_journal.py` grew the extractor tests the directory undo needed: an in-tree
+  symlink round-trips as a link, and a poisoned shadow archive (`../`, absolute, or
+  link-escaping member, or a FIFO) is refused **whole** — nothing is restored — with the
+  entry left retryable.
+
+**Acceptance (all five green).** 495 tests. (1) install → `registry.list` gains
+`skill.demo.wordcount` in the same process and the advertisement digest moves
+(`tests/test_skill_synthesis.py`), *and* a stdio client observes
+`notifications/tools/list_changed` on the connection that called `skills.install`, sees
+the tool in the next `tools/list`, and calls it successfully
+(`tests/test_mcp_stdio.py::test_skills_install_re_advertises_on_the_same_connection`);
+(2) the call runs the script through `ShellRunner` with `env_mode: clean`, returns parsed
+JSON in `data.result`, and a non-zero exit is `NONZERO_EXIT` carrying `stderr_tail` and
+the timeout that fired; (3) a missing script or a bad declaration is a load error with
+path + reason + advice, visible in `skills.list`'s errors, never a registered-but-broken
+tool; (4) uninstall removes and re-advertises, and refuses while a job owned by that
+skill is running, with the job ids in `details`; (5) `pip install` still needs nothing
+beyond the core — `watchfiles` lives in the `watch` extra, and the absence of it is a
+reported state in `skills.list`, not a crash.
+
+**Exit gate met.** The same file authors a pack through `fs.write`, installs it with the
+toolkit's own tools, and calls it: `test_installed_skill_tool_runs_in_a_real_subprocess`
+(POSIX, real bash) and `test_a_pwsh_target_builds_the_windows_payload_without_running_it`
+(rendered payload against a fake profile, until CI has a Windows runner).
+`test_shipped_quote_check_tool_flags_hazards` and `test_shipped_selftest_tool_probes_the_host`
+hold the two shipped skills to the same bar as the fixture.
 
 **Goal.** The agent can *extend* the toolset mid-task: a skill that ships a script
 becomes a callable tool, and the registry learns it without a restart.
@@ -498,11 +553,12 @@ before-image latency exceeds the task's budget, ship read-only remote targets fi
 | Registry/config | `test_registry_config.py` | advertisement gates, digests, config layers + coercion notes |
 | Engine/policy | `test_engine_policy.py` | every failure code, approval grants, deny walls, dry-run |
 | Filesystem | `test_fs_ops.py`, `test_sandbox.py` | EOL/encoding/BOM table incl. BOM-less UTF-16, patch strategies, path escapes |
-| Journal | `test_journal.py` | before-images survive restart, mode+mtime restore, never rmtree, pruning reclaims disk |
+| Journal | `test_journal.py` | before-images survive restart, mode+mtime restore, never rmtree, pruning reclaims disk, a poisoned shadow archive is refused whole |
 | Shells | `test_shell_runner.py`, `test_dialects.py` | live bash + rendered payloads for pwsh (no Windows needed) |
 | Skills | `test_skills.py` | frontmatter edge cases, one bad skill cannot hide the rest, bodies never promise missing tools |
+| Skill → tool | `test_skill_synthesis.py` | every binding channel, every compile-time refusal, install/call/uninstall in a subprocess, payload rendering for pwsh |
 | Tools | `test_tools_builtin.py` | the whole surface through the engine, as a host drives it |
-| Wire | `test_mcp_stdio.py` | raw JSON-RPC subprocess: handshake, list, call, error paths, prompts, resources, clean exit |
+| Wire | `test_mcp_stdio.py` | raw JSON-RPC subprocess: handshake, list, call, error paths, prompts, resources, `tools/list_changed` after a skill install, clean exit |
 | Docs | `test_docs.py` | every documented call shape, tool/knob name and error code resolves against the live registry |
 
 ### Pipeline spec (not committed as a workflow yet)
@@ -552,7 +608,7 @@ silent-ish failure).
 | R3 | An irreversible bulk delete | user data loss | low-med | journal-before-write, `confirm_destructive`, deny list, undo_task; P3 trash tiers | P1 done, P3 |
 | R4 | PowerShell/Windows differences discovered late | broken on half the fleet | med | pwsh in the dialect core, CLIXML handling, `win`-marked tests + Windows CI (P6) | P1, P6 |
 | R5 | Secrets leak into ledger/spill/context | credential exposure | med | redaction on previews + args, `result_digest` over pre-redaction bytes, deny on `.env`, session env names only; pattern table is tested | P1 done, P3 audit |
-| R6 | Skills execute arbitrary code | RCE-by-design | med | P2 script-backed tools only (subprocess, sandboxed, budgeted); `skills.allow_install=false` until P3 policy lands | P2, P3 |
+| R6 | Skills execute arbitrary code | RCE-by-design | med | script-backed tools only (subprocess, sandboxed, budgeted, risk ceiling `write`); 35 compile-time refusals; a bad declaration is a load error, not a tool; `skills.allow_install=false` and the tool unadvertised until P3 policy lands; install is journalled and reversible | P2 done, P3 |
 | R7 | Envelope changes break the autopilot | silent misparses | med | envelope is versioned + schema'd; `manifest.version` bumps; replay diffs in CI | P4, P6 |
 | R8 | Engine becomes a god-object | velocity loss | med | stages are separate methods, handlers injected by signature; contract docs forbid shortcuts | ongoing |
 | R9 | Idempotency cache serves stale state | wrong decisions | low | cache only `idempotent ∧ ¬mutating ∧ stateful=="none"`; `metrics.cached` always visible | P1 done |
@@ -627,8 +683,19 @@ collapse to the read-only attribute, so the call re-stats the path and reports `
 `partial_apply` rather than claiming success. Still open here: `chown` (P6, with the Windows
 runner that can prove it).
 
-**Then the phases, in order:** P2 (skill synthesis, whose handler-body rule already exists in
-`docs/SKILLS-SPEC.md` §Constraints and depends on step 0) → P3 (policy, rate limits, trash,
+**Step 2 — shipped:** the skills subsystem compiles a `[[tool]]` declaration in a skill
+pack into a real manifest whose handler runs one script through the shell executor
+(`skeletonkey/skills/{compiler,install,watch}.py`), plus `skills.install`/`skills.uninstall`
+with `dry_run`, journalled copies, an undo token for the install, and a hot-reload watcher
+behind `tools.hot_reload`; the compiler says no in 35 places, 31 of them naming the field
+and 22 also naming the fix — closing that gap is P3's polish item, not a reason to wait.
+`docs/SKILLS-SPEC.md` §tool.toml is the author-facing contract,
+and the two reference skills it promised (`vcs-git-safely`, `python-env-bootstrap`) ship as
+packs agents can actually load. The MCP surface moved `tools/list_changed` from a capability
+we advertised to behaviour a client can rely on. `skills.allow_install` stays false — that
+is P3's decision to make, and §P2 says so in the tool's own `hidden_reason`.
+
+**Then the phases, in order:** P3 (policy, rate limits, trash,
 `fs.redo` — before an install path is enabled by default) → P4 (autopilot integration:
 `plan()`, receipts, replay, evals; this is where the loop stops hand-coding retries) → P5
 (discovery at scale) → P6 (distribution; Windows CI *before* P7, or remote Windows work will

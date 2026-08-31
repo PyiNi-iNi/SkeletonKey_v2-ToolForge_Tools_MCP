@@ -13,8 +13,9 @@ Handlers follow mcp 2.x: `async def h(ctx, params) -> ResultModel`.
 
 from __future__ import annotations
 
+import asyncio
 import os
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from typing import Any
 
 from ..core.engine import ApprovalRequired, CallContext
@@ -48,6 +49,9 @@ class McpBridge:
     def __init__(self, toolkit: Any) -> None:
         self.toolkit = toolkit
         self.engine = toolkit.engine
+        # the session we last served a request on; notifications (tools/list_changed) have to
+        # go somewhere, and the client that changed the toolset is the one that needs to know
+        self.session: Any = None
         self.ctx = CallContext.from_config(toolkit.config, session_id=f"mcp-{os.getpid()}")
         self._name_map: dict[str, str] = {}
         self._digest: str | None = None
@@ -69,6 +73,14 @@ class McpBridge:
             return self._name_map[name]
         # some hosts sanitize "." to "_"; accept the canonical id if that round-trips
         dotted = name.replace("_", ".")
+        if dotted in self._name_map:
+            return self._name_map[dotted]
+        # A miss is not proof of absence: `skills.install`, `tools.enable` or a re-probe can
+        # register a tool after the map was built, and a tool that this server lists but
+        # refuses to call is worse than a slow lookup. Rebuild once, then decide.
+        self.names()
+        if name in self._name_map:
+            return self._name_map[name]
         if dotted in self._name_map:
             return self._name_map[dotted]
         reg = self.toolkit.engine.registry
@@ -122,13 +134,27 @@ def build_server(toolkit: Any, *, include_resources: bool = True, include_prompt
 
     @asynccontextmanager
     async def lifespan(_server: Any):
-        yield {"bridge": bridge, "toolkit": toolkit}
+        # `tools.hot_reload` is opt-in: a watch loop is a second reason for the tool set to
+        # move under a running agent, and only the operator decides whether that is a feature.
+        task = None
+        if getattr(cfg.tools, "hot_reload", False):
+            from ..skills.watch import watch_skills
+
+            task = asyncio.create_task(watch_skills(toolkit, bridge))
+        try:
+            yield {"bridge": bridge, "toolkit": toolkit}
+        finally:
+            if task is not None:
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
 
     server: Server = Server(SERVER_TITLE, version=__version__, instructions=INSTRUCTIONS,
                             lifespan=lifespan)
 
     # -------------------------------------------------------------------- tools
-    async def on_list_tools(_ctx: Any, _req: ListToolsRequest) -> ListToolsResult:
+    async def on_list_tools(ctx: Any, _req: ListToolsRequest) -> ListToolsResult:
+        bridge.session = getattr(ctx, "session", None) or bridge.session
         snap = bridge.advertise()
         bridge._digest = snap.digest
         tools: list[MTool] = []
@@ -184,6 +210,17 @@ def build_server(toolkit: Any, *, include_resources: bool = True, include_prompt
                                                                 "metrics", "context")}
         # APPROVAL_REQUIRED is returned as a coded envelope carrying the prompt
         # payload; real MCP elicitation (a protocol-level ask) is Phase 3.
+        # A call can legitimately change what is advertised - `skills.install`, a profile
+        # refresh, `tools.enable`. Push tools/list_changed on the session that made the call
+        # instead of polling for a diff nobody asked about, and never let a closed session turn a
+        # successful call into a failed one.
+        session = getattr(ctx, "session", None)
+        if session is not None:
+            bridge.session = session
+            try:
+                await notify_tools_changed(bridge, session)
+            except Exception:                                     # pragma: no cover - defensive
+                pass
         return CallToolResult(content=[TextContent(type="text", text=text)],
                               structuredContent=structured, isError=not res.ok)
 
@@ -341,6 +378,8 @@ def _tail_file(path: str, nbytes: int) -> str:
 
 async def notify_tools_changed(bridge: McpBridge, session: Any) -> bool:
     """Send tools/list_changed if the advertisement actually moved."""
+    if bridge._digest is None:
+        return False        # no client has listed yet; a change notification would be noise
     snap = bridge.advertise()
     if snap.digest == bridge._digest or session is None:
         return False

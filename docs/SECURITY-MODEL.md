@@ -1,7 +1,8 @@
 # Security model
 
-Scope: `skeletonkey` as shipped in P0–P1 (32 tools, `shell.run` included). Written from
-the code, not ahead of it; each layer names the file that implements it and the test that
+Scope: `skeletonkey` as shipped in P0–P2 (35 tools registered, 33 advertised —
+`shell.run`, `fs.*`, and the two tools synthesized from a skill pack). Written from the
+code, not ahead of it; each layer names the file that implements it and the test that
 pins it.
 
 ## Adversary and trust boundary
@@ -130,6 +131,50 @@ lets a host obey `fetch_rest` (it is just `fs.read`, still sandboxed). Point it 
 roots and spilled payloads become unreadable; point it at an unwritable path and the
 envelope degrades honestly — inlined prefix plus `artifacts[].meta.spill_error`, never a
 silent loss.
+
+## Skills: adding capability at runtime
+
+P2 lets a *pack on disk* add callable tools, which is a new shape of exposure and worth naming
+precisely: `shell.run` could already run anything, so the skill layer does not add code
+execution to the threat model — it removes the review step from it. The mitigations, in the
+order the code applies them:
+
+1. **A skill tool is a subprocess.** `skills/compiler.py` produces a manifest whose handler runs
+   one script through the same executor as `shell.run`. No Python from a skill is imported, so
+   a pack cannot reach `Registry._tools`, the config object, or the journal's shadow directory.
+2. **Values never enter the script text.** Properties bind to argv (`flags`), to one JSON argv
+   element (`argv_json`), or to stdin (`stdin_json`). A declaration that tries to interpolate
+   `{path}` into a body is refused at load time; that refusal is the whole prompt-injection
+   story for this layer (ADR 0007).
+3. **The child's environment is pruned by default.** `env_mode = "clean"` drops your environment
+   and keeps the bootstrap keys a process needs to find its binaries (`PATH`, `TEMP`,
+   `SystemRoot`, `HOME` and friends, `_CLEAN_KEEP` in `shells/base.py`) plus whatever the call
+   passed in `env`. That filter runs on the *inherited* environment, not on the merged one: the
+   first version filtered after merging, which silently deleted caller-supplied variables — an
+   env knob that drops what it just accepted is worse than no knob.
+4. **The script is inlined from inside the skill directory.** A `handler_script` must be a
+   relative path inside the pack with an allowed extension; `..`, absolute paths, and foreign
+   extensions are load errors. Inlining (rather than `cd <skill> && ./x.sh`) keeps every
+   payload in the runner's own temp dir under `state.dir`.
+5. **Install is opt-in; uninstall is approval-gated.** `skills.allow_install` defaults to false,
+   and `skills.install` is not even advertised while it is closed (`dry_run` answers anyway, so
+   a plan can be reviewed without the privilege). `skills.uninstall` is not gated behind that
+   flag — removing capability is not escalating it — but it is marked `destructive` so the same
+   policy that guards a directory delete guards it, and it refuses while the skill still has a
+   running job.
+6. **Restores are checked against the destination.** A journaled directory is a tar; Python
+   before 3.11.4 has no `filter="data"`, so `fsx/journal.py::_extract_guarded` refuses members
+   that resolve outside the restore target, that are links pointing out of it, or that are not
+   files/directories. The archive is one we wrote from a directory the agent chose, which is
+   precisely when "we wrote it" stops being a security argument.
+7. **What a skill cannot claim.** `risk` stops at `write`; `destructive = true` in a `[[tool]]`
+   is refused outright, and shadowing a built-in id needs `tools.override_builtin`. P3's policy
+   engine is what will make those ceilings configurable instead of hardcoded.
+
+The residual, stated plainly: with `skills.allow_install = true`, an agent that can write files
+inside the roots can write a skill and then run it. That is why the default is false, why the
+copy is journalled (undo), and why the file list is small, extension-filtered and symlink-free.
+
 
 ## What is deliberately *not* here
 

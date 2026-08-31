@@ -46,6 +46,14 @@ from .dialect import (
 MAX_CAPTURE = 4_000_000  # hard read cap per stream; beyond this we truncate on purpose
 
 
+# What `env_mode = "clean"` keeps from the parent process: enough for a child to resolve
+# binaries and find a temp directory, and nothing that is usually a secret. Anything the call
+# passes in `env` is added on top of this, unfiltered.
+_CLEAN_KEEP = frozenset({
+    "PATH", "SystemRoot", "COMSPEC", "TEMP", "TMP", "HOME", "USERPROFILE", "PATHEXT",
+    "WINDIR", "APPDATA", "LOCALAPPDATA", "ProgramData", "LANG", "LC_ALL",
+})
+
 @dataclass
 class ShellRequest:
     script: str
@@ -58,6 +66,8 @@ class ShellRequest:
     login: bool = False
     tty: bool = False
     stdin_text: str | None = None
+    owner: str | None = None                       # which tool asked for this run; a skill names
+    #                                              its skill, so uninstall can find its jobs
     capture_env: bool = False
     expects: str | None = None          # json | lines | None
     max_output_bytes: int | None = None    # None -> the runner's limit
@@ -414,7 +424,16 @@ class ShellRunner:
         return path
 
     def _env(self, req: ShellRequest, probe: ShellProbe) -> dict[str, str]:
-        base: dict[str, str] = {} if req.env_mode == "clean" else dict(os.environ)
+        if req.env_mode == "clean":
+            # "clean" means *your* environment is gone, not that the child cannot find its
+            # binaries: keep the bootstrap keys, then add what the caller passed. This used to
+            # start from {} and filter the merged dict afterwards, which silently dropped every
+            # caller-supplied variable that was not on the list - so `env_mode: clean` with
+            # `env: {X: 1}` produced a child with neither X nor a word about it.
+            base: dict[str, str] = {k: v for k, v in os.environ.items()
+                                    if k in _CLEAN_KEEP or k.startswith("SKELETONKEY_")}
+        else:
+            base = dict(os.environ)
         if req.env_mode == "login":
             req.login = True
         for k, v in (req.env or {}).items():
@@ -429,10 +448,6 @@ class ShellRunner:
                 base.setdefault("LC_ALL", "C.UTF-8")
                 base.setdefault("LANG", "C.UTF-8")
         base.setdefault("SKELETONKEY_RUN", "1")
-        if req.env_mode == "clean":
-            keep = ("PATH", "SystemRoot", "COMSPEC", "TEMP", "TMP", "HOME", "USERPROFILE", "PATHEXT",
-                    "WINDIR", "APPDATA", "LOCALAPPDATA", "ProgramData", "LANG", "LC_ALL")
-            base = {k: v for k, v in base.items() if k in keep or k.startswith("SKELETONKEY_")}
         return base
 
     def _kill(self, proc: subprocess.Popen, req: ShellRequest) -> None:
@@ -465,8 +480,9 @@ class ShellRunner:
                           rendered: RenderedScript, script_path: str | None) -> BackgroundJob:
         job = BackgroundJob(job_id=f"job_{new_run_id()}", argv=list(argv), pid=None,
                             script_path=script_path, dialect=req.dialect or "?", started=time.time(),
-                            token=rendered.token,
-                            log_dir=os.path.join(self.tempdir or tempfile.gettempdir(), "sk-jobs"))
+                            token=rendered.token, log_dir=os.path.join(
+                                self.tempdir or tempfile.gettempdir(), "sk-jobs"),
+                            owner=req.owner)
         os.makedirs(job.log_dir, exist_ok=True)
         job.out_path = os.path.join(job.log_dir, f"{job.job_id}.out")
         job.err_path = os.path.join(job.log_dir, f"{job.job_id}.err")
@@ -609,6 +625,7 @@ class BackgroundJob:
     out_path: str = ""
     err_path: str = ""
     token: str = ""
+    owner: str | None = None
     _proc: Any = None
     _fhs: tuple[Any, Any] = ()
 
@@ -643,7 +660,7 @@ class BackgroundJob:
         return {"job_id": self.job_id, "pid": self.pid, "running": self.running,
                 "exit_code": self.poll(), "dialect": self.dialect,
                 "elapsed_s": round(time.time() - self.started, 2),
-                "log": self.out_path}
+                "log": self.out_path, "owner": self.owner}
 
 
 def _cleanup_after(proc: subprocess.Popen, path: str) -> None:

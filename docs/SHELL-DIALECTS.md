@@ -191,3 +191,22 @@ as a *string* (preamble order, sentinel protocol, `Write-Host`, CLIXML decode) a
 runner is exercised end-to-end on `posix`. `@pytest.mark.win` marks the tests that need a
 real `powershell`/`pwsh`; they `skip` with a reason elsewhere, and CI (P6) runs them on
 `windows-latest`.
+
+## Skill scripts ride the same payload
+
+A skill-authored tool is not a second execution path. `skills/compiler.py` produces the script
+text and hands it to `shells/execute.py::run_script` — the code `shell.run` itself calls — so
+everything this document describes applies unchanged: the preamble, the sentinel appendix for
+captured state, `strict`, `expects`, the byte cap, CLIXML decoding, kill-tree on timeout.
+
+Three consequences worth having in one place:
+
+* the body is **inlined**, so a skill script never needs to survive `cd`; the file on disk is
+  the source of truth for review, the payload is the source of truth for execution
+  (`keep_script` keeps the exact text when a run must be attached to a report);
+* a PowerShell-targeted pack declares `handler_script_windows`, and the sibling is chosen by
+  dialect family, not by file extension guessing;
+* every job started through this path records `owner = skill:<name>`, which is what
+  `shell.jobs` shows and what makes "uninstall while it is still running" a refusal with job ids
+  instead of a vanished script.
+

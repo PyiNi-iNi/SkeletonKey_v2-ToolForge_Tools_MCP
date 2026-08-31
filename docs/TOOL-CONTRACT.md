@@ -170,6 +170,36 @@ are different facts, and confusing them opens a file somebody locked.
 - `idempotency_key` (call-level) collapses retries of the same logical mutation; the key
   is part of the cache key and of `registry.stats` attribution, never a security control.
 
+## 7b. Skill-authored tools
+
+A `[[tool]]` in a skill's `tool.toml` is compiled into a manifest plus **one script run** —
+`docs/SKILLS-SPEC.md` is normative for the declaration keys. What a *caller* needs from this
+document is the envelope, because it is `shell.run`'s envelope plus provenance:
+
+| key in `data` | what it is |
+| --- | --- |
+| `result` | the parsed payload: JSON object for `expects = "json"`, a line list for `lines`, raw stdout otherwise |
+| `argv` | the arguments actually handed to the process — echo of the binding, and the thing to paste back when reproducing |
+| `args_via` | `flags` \| `argv_json` \| `stdin_json` \| `none`: which binding ran |
+| `exit_code`, `completed`, `timed_out`, `truncated`, `stdout`, `stderr_tail`, `duration_ms`, `dialect` | identical meaning to `shell.run` §5 |
+| `skill`, `skill_tool`, `script` | provenance: which pack, which declaration, which file (or `<handler_body>`) |
+| `owner` | `skill:<name>` — also recorded on any background job, so `skills.uninstall` can refuse to delete a running job's script |
+
+Errors a script can produce are the shell ones and nothing else: `NONZERO_EXIT` (with
+`stderr_tail`, `stdout_tail`, `exit_code`, `completed` attached), `TIMEOUT` (retryable, kill-tree
+already applied), `MISSING_SHELL` for a dialect the profile cannot run, `BAD_ARGS` from the
+manifest's own schema. There is no `INTERNAL` path for a bad script, because a bad script is a
+*result*, not a crash.
+
+Two reservations worth knowing before you write a skill:
+
+* `dialect` in a skill tool's schema means "which interpreter", and the compiler consumes it.
+  A declaration that also pins `dialect` is refused at load time rather than silently
+  overridden.
+* a tool that wants `dry_run` to be honoured must declare the property itself. That declaration
+  is the author's promise that the script writes nothing; the engine stops guessing, which is
+  also why `policy.read_only` refuses a skill tool that did not declare it.
+
 ## 8. Adding a tool
 
 | Where | How | Advertised? |
@@ -177,8 +207,7 @@ are different facts, and confusing them opens a file somebody locked.
 | built-in | `tools/builtin.py`: `_spec(...)` + handler + `add(name, fn)` | yes, gated by `capability` |
 | drop-in | `tools/*.py` with `TOOL_SPECS`/`register`, or `tool.toml` in `tools.dropin_dirs` | yes, `source: "dropin"` |
 | entry-point | `[project.entry-points."skeletonkey.tools"]` | yes, `source: "entry-point"` |
-| skill | `skills/<name>/tool.toml` | **hidden** until P2 synthesis; callable, returns `NOT_IMPLEMENTED` |
-| synthesized (P2) | compiled from a skill script | yes, `source: "synthesized"` |
+| skill | `skills/<name>/tool.toml`, compiled by `skills/compiler.py` | yes, `source: "skill:<name>"`, unless the declaration says `advertised = false` |
 
 Checklist for every new tool:
 

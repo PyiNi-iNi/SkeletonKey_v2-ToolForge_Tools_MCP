@@ -1,15 +1,20 @@
-# Skills may declare tools. The registry ingests these as real ToolManifests at
-# build time; execution is wired by the skill runtime (Phase 2), so in Phase 1 they
-# are registered, searchable, and explicitly NOT_IMPLEMENTED when called.
-# See docs/SKILLS-SPEC.md ("Declarative tools").
+# Skills may declare tools. Each `[[tool]]` below is compiled into a real ToolManifest at
+# build time (skeletonkey/skills/compiler.py) whose handler runs one script through the shell
+# runner - so the sandbox, the budget and the ledger keep applying, and nothing here is
+# Python. The binding surface is `args_via`: flags (default), argv_json, stdin_json, none.
+# Values ride in argv; they are never spliced into the script text.
+# See docs/SKILLS-SPEC.md ("Declarative tools") and PLAN.md §P2.
 
 [[tool]]
 id = "shell.selftest"
-title = "Compare shell behaviour against the reference profile"
-description = """Run the cross-platform selftest for one or more dialects and return the
-normalised JSON facts (separators, encoding, native-exit semantics, redirection
-fidelity) that shell-crossplatform's guidance is keyed off. Use before porting a
-script between Windows and POSIX, or when a command behaves differently there."""
+title = "Probe this host's shell behaviour"
+description = """Normalise one dialect's real behaviour into JSON: separators, encoding,
+pipefail/errexit semantics, redirection fidelity, the tmp dir. Use it before porting a script
+between Windows and POSIX, or when a command behaves differently there - and compare the two
+objects instead of trusting either doc.
+
+One dialect per call (the script *is* the probe). To compare bash and pwsh, call it twice and
+diff the two `result` objects."""
 capability = "shell.selftest"
 group = "shell"
 risk = "read"
@@ -19,48 +24,169 @@ timeout_s = 60
 advertised = false
 idempotent = true
 parallel_safe = true
+
+# The binding: this tool takes no arguments beyond the dialect selector, so nothing is passed
+# to the script at all. Declaring `args_via = "none"` with a property would be a compile error
+# rather than a silently ignored flag.
+args_via = "none"
+handler_script = "scripts/selftest.sh"             # bash/sh/zsh family
+handler_script_windows = "scripts/selftest.ps1"    # pwsh/powershell family, same keys
+expects = "json"
+env_mode = "clean"
+
 input_schema = """
 {
   "type": "object",
   "properties": {
-    "dialects": {
-      "type": "array", "items": {"type": "string", "enum": ["bash", "pwsh", "powershell", "python"]},
-      "description": "Which interpreters to probe. Empty = every dialect the host reports."
-    },
-    "compare_with": {"type": "string", "description": "Optional path to a saved selftest JSON to diff against."}
+    "dialect": {
+      "type": "string",
+      "enum": ["bash", "pwsh", "powershell"],
+      "description": "Which interpreter to probe; default is the profile's preferred dialect. python is not offered - the probe measures shell behaviour, not interpreter behaviour."
+    }
   },
   "required": [],
   "additionalProperties": false
 }
 """
-handler_script = "scripts/selftest.sh"          # bash/python dialects
-handler_script_windows = "scripts/selftest.ps1"  # pwsh/powershell dialects
-expects = "json"
 
 [[tool]]
 id = "shell.quote_check"
-title = "Flag quoting hazards in a script before running it"
-description = """Statically inspect a shell script for the cross-platform quoting and
-redirection hazards listed in this skill's references (backslash paths in bash,
-`>nul`, `Out-File` for UTF-8, unquoted `$(...)` expansion, `$null` vs `/dev/null`)
-and return the specific lines to fix. Cheap insurance before a long-running call."""
+title = "Flag cross-platform quoting hazards before running a script"
+description = """Statically inspect shell text for the hazards this skill's references collect
+(`>nul`, `$null`, CRLF, unquoted `$(...)`, GNU-vs-BSD `sed -i`, PowerShell 5.1 `&&`,
+`Out-File` without an encoding, unquoted `rm -rf`) and return the offending lines with the
+fix. Cheap, offline, and it never runs the script it is reading.
+
+Synthesised tool: the handler is the `handler_body` below, inlined into the payload and run by
+python - no extra file, no `eval`, arguments arrive as one JSON argv element."""
 capability = "shell.quote_check"
 group = "shell"
 risk = "none"
 tags = ["shell", "static-analysis", "portability"]
 priority = 55
 timeout_s = 10
-advertised = false
 idempotent = true
 parallel_safe = true
+args_via = "argv_json"        # the whole args object, one element, read via $ARG_json
+dialect = "python"            # the handler is python, so the interpreter is fixed - which is
+                              # also why the *input* language is target_dialect, below
+expects = "json"
+env_mode = "clean"
+see_also = ["shell.run", "shell.quote", "shell.selftest"]
+anti_patterns = [
+  "do not treat a finding as a verdict - the rules are lexical, so a `>nul` in a comment still matches",
+  "do not call it before every shell.run; it spawns a process to do what reading the text already shows",
+]
+handler_body = '''
+# Inlined verbatim into the payload by the skill compiler; `$ARG_json` is replaced by the
+# dialect's own positional reference (sys.argv[1] here), never by the value itself. Nothing is
+# pre-imported for you - the payload runs this text as a plain script file.
+import json
+import re
+import sys
+
+args = json.loads($ARG_json)
+raw = args.get("script") or ""
+dialect = (args.get("target_dialect") or "bash").lower()
+posix = not (dialect.startswith("pwsh") or dialect.startswith("powershell"))
+lines = raw.replace("\r\n", "\n").split("\n")
+LIMIT = 40
+
+# (rule, pattern, family, severity, message, fix)
+RULES = [
+    ("nul-redirect", r">\s*nul\b", "posix", "warn",
+     "`>nul` is the cmd/PowerShell idiom; bash creates a file named `nul`",
+     "use >/dev/null 2>&1"),
+    ("dollar-null", r"\$null\b", "posix", "error",
+     "`$null` is not a bash variable, so the redirect target vanishes",
+     "use /dev/null"),
+    ("win-path", r"[A-Za-z]:[\\/]|\\Users\\", "posix", "warn",
+     "a Windows path in a POSIX script; backslashes are escapes in bash",
+     "quote it and use forward slashes (or WSL's /mnt/c/...)"),
+    ("sed-in-place", r"\bsed\s+(-[A-Za-z]*)?i(\s|$)", "both", "warn",
+     "GNU `sed -i` takes no argument; BSD/macOS `sed -i` requires the backup suffix",
+     "write `sed -i.bak` (valid on both) or use fs.patch"),
+    ("out-file-encoding", r"(?i)\b(out-file|set-content|add-content)\b(?!.*-e\s*nc)", "powershell", "warn",
+     "Windows PowerShell 5.1 writes UTF-16LE by default; pwsh 7 writes UTF-8 without a BOM",
+     "pass -Encoding utf8NoBOM explicitly"),
+    ("pwsh51-conditional", r"&&|\|\|", "powershell", "info",
+     "`&&` and `||` parse only in PowerShell 7+; 5.1 refuses them",
+     "test $LASTEXITCODE in an if, or pin pwsh 7"),
+    ("unquoted-capture", r"=\s*\$\([^)]*\)\s*$", "posix", "warn",
+     "an unquoted `$(...)` assignment word-splits and collapses when empty",
+     "quote it: x=\"$(cmd)\""),
+    ("unquoted-test", r"\[\s+[^]]*\$\{?\w+\}?[^]]*\s+\]", "posix", "warn",
+     "an unquoted variable inside `[ ]` breaks on spaces and on empty values",
+     "use [[ ... ]], or quote the variable"),
+    ("echo-dash-e", r"\becho\s+-[enE]\b", "posix", "info",
+     "`echo -e` prints the flag itself under dash/sh (it is a bashism)",
+     "use printf"),
+    ("rm-rf-unquoted", r"\brm\s+(-\w+\s+)*-\w*r\w*\s+\$[{A-Za-z_]", "both", "error",
+     "an unquoted variable in a recursive rm is one typo from a disaster, and the shell bypasses the journal",
+     "quote the path, or use fs.delete {path: ..., recursive: true} so it can be undone"),
+]
+
+findings = []
+counts = {}
+for i, line in enumerate(lines, 1):
+    stripped = line.strip()
+    if not stripped or stripped.startswith("#"):
+        continue
+    for rid, pat, family, severity, message, fix in RULES:
+        if family != "both" and ((family == "posix") != posix):
+            continue
+        if re.search(pat, line):
+            counts[rid] = counts.get(rid, 0) + 1
+            if len(findings) < LIMIT:
+                findings.append({"rule": rid, "line": i, "severity": severity,
+                                 "text": stripped[:160], "message": message, "fix": fix})
+
+crlf = raw.count("\r\n")
+if crlf and posix:
+    findings.insert(0, {"rule": "crlf", "line": 1, "severity": "error",
+                        "text": "%d CRLF line ending(s)" % crlf,
+                        "message": "under bash the trailing CR becomes part of every token",
+                        "fix": "rewrite the file with newline lf (fs.write takes a newline argument)"})
+
+out = {
+    "target_dialect": dialect,
+    "family": "posix" if posix else "powershell",
+    "lines": len(lines),
+    "count": len(findings),
+    "findings": findings,
+    "by_rule": counts,
+    "clean": not findings,
+    "truncated": len(findings) >= LIMIT,
+    "advice": sorted({f["fix"] for f in findings}) or
+              ["nothing matched these rules - they are lexical, so read the script too"],
+}
+if findings:
+    out["next_actions"] = [
+        {"tool": "fs.write", "args": {"path": "<script path>", "content": "<fixed text>"},
+         "why": "apply the fix rather than editing in place by hand"},
+        {"tool": "shell.run", "args": {"script": "<script>", "dry_run": True},
+         "why": "preview the corrected script before running it"}]
+print(json.dumps(out))
+'''
+
 input_schema = """
 {
   "type": "object",
   "properties": {
-    "script": {"type": "string", "description": "The script text to inspect."},
-    "dialect": {"type": "string", "enum": ["bash", "pwsh", "powershell", "python"], "description": "Target dialect; defaults to the profile's preference."}
+    "script": {"type": "string", "minLength": 1, "description": "The script text to inspect. It is never executed."},
+    "target_dialect": {"type": "string", "enum": ["bash", "sh", "pwsh", "powershell"],
+                "description": "Which dialect the script text is written in; selects which rules apply. Default bash."}
   },
   "required": ["script"],
   "additionalProperties": false
 }
 """
+
+
+[[tool.examples]]
+args = {script = "cat file >nul\necho $HOME", target_dialect = "bash"}
+note = "one finding: `>nul` creates a file named nul under bash"
+
+[[tool.examples]]
+args = {script = "Get-Content a.json | Out-File b.json", target_dialect = "pwsh"}
+note = "one finding: Out-File without -Encoding"

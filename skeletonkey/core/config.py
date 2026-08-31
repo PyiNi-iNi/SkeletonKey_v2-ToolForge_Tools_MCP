@@ -113,6 +113,10 @@ class SkillConfig:
     max_body_bytes: int = 32_000
     max_inline_tokens: int = 1_200
     respect_priority: bool = True
+    # Installing is how a skill's script starts running, so the door is shut by default and
+    # `skills.install` refuses until an operator opens it (PLAN P3 gives it a policy to obey).
+    allow_install: bool = False
+    install_root: str = ""                       # empty = the first entry of `dirs`
 
 
 @dataclass
