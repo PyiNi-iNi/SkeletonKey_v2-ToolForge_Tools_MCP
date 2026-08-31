@@ -671,3 +671,42 @@ def test_wire_metrics_carry_budget_position(tmp_path):
         assert env2["metrics"]["budget"]["exhausted"] is True
     finally:
         c.close()
+
+
+# ------------------------------------------------- P4 async jobs (wire)
+
+def test_wire_background_turn_shape_and_job_watch(tmp_path):
+    if not os.path.exists("/bin/bash"):
+        pytest.skip("needs /bin/bash")
+    c = spawn(str(tmp_path), "--root", str(tmp_path), env={"SKELETONKEY_AUTO_APPROVE": "1"})
+    c.start()
+    try:
+        res = c.request("tools/call", {"name": "shell.run", "arguments": {
+            "script": "sleep 0.3; echo compiling; sleep 0.2; echo BUILD OK",
+            "dialect": "bash", "background": True}})
+        assert not res.get("isError"), _payload(res)
+        data = _payload(res)["data"]
+        jid = data["job_id"]
+        assert data["next_call"] == {"tool": "shell.job_wait",
+                                     "args": {"job_id": jid, "timeout_s": 30}}, \
+            "the background turn shape: job_id + the exact next call"
+
+        res2 = c.request("tools/call", {"name": "shell.job_watch", "arguments": {
+            "job_id": jid, "until": "BUILD OK", "timeout_s": 20, "poll_s": 0.1}})
+        assert not res2.get("isError"), _payload(res2)
+        watch = _payload(res2)["data"]
+        assert watch["matched_line"] == "BUILD OK" and watch["timed_out"] is False
+
+        res3 = c.request("tools/call", {"name": "shell.run", "arguments": {
+            "script": "sleep 0.2; echo go; sleep 3", "dialect": "bash", "background": True}})
+        jid2 = _payload(res3)["data"]["job_id"]
+        res4 = c.request("tools/call", {"name": "shell.job_watch", "arguments": {
+            "job_id": jid2, "until": "NEVER", "timeout_s": 1, "poll_s": 0.1}})
+        watch2 = _payload(res4)["data"]
+        assert watch2["timed_out"] is True and watch2["running"] is True, \
+            "watching never kills what it was only watching"
+
+        jobs = _payload(c.request("tools/call", {"name": "shell.jobs", "arguments": {}}))["data"]["jobs"]
+        assert {j["job_id"] for j in jobs} >= {jid, jid2}
+    finally:
+        c.close()

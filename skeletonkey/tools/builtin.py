@@ -120,6 +120,26 @@ _spec(
 )
 
 _spec(
+    id="shell.job_watch", title="Watch a background job for a line",
+    description="Poll a background job's stdout until a line matches `until` (regular "
+                "expression) or the timeout cap is reached. On a match returns "
+                "`matched_line`; on the cap returns `timed_out: true` and leaves the job "
+                "running - watching never kills.",
+    capability="exec.jobs", risk="none", typical_latency_ms=2000, stateful="session",
+    tags=["shell", "jobs", "watch", "background"],
+    input_schema={"type": "object",
+                  "properties": {"job_id": {"type": "string"},
+                                 "until": {"type": "string"},
+                                 "timeout_s": {"type": "number", "minimum": 0, "maximum": 1800,
+                                               "default": 30},
+                                 "poll_s": {"type": "number", "minimum": 0.05, "maximum": 30,
+                                            "default": 0.5},
+                                 "tail_bytes": {"type": "integer", "minimum": 256, "maximum": 200_000,
+                                                "default": 8000}},
+                  "required": ["job_id", "until"], "additionalProperties": False},
+)
+
+_spec(
     id="shell.job_kill", title="Kill a background job",
     description="Terminate a background job and its whole process tree.",
     capability="exec.jobs", risk="destructive", destructive=True, idempotent=True, typical_latency_ms=50,
@@ -647,6 +667,11 @@ def register(reg: Any, *, engine: Any, shells: Any, fs: Any, journal: Any, skill
     def shell_job_wait(job_id: str, timeout_s: float = 30.0, tail_bytes: int = 8000) -> dict[str, Any]:
         return shells.job_wait(job_id, timeout=float(timeout_s), tail_bytes=int(tail_bytes))
 
+    def shell_job_watch(job_id: str, until: str, timeout_s: float = 30.0, poll_s: float = 0.5,
+                        tail_bytes: int = 8000) -> dict[str, Any]:
+        return shells.job_watch(job_id, until=until, timeout=float(timeout_s),
+                                poll_s=float(poll_s), tail_bytes=int(tail_bytes))
+
     def shell_job_kill(job_id: str, tree: bool = True) -> dict[str, Any]:
         return shells.job_kill(job_id, tree=tree)
 
@@ -872,6 +897,7 @@ def register(reg: Any, *, engine: Any, shells: Any, fs: Any, journal: Any, skill
     add("shell.available", shell_available)
     add("shell.jobs", shell_jobs)
     add("shell.job_wait", shell_job_wait)
+    add("shell.job_watch", shell_job_watch)
     add("shell.job_kill", shell_job_kill)
     add("shell.sessions", shell_sessions)
     add("shell.session_reset", shell_session_reset)

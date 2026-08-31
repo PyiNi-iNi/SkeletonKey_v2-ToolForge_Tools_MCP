@@ -73,11 +73,17 @@ def run_script(engine: Any, shells: Any, *, script: str, dialect: str | None = N
             data[result_key] = out.stdout
 
     if background:
+        # the turn shape: job_id + the exact next call, both in `data`, so a loop
+        # can branch on them without parsing hints
         jid = out.session_state.get("job_id")
+        data["job_id"] = jid
+        data["next_call"] = {"tool": "shell.job_wait", "args": {"job_id": jid, "timeout_s": 30}}
         return ToolResult.success(
             data=data,
             next_actions=[{"tool": "shell.job_wait", "args": {"job_id": jid, "timeout_s": 30}}],
-            hints=["job is running detached; poll with shell.job_wait"],
+            hints=["job is running detached; poll with shell.job_wait",
+                   "to wait for a specific line instead of for exit: "
+                   "shell.job_watch {job_id, until: <regex>} (watching never kills)"],
             context={"job_id": jid})
 
     hints: list[str] = []

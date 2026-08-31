@@ -264,6 +264,51 @@ def test_job_kill_stops_a_long_run(tmp_path, runner):
 
 
 @needs_bash
+def test_job_watch_returns_matched_line_when_the_build_prints_it(tmp_path, runner):
+    marker = tmp_path / "stamp"
+    started = runner.run(
+        ShellRequest(script=f"sleep 0.3; echo building; sleep 0.2; echo OK; touch {marker.as_posix()}",
+                     dialect="bash", background=True))
+    res = runner.job_watch(started.job_id, until="OK", timeout=15, poll_s=0.05)
+    assert res["matched_line"] == "OK"
+    assert res["timed_out"] is False
+    assert "building" in res["stdout_tail"]
+
+
+@needs_bash
+def test_job_watch_times_out_and_leaves_the_job_running(tmp_path, runner):
+    marker = tmp_path / "later"
+    started = runner.run(
+        ShellRequest(script=f"sleep 0.2; echo starting; sleep 3; touch {marker.as_posix()}",
+                     dialect="bash", background=True))
+    res = runner.job_watch(started.job_id, until="NEVER-PRINTS", timeout=1.0, poll_s=0.05)
+    assert res["timed_out"] is True and res["matched_line"] is None
+    assert res["running"] is True, "a timeout must not kill the job it was only watching"
+    time.sleep(3.5)
+    assert marker.exists(), "the job kept running to completion after the watch gave up"
+    runner.job_kill(started.job_id)
+
+
+@needs_bash
+def test_job_watch_reports_exit_of_a_job_that_never_prints_the_line(tmp_path, runner):
+    started = runner.run(ShellRequest(script="echo done; exit 3", dialect="bash", background=True))
+    info = runner.job_wait(started.job_id, timeout=10)
+    assert info["exit_code"] == 3
+    res = runner.job_watch(started.job_id, until="NEVER", timeout=5, poll_s=0.05)
+    assert res["timed_out"] is False and res["running"] is False
+    assert res["exit_code"] == 3
+
+
+@needs_bash
+def test_job_watch_rejects_a_bad_regex(tmp_path, runner):
+    started = runner.run(ShellRequest(script="echo hi", dialect="bash", background=True))
+    with pytest.raises(SkeletonKeyError) as exc:
+        runner.job_watch(started.job_id, until="([unclosed", timeout=1)
+    assert exc.value.code == "BAD_ARGS"
+    runner.job_kill(started.job_id)
+
+
+@needs_bash
 def test_script_file_cleanup_respects_keep_flag(tmp_path):
     r = ShellRunner(CapabilityProfile(os="linux", shells={"bash": ShellProbe(
         dialect="bash", kind="unix", path="/bin/bash", version=(5, 2))},

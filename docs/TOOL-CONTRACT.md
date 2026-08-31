@@ -85,6 +85,21 @@ The block is diagnostic, not a security decision — containment was already enf
 against the resolved target, and `follow_symlinks = "never"` is refused with
 `SANDBOX_VIOLATION` before any result exists.
 
+### Background jobs: a first-class turn shape
+
+`shell.run {background: true}` returns `data.job_id` and `data.next_call` (the exact
+`shell.job_wait` invocation), so a loop can branch on them without parsing hints. Two
+ways to come back, answering different questions:
+
+- `shell.job_wait {job_id, timeout_s, tail_bytes}` — "is it **done**?" Blocks until exit
+  (or the cap) and returns tails + exit code.
+- `shell.job_watch {job_id, until: <regex>, timeout_s, poll_s}` — "is it **ready**?"
+  Blocks until a line of the job's stdout matches `until`; on a match returns
+  `matched_line`, on the cap returns `timed_out: true`. A timeout **leaves the job
+  running** — watching is not killing, and a watch never kills what it was only watching.
+  A job that exits before printing the line returns `running: false` with its exit code,
+  not a timeout. `until` must compile as a regular expression (`BAD_ARGS` if not).
+
 ## 3. Errors
 
 `error = {code, error_class, message, retryable, hint, details}`.
