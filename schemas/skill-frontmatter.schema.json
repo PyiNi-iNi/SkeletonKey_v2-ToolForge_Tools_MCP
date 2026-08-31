@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://skeletonkey.dev/schemas/skill-frontmatter.schema.json",
+  "title": "SkeletonKey Skill frontmatter",
+  "description": "The YAML header of skills/<name>/SKILL.md. A skill is instruction payload first and a tool manifest second: the loader injects the body (bounded by skills.max_inline_tokens) when a task matches, and registers any tool.toml candidates as hidden (advertised=false) entries so the registry already knows about them before Phase 2 synthesis exists. Unknown keys are ignored, not fatal - a skill written for a future version must still load today.",
+  "type": "object",
+  "required": [
+    "name",
+    "description"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+      "description": "kebab-case. Defaults to the directory name; a frontmatter `name` wins over the directory, and if two skills resolve to one name the first directory wins and the loser is annotated in `parse_notes` (\"shadowed by earlier ...\") rather than silently replacing it."
+    },
+    "description": {
+      "type": "string",
+      "maxLength": 400,
+      "description": "One line. This is what the matcher shows the model when it is deciding whether to open the skill at all."
+    },
+    "when_to_use": {
+      "type": "string",
+      "description": "The trigger sentence. Matched as tokens against the task text, so write it in the agent's vocabulary ('renaming a symbol across the repo'), not in yours."
+    },
+    "triggers": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Explicit aliases; wins over when_to_use for matching if both are present."
+    },
+    "version": {
+      "type": "string",
+      "default": "1"
+    },
+    "tags": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "priority": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 100,
+      "default": 50,
+      "description": "Breaks ties when several skills match one task, and decides who gets the last of the token budget."
+    },
+    "requires": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Capability or tool ids. A skill whose requirements this host fails is skipped rather than injected - half a procedure is worse than none."
+    },
+    "disable_for": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Os/tool exclusions, e.g. [\"windows\"] for a bash-only recipe."
+    },
+    "allowed-tools": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "The tool ids this skill's procedure assumes. Reported in `skills.load` so a host can pre-approve exactly that set instead of the whole toolkit."
+    },
+    "license": {
+      "type": "string"
+    },
+    "disabled": {
+      "type": "boolean",
+      "const": false,
+      "description": "Not a frontmatter key: switch a skill off by naming its directory with a leading underscore (`skills/_draft-foo/`). The loader marks it disabled and `skills.list` shows why."
+    }
+  },
+  "x-directory-convention": {
+    "SKILL.md": "frontmatter + body (the injection)",
+    "references/*.md": "read on demand - `skills.load {references: [...]}` inlines selected files",
+    "scripts/*": "executable helpers the procedure calls via shell.run",
+    "tool.toml": "optional [[tool]] / [tool] / tools = [...] declarations, registered hidden"
+  }
+}

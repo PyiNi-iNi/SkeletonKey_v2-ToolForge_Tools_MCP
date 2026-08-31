@@ -1,0 +1,174 @@
+# SkeletonKey / ToolForge v2 CI.
+#
+# Kept at `ci/ci.yml` rather than `.github/workflows/` because the bot token used to push
+# this branch cannot create workflow files. To enable: `mkdir -p .github/workflows &&
+# git mv ci/ci.yml .github/workflows/ci.yml && git push` from an account with the
+# `workflows` permission (nothing else about the file needs editing).
+#
+# Order matters, and each job answers a different question:
+#   core-constraint -> is ADR-0001 (zero mandatory dependencies) still true?
+#   test            -> does the suite pass on Linux *and* Windows, py3.11 and py3.13?
+#   smoke           -> do the console scripts and the MCP stdio handshake work after a
+#                      plain (non-dev) install, i.e. is packaging honest?
+#   audit           -> advisories in the extras (core declares nothing to audit)
+#
+# No Makefile and no shell scripts are required to reproduce any of this locally:
+#   pip install -e ".[dev,mcp]" && ruff check . && pytest -q -m "not slow"
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONDONTWRITEBYTECODE: "1"
+  SKELETONKEY_LOG_LEVEL: ERROR
+
+jobs:
+  core-constraint:
+    name: core has no mandatory deps (ADR-0001)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: install without the mcp/watch extras
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+      - name: stdlib-only imports, and nothing MCP-shaped installed
+        run: |
+          python - <<'PY'
+          import importlib.util, sys
+          for name in ("mcp", "mcp_types", "pydantic", "watchfiles", "jsonschema"):
+              if importlib.util.find_spec(name) is not None:
+                  sys.exit(f"core-only environment must not install {name!r} (ADR-0001)")
+          import skeletonkey.cli, skeletonkey.core.engine, skeletonkey.core.validate  # noqa: F401
+          import skeletonkey.fsx.journal, skeletonkey.fsx.search, skeletonkey.shells.dialect  # noqa: F401
+          import skeletonkey.skills.loader, skeletonkey.toolkit  # noqa: F401
+          ad = skeletonkey.toolkit.build().engine.advertise()
+          print(f"core-only build OK: {len(ad.tools)} tools advertised, {ad.tokens} tokens")
+          PY
+      - name: the contract tests need no extras either
+        run: >
+          python -m pytest -q tests/test_core_contracts.py tests/test_envelope.py
+          tests/test_ledger_redaction.py tests/test_dialects.py
+
+  test:
+    name: ${{ matrix.os }} py${{ matrix.python-version }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ["3.11", "3.13"]
+    # Windows is where the pwsh/5.1, CLIXML, CRLF and long-path claims stop being
+    # assertions about rendered strings and become behaviour. P6 owns whatever it finds;
+    # until then this reports without blocking the path everyone merges on.
+    continue-on-error: ${{ startsWith(matrix.os, 'windows') }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev,mcp]"
+      - name: ruff
+        run: python -m ruff check .
+      - name: pytest
+        run: python -m pytest -q -m "not slow" --tb=short -p no:cacheprovider
+      - name: what a host would advertise here
+        run: python -m skeletonkey.cli describe
+
+  smoke:
+    name: CLI + MCP stdio on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    continue-on-error: ${{ startsWith(matrix.os, 'windows') }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: install the published surface only
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[mcp]"
+      - name: console scripts resolve
+        run: |
+          sk --version
+          sk profile
+          sk tools list
+          sk skills list
+      - name: real calls through the CLI
+        run: |
+          mkdir -p "$RUNNER_TEMP/skws"
+          cd "$RUNNER_TEMP/skws"
+          printf 'port = 1\n' > app.py
+          sk fs search port .
+          printf '%s' '[{"old_text": "port = 1", "new_text": "port = 8080"}]' > edits.json
+          sk fs patch app.py --edits-file edits.json
+          grep -q "port = 8080" app.py
+          echo "the patched file is what grep just checked"
+          sk fs write notes.md <<'TXT'
+          written through stdin
+          TXT
+          test -s notes.md
+          sk shell "echo sentineled" --dialect bash
+      - name: MCP initialize + tools/list over stdio
+        run: |
+          mkdir -p "$RUNNER_TEMP/skws"
+          {
+            printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"ci","version":"0"}}}'
+            printf '%s\n' '{"jsonrpc":"2.0","method":"notifications/initialized"}'
+            printf '%s\n' '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'
+          } > in.jsonl
+          python -m skeletonkey.mcp --cwd "$RUNNER_TEMP/skws" < in.jsonl > out.json
+          test -s out.json
+          python - <<'PY'
+          import json
+          rows = [json.loads(ln) for ln in open("out.json", encoding="utf-8") if ln.strip()]
+          init = next(r for r in rows if r.get("id") == 1)
+          listed = next(r for r in rows if r.get("id") == 2)
+          names = [t["name"] for t in listed["result"]["tools"]]
+          assert "fs.patch" in names and "shell.run" in names, names[:5]
+          assert init["result"]["serverInfo"]["name"], init
+          print(f"MCP OK: {len(names)} tools advertised, protocol {init['result']['protocolVersion']}")
+          PY
+
+  audit:
+    name: advisory check (extras only)
+    runs-on: ubuntu-latest
+    # An advisory in `mcp` is not our bug and must not block a docs-only PR; P6 turns
+    # this into a gate once the dependency floor is pinned in a lockfile.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[all]" pip-audit
+      - run: pip-audit --desc on -s pypi

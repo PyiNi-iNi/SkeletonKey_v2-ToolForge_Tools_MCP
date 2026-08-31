@@ -1,0 +1,66 @@
+# Skills may declare tools. The registry ingests these as real ToolManifests at
+# build time; execution is wired by the skill runtime (Phase 2), so in Phase 1 they
+# are registered, searchable, and explicitly NOT_IMPLEMENTED when called.
+# See docs/SKILLS-SPEC.md ("Declarative tools").
+
+[[tool]]
+id = "shell.selftest"
+title = "Compare shell behaviour against the reference profile"
+description = """Run the cross-platform selftest for one or more dialects and return the
+normalised JSON facts (separators, encoding, native-exit semantics, redirection
+fidelity) that shell-crossplatform's guidance is keyed off. Use before porting a
+script between Windows and POSIX, or when a command behaves differently there."""
+capability = "shell.selftest"
+group = "shell"
+risk = "read"
+tags = ["shell", "portability", "diagnostics"]
+priority = 60
+timeout_s = 60
+advertised = false
+idempotent = true
+parallel_safe = true
+input_schema = """
+{
+  "type": "object",
+  "properties": {
+    "dialects": {
+      "type": "array", "items": {"type": "string", "enum": ["bash", "pwsh", "powershell", "python"]},
+      "description": "Which interpreters to probe. Empty = every dialect the host reports."
+    },
+    "compare_with": {"type": "string", "description": "Optional path to a saved selftest JSON to diff against."}
+  },
+  "required": [],
+  "additionalProperties": false
+}
+"""
+handler_script = "scripts/selftest.sh"          # bash/python dialects
+handler_script_windows = "scripts/selftest.ps1"  # pwsh/powershell dialects
+expects = "json"
+
+[[tool]]
+id = "shell.quote_check"
+title = "Flag quoting hazards in a script before running it"
+description = """Statically inspect a shell script for the cross-platform quoting and
+redirection hazards listed in this skill's references (backslash paths in bash,
+`>nul`, `Out-File` for UTF-8, unquoted `$(...)` expansion, `$null` vs `/dev/null`)
+and return the specific lines to fix. Cheap insurance before a long-running call."""
+capability = "shell.quote_check"
+group = "shell"
+risk = "none"
+tags = ["shell", "static-analysis", "portability"]
+priority = 55
+timeout_s = 10
+advertised = false
+idempotent = true
+parallel_safe = true
+input_schema = """
+{
+  "type": "object",
+  "properties": {
+    "script": {"type": "string", "description": "The script text to inspect."},
+    "dialect": {"type": "string", "enum": ["bash", "pwsh", "powershell", "python"], "description": "Target dialect; defaults to the profile's preference."}
+  },
+  "required": ["script"],
+  "additionalProperties": false
+}
+"""
