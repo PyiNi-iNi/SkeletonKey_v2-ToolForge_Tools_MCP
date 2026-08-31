@@ -648,6 +648,7 @@ silent-ish failure).
 | 0006 | Journal-and-undo in the toolkit, not delegated to git | accepted |
 | 0007 | Values are `argv`, never interpolated text; quoting is a separate explicit tool | accepted |
 | 0008 | Policy is data; approval is a tool with a receipt; undo is a precondition | accepted |
+| 0009 | Replay proves the turn: explicit normalization, `stateful` means loose, mutations retire cached reads | accepted |
 
 `docs/adr/` holds the full text of each, with the options rejected and the observable
 consequence (usually a test id).
