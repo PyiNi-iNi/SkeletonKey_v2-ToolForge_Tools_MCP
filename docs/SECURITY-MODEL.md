@@ -133,6 +133,10 @@ separate user, or run it in a container. This is stated here rather than discove
 13. **Audit.** `<state>/ledger.ndjson`, one row per call, hash-chained; `ledger.verify()`
     reports `broken_at`, and a torn tail line is trimmed on open (a crash must not make the
     whole log unreadable). `ledger.stats()` is agent-visible via `registry.stats`.
+    Every row also carries a `context_receipt` (`exposed_results`, `withheld`,
+    `stop_reason`) inside the chain: the advertised set the host could call, every
+    registered tool it could not with the gate's reasons, and the call's outcome —
+    after the fact, an agent (or an eval) can read *why* it never saw a tool.
 
 ## Secrets handling
 

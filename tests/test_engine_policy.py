@@ -649,6 +649,56 @@ def test_a_broken_ledger_never_fails_the_call():
     assert eng.call("fs.read", {}).ok, "audit failure must not destroy the work product"
 
 
+# ------------------------------------------------------- P4 context receipts
+
+def test_ledger_rows_carry_the_context_receipt(tmp_path):
+    """Why an agent never saw a tool must be readable after the fact."""
+    from skeletonkey.core.ledger import Ledger
+
+    led = Ledger(tmp_path / "ledger.ndjson")
+    eng, _ = mkengine(handlers=[
+        (tool("fs.read"), lambda: {"v": 1}),
+        (tool("fs.write", risk="write", destructive=False), lambda: {"w": 1}),
+        (tool("fs.secret", advertised=False, hidden_reason="internal"), lambda: {"s": 1}),
+        (tool("fs.boom"), lambda: (_ for _ in ()).throw(RuntimeError("x")))],
+        read_only=True)
+    eng.ledger = led
+    eng.call("fs.read", {})
+    eng.call("fs.boom", {})
+    rows = list(led.read(limit=10))
+    assert len(rows) == 2
+    for row in rows:
+        rc = row.context_receipt
+        assert rc is not None, "every ledger row carries its context receipt"
+        assert set(rc) == {"exposed_results", "withheld", "stop_reason"}
+    rc = rows[0].context_receipt
+    # read_only withholds the writer; the internal tool never advertises; the two
+    # read-risk tools stay exposed
+    assert rc["exposed_results"] == ["fs.boom", "fs.read"]
+    withheld = {w["tool"]: w["why"] for w in rc["withheld"]}
+    assert any("read_only" in u for u in withheld["fs.write"]), withheld
+    assert withheld["fs.secret"] == ["internal"]
+    assert rows[0].context_receipt["stop_reason"] == "ok"
+    assert rows[1].context_receipt["stop_reason"] == "INTERNAL"
+    assert led.verify()["valid"] is True, "receipts are inside the hash chain"
+
+
+def test_receipt_reflects_the_live_advertisement_set(tmp_path):
+    """A skill install moves the advertisement; the next row's receipt must too."""
+    from skeletonkey.core.ledger import Ledger
+
+    led = Ledger(tmp_path / "ledger.ndjson")
+    eng, reg = mkengine(handlers=[(tool("fs.read"), lambda: {"v": 1})])
+    eng.ledger = led
+    eng.call("fs.read", {})
+    reg.register(tool("fs.fresh"), lambda: {"f": 1}, replace=True)
+    eng.call("fs.read", {})
+    rows = list(led.read(limit=10))
+    assert "fs.fresh" not in rows[0].context_receipt["exposed_results"]
+    assert "fs.fresh" in rows[1].context_receipt["exposed_results"]
+    assert not [w for w in rows[1].context_receipt["withheld"] if w["tool"] == "fs.fresh"]
+
+
 # ------------------------------------------------------------------ wiring
 def test_injection_is_by_signature_only():
     seen = {}

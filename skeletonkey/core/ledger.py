@@ -45,6 +45,9 @@ class LedgerEntry:
     task_id: str = ""
     session_id: str = ""
     redacted: list[str] = field(default_factory=list)
+    # what this context exposed / withheld to the agent, and why the call stopped -
+    # the per-call mirror of the per-tool discovery receipt (why you never saw a tool)
+    context_receipt: dict[str, Any] | None = None
     prev: str = ""
     entry_sha: str = ""
 
@@ -135,11 +138,13 @@ class Ledger:
         risk: str = "",
         task_id: str = "",
         session_id: str = "",
+        context_receipt: dict[str, Any] | None = None,
     ) -> LedgerEntry:
         entry = LedgerEntry(
             seq=self._seq + 1, ts=time.time(), run_id=run_id, tool=tool,
             args_digest=content_hash(args or {})[:32], ok=ok, duration_ms=int(duration_ms),
             error_code=error_code, risk=risk, task_id=task_id, session_id=session_id,
+            context_receipt=context_receipt,
             prev=self._prev,
         )
         if self.store_args and args:

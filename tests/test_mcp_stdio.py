@@ -710,3 +710,22 @@ def test_wire_background_turn_shape_and_job_watch(tmp_path):
         assert {j["job_id"] for j in jobs} >= {jid, jid2}
     finally:
         c.close()
+
+
+def test_wire_ledger_rows_carry_context_receipt(tmp_path):
+    (tmp_path / "skeletonkey.toml").write_text(
+        f"[state]\ndir = \"{(tmp_path / 'state').as_posix()}\"\n", encoding="utf-8")
+    c = spawn(str(tmp_path), "--root", str(tmp_path))
+    c.start()
+    try:
+        c.request("tools/call", {"name": "fs.read", "arguments": {"path": "nope.txt"}})
+        ledger = tmp_path / "state" / "ledger.ndjson"
+        lines = [json.loads(ln) for ln in ledger.read_text().splitlines() if ln.strip()]
+        assert lines, "the call must have produced a ledger row"
+        rc = lines[-1].get("context_receipt")
+        assert rc is not None, "the ledger row carries its context receipt"
+        assert set(rc) == {"exposed_results", "withheld", "stop_reason"}
+        assert "fs.read" in rc["exposed_results"]
+        assert rc["stop_reason"] == "ENOENT", "the call's own outcome is the stop reason"
+    finally:
+        c.close()

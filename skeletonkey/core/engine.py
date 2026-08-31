@@ -767,6 +767,38 @@ class Engine:
         self.registry.record(man.id, ok=ok, duration_ms=int((time.monotonic() - t0) * 1000),
                              error_code=error_code)
 
+    def _context_receipt(self, res: ToolResult) -> dict[str, Any]:
+        """What this context exposed / withheld to the agent, and why the call stopped.
+
+        The per-call mirror of the per-tool discovery receipt: `exposed_results` is
+        the advertised set the host could call, `withheld` says for every registered
+        tool it could NOT, with the gate's own reasons, and `stop_reason` is the call's
+        outcome. Recorded on the ledger row so a replay or an eval can read, after the
+        fact, why an agent never saw a tool.
+        """
+        snap = self.registry.advertise(
+            read_only=self.config.policy.read_only, disabled=self.config.tools.disable)
+        exposed = sorted(m.id for m in snap.tools)
+        withheld: list[dict[str, Any]] = []
+        for man in self.registry.all():
+            if man.id in exposed:
+                continue
+            g = snap.gates.get(man.id)
+            if g is not None and not g.available:
+                why = [*(g.reasons or []), *(g.unmet or [])]
+            elif not man.advertised:
+                why = [man.hidden_reason or "internal tool (not advertised)"]
+            else:
+                winner = snap.selected.get(man.capability or man.id)
+                why = [f"capability dedupe: {winner} won {man.capability or man.id}" if winner
+                       else "dropped by token budget"]
+            withheld.append({"tool": man.id, "why": why})
+        return {
+            "exposed_results": exposed,
+            "withheld": withheld,
+            "stop_reason": "ok" if res.ok else (res.error.code if res.error else "unknown"),
+        }
+
     def _ledger(self, man: ToolManifest | None, args: dict[str, Any], res: ToolResult, t0: float,
                 ctx: CallContext, *, tool_name: str = "") -> None:
         if self.ledger is None:
@@ -778,6 +810,7 @@ class Engine:
                 error_code=res.error.code if res.error else None,
                 risk=man.risk if man else "unknown", task_id=ctx.task_id, session_id=ctx.session_id,
                 result=res.to_dict(max_bytes=1200),
+                context_receipt=self._context_receipt(res),
             )
         except Exception:
             pass

@@ -275,6 +275,11 @@ for the os-trash tier).
 - Tools may call other tools through `engine.call` (that is how `registry.search` and the
   skill loader reuse the registry). Budgets, policy and the ledger apply per inner call;
   the ledger therefore holds one row per *tool* call, not per turn.
+- Every ledger row carries a `context_receipt`: `exposed_results` (the advertised set the
+  host could call at that moment), `withheld` (every registered tool it could NOT, with
+  the gate's own reasons — the per-call mirror of the per-tool discovery receipt, so a
+  replay or an eval can read after the fact *why an agent never saw a tool*), and
+  `stop_reason` (`ok` or the error code). It is inside the hash chain.
 - The idempotency cache (5 s TTL) applies only when
   `idempotent ∧ ¬is_mutating ∧ stateful == "none"`. A pure read that reflects live state
   (`shell.sessions`, `fs.journal_list`, `registry.stats`) must set `stateful: "session"`
