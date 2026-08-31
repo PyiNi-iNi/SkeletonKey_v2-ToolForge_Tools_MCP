@@ -60,7 +60,7 @@ envelope and the same error taxonomy: see
 | [`docs/SECURITY-MODEL.md`](docs/SECURITY-MODEL.md) | you need to know what is and is *not* enforced |
 | [`docs/adr/`](docs/adr) | you are about to disagree with a decision |
 | [`config/skeletonkey.example.toml`](config/skeletonkey.example.toml) | every knob, with its default |
-| [`ci/ci.yml`](ci/ci.yml) | the pipeline (move to `.github/workflows/` to enable) |
+| [`PLAN.md`](PLAN.md) §6 | the CI pipeline spec — deliberately **not** committed as a workflow yet |
 | [`schemas/`](schemas) | machine-checkable contract shapes |
 
 `pytest tests/` covers the whole surface, including a raw JSON-RPC client that speaks to

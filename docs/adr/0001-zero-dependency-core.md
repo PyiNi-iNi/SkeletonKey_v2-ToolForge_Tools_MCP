@@ -54,6 +54,7 @@ a test, not a comment (P6 makes it an enforced import-isolation check).
 
 ## Verification
 
-`tests/test_registry_config.py` (config/registry work with no extras present), plus CI
-installing `.[dev,mcp]` — if `core` ever grows an import outside the stdlib, the ubuntu job
-that installs only `.[dev]` fails first.
+`tests/test_registry_config.py` (config/registry work with no extras present), plus the
+`core-constraint` job in the pipeline spec (`PLAN.md` §6), which installs `.[dev]` only and
+fails if `mcp`/`pydantic`/`jsonschema` turn out to be importable. If `core` ever grows an
+import outside the stdlib, that job is the first thing to say so.

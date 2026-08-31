@@ -3,7 +3,8 @@
 **Dynamic toolset + skills + MCP server for autopilot and autonomous agents.**
 Adaptive by host, reversible by default, bounded in bytes and tokens.
 
-Status: **P0 shipped, P1 shipped**, documented, and wired into CI.
+Status: **P0 shipped, P1 shipped**, and documented. CI is specified (§6) but not
+committed as a workflow file yet.
 
 ```bash
 pip install -e ".[dev,mcp]"
@@ -15,11 +16,11 @@ python -m skeletonkey.mcp         # stdio server: 29 tools, prompts, resources
 
 Measured on this box: 31 tools registered / 29 advertised / **1 829 tokens** of
 advertisement (`digest db550d337473335a`), 10 probed capabilities, 2 skills discovered,
-0 load errors. CI lives at `ci/ci.yml` (the pushing token cannot write to
-`.github/workflows/`; moving it there is a one-line `git mv`). Code: 9 932 lines in `skeletonkey/`, 15 files in `tests/`, 1 726 lines of
-docs (this plan, four contract docs, six ADRs, README). `.github/workflows/ci.yml` runs
-ruff + the suite on ubuntu **and** windows for py3.11/py3.13, plus a job that proves
-ADR-0001 by importing the core with no extras installed.
+0 load errors. Code: 9 932 lines in `skeletonkey/`, 15 files in `tests/`, 1 769 lines of
+docs (this plan, four contract docs, six ADRs, README). No workflow file is committed on
+this branch — the pushing token cannot write to `.github/workflows/`, and the pipeline is
+specified in §6 for whoever lands it (one command reproduces it locally:
+`ruff check . && pytest -q -m "not slow"`).
 
 Contracts live in `docs/` (`TOOL-CONTRACT`, `SHELL-DIALECTS`, `SKILLS-SPEC`,
 `SECURITY-MODEL`), decisions in `docs/adr/`, knobs in `config/skeletonkey.example.toml`,
@@ -500,6 +501,23 @@ before-image latency exceeds the task's budget, ship read-only remote targets fi
 | Skills | `test_skills.py` | frontmatter edge cases, one bad skill cannot hide the rest, bodies never promise missing tools |
 | Tools | `test_tools_builtin.py` | the whole surface through the engine, as a host drives it |
 | Wire | `test_mcp_stdio.py` | raw JSON-RPC subprocess: handshake, list, call, error paths, prompts, resources, clean exit |
+
+### Pipeline spec (not committed as a workflow yet)
+
+Four jobs; the exact commands, so whoever writes `.github/workflows/ci.yml` is transcribing
+rather than re-deciding:
+
+| Job | Matrix / runner | Steps |
+| --- | --- | --- |
+| `core-constraint` | ubuntu-latest, py3.11 | `pip install -e ".[dev]"`, then a stdlib-only import check that **fails if `mcp`, `mcp_types`, `pydantic`, `watchfiles` or `jsonschema` is importable**, then `pytest tests/test_core_contracts.py tests/test_envelope.py tests/test_ledger_redaction.py tests/test_dialects.py`. This is ADR-0001 enforced, not ADR-0001 asserted. |
+| `test` | ubuntu-latest + windows-latest × py3.11 + py3.13 | `pip install -e ".[dev,mcp]"` → `ruff check .` → `pytest -q -m "not slow" --tb=short` → `sk describe` (prints what that host advertises, so a gating regression shows up as a diff in a log line) |
+| `smoke` | ubuntu + windows, py3.11, **`.[mcp]` only** (no dev extra) | `sk --version`, `sk profile`, `sk tools list`, `sk skills list`; then a real turn through the CLI — `fs search`, `fs patch` with an edits file, `grep` the patched file, `fs write` from stdin, `sk shell "echo sentineled" --dialect bash`; then pipe `initialize` + `notifications/initialized` + `tools/list` (protocol `2025-06-18`) into `python -m skeletonkey.mcp --cwd <tmp>` and assert `fs.patch`/`shell.run` came back. All four commands were run locally on Linux before this branch was pushed. |
+| `audit` | ubuntu-latest, `continue-on-error` | `pip-audit` after `pip install -e ".[all]"`; the core declares nothing to audit, so this is advisories in the extras only, and it must not block a docs PR until the floor is pinned in a lockfile |
+
+`windows-latest` starts as `continue-on-error: true` and becomes a gate in P6. That is not
+dodging Windows: most POSIX-only tests self-skip on *environment* (`/bin/bash` missing)
+rather than on a platform marker, and every PowerShell claim has a rendering-level test that
+runs anywhere — so the value of the windows job is finding where the two disagree.
 
 Rules that keep the suite honest: tests assert on behaviour, never on internals; any
 Windows-only path is *either* covered by pure-rendering assertions or marked `win` and
