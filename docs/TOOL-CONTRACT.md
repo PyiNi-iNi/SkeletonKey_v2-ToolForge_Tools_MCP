@@ -49,6 +49,16 @@ reported as `INTERNAL`, which is a bug report you wrote for yourself.
   partial stdout). Never rely on the absence of `data` to mean "nothing happened".
 - `metrics.est_tokens` is charged against `budget.task_max_tokens_out` before the host
   sees the result.
+- `metrics.budget` is the task's budget position *after* this call: `spent`, `limits`,
+  `remaining` (`null` = unlimited) and `exhausted`. The loop's "should I summarize
+  now?" branch is a lookup on `exhausted`, not a guess: the call that crosses a cap
+  reports `exhausted: true` in the same envelope, and the next call is refused with
+  `BUDGET_EXCEEDED` plus a `summarize_and_stop` next action. `est_tokens` is larger
+  than `budget.spent.tokens_out` by the budget block's own cost (it is estimated
+  again after the block is attached).
+- `CallContext.from_config(..., remaining_tokens=N)` lets a host carry its own token
+  budget (an LLM's remaining context): the effective task cap is the *tighter* of
+  config and `N`, so an over-optimistic config cannot spend the loop's money.
 - `warnings` is for truthful-but-non-fatal facts (truncation, provider fallback,
   "content had changed since this entry wrote it"). A warning never fails a call, and a
   failure never hides inside a warning.
@@ -56,6 +66,57 @@ reported as `INTERNAL`, which is a bug report you wrote for yourself.
   `{"inlined": …, "spilled": true, "total_bytes": N}` plus an `artifacts[]` entry whose
   `path` holds the **complete** payload and whose `fetch_rest` is a legal `fs.read`
   call. The payload is never cut mid-JSON.
+
+### Path provenance (`via`)
+
+Every `fs.*` result that resolves a path carries `data.via`: the provenance of the
+resolution, so a host can see *where* a path landed without re-deriving it.
+
+```jsonc
+"via": { "root": "/ws",                                  // which declared root matched
+         "symlink": { "hops": ["/ws/a", "/ws/b"],        // each link target, in order
+                      "final": "/ws/b" },                // the fully resolved path
+         "long_path": "\\\\?\\C:\\…",                    // Windows long-path rewrite, when one
+         "notes": ["resolved through symlink to b"] }    // human-readable, when relevant
+```
+
+`via.root` is always present; the other keys appear only when they describe something.
+The block is diagnostic, not a security decision — containment was already enforced
+against the resolved target, and `follow_symlinks = "never"` is refused with
+`SANDBOX_VIOLATION` before any result exists.
+
+### Background jobs: a first-class turn shape
+
+`shell.run {background: true}` returns `data.job_id` and `data.next_call` (the exact
+`shell.job_wait` invocation), so a loop can branch on them without parsing hints. Two
+ways to come back, answering different questions:
+
+- `shell.job_wait {job_id, timeout_s, tail_bytes}` — "is it **done**?" Blocks until exit
+  (or the cap) and returns tails + exit code.
+- `shell.job_watch {job_id, until: <regex>, timeout_s, poll_s}` — "is it **ready**?"
+  Blocks until a line of the job's stdout matches `until`; on a match returns
+  `matched_line`, on the cap returns `timed_out: true`. A timeout **leaves the job
+  running** — watching is not killing, and a watch never kills what it was only watching.
+  A job that exits before printing the line returns `running: false` with its exit code,
+  not a timeout. `until` must compile as a regular expression (`BAD_ARGS` if not).
+
+### Streaming on the MCP wire
+
+Two optional channels let a host that renders a live turn see what is happening *during*
+a call, without polling. Both are notifications on the same stdio channel; a host that
+does not render them simply never asked for them.
+
+- **Per-call log (`notifications/message`).** With the server started at
+  `--log-level debug`, every `tools/call` streams one log notification:
+  `level: "debug"`, `logger: "skeletonkey"`, `data: {tool, ok, ms, tokens, error_code}`.
+  The flag is the host's opt-in — below debug the channel stays quiet, and a logging
+  failure never turns a successful call into a failed one.
+- **Progress (`notifications/progress`).** A client that sends a `progressToken` in the
+  request's `_meta` and calls a tool that can scan a large tree (`fs.search`, `fs.glob`)
+  gets an immediate `progress: 0` acknowledgement, then pings of elapsed seconds while
+  the scan is alive. The value is indeterminate on purpose: a tree walk's total is
+  unknown until it finishes, and a made-up total would be a lie with a number on it.
+  No token, no pings — progress is never unsolicited.
 
 ## 3. Errors
 
@@ -95,11 +156,54 @@ Every refusal names the fix. "Permission denied" without an advice string is a b
 carries booleans (`destructive`, `reversible`, `idempotent`, `parallel_safe`,
 `open_world`, `stateful`) that the engine, MCP annotations and the cache read.
 
-Resolution order in `Engine._authorize`: `tools.disable` → `deny` rules (never
-overridable) → `dry_run` → approval (`escalate`, `require_approval`, `auto_approve`,
-`confirm_destructive`, approver callback) → profile gate. A throwing approver is treated
-as `INTERNAL`, never as consent. `grant_options` are `once | task | session | deny`; a
-grant becomes `grant:<tool>` in `ctx.granted` and the same token replays the call.
+Gate stage (`_guard_gate`): `tools.disable` → `policy.read_only` withholding → profile
+gate. Authorize stage (`_authorize`), in order: **deny rules** → **escalation** →
+**rate limits** → `dry_run` preview → approval (allow rules → approval token →
+`auto_approve` → `read_only` re-check → approver callback). A throwing approver is
+treated as `INTERNAL`, never as consent. `grant_options` are `once | task | session |
+deny`; a grant becomes `grant:<tool>` in `ctx.granted` and the same token replays the
+call.
+
+## 4b. Policy rules and approval UX
+
+Rules as data: `[[policy.rule]]` tables (grammar in `core/policy.py`) plus the legacy
+`policy.deny` strings, `policy.escalate` list and `policy.rate_limits` map all compile
+to one rule list; a malformed rule is reported in the engine's policy errors and
+skipped, never guessed at.
+
+- **Deny is the first thing read** in the authorize stage - before any token, grant or
+  flag could be consulted - and stays non-overridable. A deny rule can key on the tool
+  (id or glob), a path glob (`paths`, tested against path-ish args and their
+  basenames), an argv prefix (`argv_prefix`, tested against the `argv` array arg -
+  content that merely *mentions* a word is not a match), or env-var *names* (`env`
+  globs over the keys of the `env` arg). On a `script`/`command` argument, `paths`
+  globs additionally match the path-like tokens *inside* the text (`cat .env` is
+  caught by `paths = ["**/.env*"]`) — but for deny/escalate rules only; allow rules
+  never scan free-form content. Every denial carries `details.rule` (the rule
+  text including its `reason`), `details.matched` (which argument, which pattern) and
+  an advice string: a refusal without the rule and a fix is a bug.
+- **Allow** removes only the approval requirement for the matched call shape; it never
+  clears a deny, never overrides `policy.read_only`, and the decision is echoed in
+  `metrics.policy_allow` so the receipt shows which rule said yes.
+- **Rate limits** are sliding windows per tool (`policy.rate_limits`; default
+  `fs.delete` at 20 per `rate_window_s` = 60). A call that crosses the limit is
+  `BUDGET_EXCEEDED` *before dispatch* - the tool does not run - with the rule named in
+  `details.exceeded`, `details.retry_after_s`, and a `summarize_and_stop` next action.
+  Previews do not burn slots. A second breaker caps *successful* mutations per rolling
+  60s per engine (`policy.max_mutations_per_minute`), whatever the per-task caps say.
+- **Prompts show intent.** `APPROVAL_REQUIRED.details.prompt` carries `diff_preview`
+  for write-risk tools: `fs.write` gets a unified diff against the current file (or a
+  new-file marker), `fs.patch` gets its edits applied dry-run, and any other mutating
+  tool with a `content` arg gets the head of it. The human approves intent, not a hash.
+  Best-effort: a preview that cannot be computed is omitted, never fatal.
+- **Grants are receipts.** `policy.grant {tool, scope}` records a grant in the calling
+  task's context, returns `data.receipt` (`granted_by`, `tool`, `scope`, `task_id`,
+  `session_id`, `ts`) and writes its own ledger row - the audit shows who approved
+  what. A grant for a tool that itself requires approval is itself approval-gated, and
+  the approver sees the target in the prompt (`args_preview` carries `tool` +
+  `scope`): that is what closes the unattended self-grant hole. A grant for a tool the
+  caller could already run is record-keeping and needs no ceremony. Grants live in the
+  `CallContext`, so a `task` grant does not outlive the task.
 
 ## 5. `dry_run` is a promise
 
@@ -158,17 +262,54 @@ could not be read while recording, the entry carries `meta.undo_reliable: false`
 refuses with `CONFLICT` rather than restoring the dataclass default: "unknown" and `0o644`
 are different facts, and confusing them opens a file somebody locked.
 
+### Undo with a precondition: `expect_sha`
+
+`fs.undo` accepts `expect_sha` (a sha256, full or the 16-char prefix that `fs.read`
+returns): the undo proceeds only while the file still holds that content, otherwise
+`CONFLICT` — the same precondition `fs.write`'s `expect_sha` enforces at write time,
+applied at rollback time. Without it the P1 behaviour is unchanged: the undo proceeds
+and appends a divergence warning when the file had moved on.
+
+### Redo
+
+`fs.redo {path?}` re-applies the most recently *undone* change, optionally limited to one
+path, and journals the redo itself — the result carries a fresh `undo_token`, so undo and
+redo can ping-pong. A redo is never a silent overwrite: a file that changed after the
+undo, a path that was re-created, a destination that exists again, or a pruned
+after-image is a `CONFLICT` that says which state broke. Entries that predate after-image
+capture (or lost it to pruning) refuse the redo instead of guessing; a fresh
+`fs.journal_list` shows what is still reversible.
+
+### Deletion tiers
+
+`fs.delete` honours `fs.trash`: `journal` (default) journals then hard-deletes;
+`os-trash` journals *and* moves the path to the platform recycle bin (`gio trash`
+on Linux/macOS, PowerShell `Shell.Application` on Windows), so the OS bin is emptied
+without the change becoming irreversible; `delete` is hard and unjournaled. A
+host with no trash API under `os-trash` gets `UNSUPPORTED_PLATFORM` and deletes
+nothing — the refusal happens before anything is recorded, so there is no journal
+entry for a deletion that never happened. The result echoes `mode` (and `trash`
+for the os-trash tier).
+
 ## 7. Composition and caching
 
 - Tools may call other tools through `engine.call` (that is how `registry.search` and the
   skill loader reuse the registry). Budgets, policy and the ledger apply per inner call;
   the ledger therefore holds one row per *tool* call, not per turn.
+- Every ledger row carries a `context_receipt`: `exposed_results` (the advertised set the
+  host could call at that moment), `withheld` (every registered tool it could NOT, with
+  the gate's own reasons — the per-call mirror of the per-tool discovery receipt, so a
+  replay or an eval can read after the fact *why an agent never saw a tool*), and
+  `stop_reason` (`ok` or the error code). It is inside the hash chain.
 - The idempotency cache (5 s TTL) applies only when
   `idempotent ∧ ¬is_mutating ∧ stateful == "none"`. A pure read that reflects live state
   (`shell.sessions`, `fs.journal_list`, `registry.stats`) must set `stateful: "session"`
   — otherwise a polling agent is served its own last answer and calls it fresh.
 - `idempotency_key` (call-level) collapses retries of the same logical mutation; the key
   is part of the cache key and of `registry.stats` attribution, never a security control.
+- A successful **mutation retires every cached read** (the cache key carries a mutation
+  generation that bumps on each mutating call): the search → patch → search-again verify
+  loop must read the new state, never the pre-patch answer served from cache.
 
 ## 7b. Skill-authored tools
 
@@ -199,6 +340,78 @@ Two reservations worth knowing before you write a skill:
 * a tool that wants `dry_run` to be honoured must declare the property itself. That declaration
   is the author's promise that the script writes nothing; the engine stops guessing, which is
   also why `policy.read_only` refuses a skill tool that did not declare it.
+
+## 7c. Replay and eval (the autopilot integration surface)
+
+`toolkit.plan(task)` is the loop's entry point: a ranked shortlist of tools
+(deterministic lexical ranking - P5 adds the optional semantic stage), the skills
+matched to the task, the exact budgets to charge, and a replayable `sk call`
+invocation per shortlist row. The loop consumes `plan()` + the ledger's
+`context_receipt` and stops calling tools through ad-hoc glue.
+
+- **Recording.** `RunRecorder` appends full envelopes to a JSONL run recording,
+  one step per line, and snapshots the workspace's *start* state to
+  `<recording>.baseline` before the first step - a mutation run changes the tree,
+  so a replay must start where the run started, not where it ended.
+- **Replay.** `sk replay <recording|task>` re-executes the steps in a scratch copy
+  of the baseline (the original is never touched) and diffs the envelopes.
+  Normalization is **explicit, not fuzzy**: volatile keys (`run_id`, `trace_id`,
+  `ts`, `started`, `elapsed_s`, `wall_s`, `duration_ms`, `est_tokens`, `bytes_out`,
+  `mtime`, `atime`) are dropped wherever they occur; the workspace/state roots are
+  rewritten to `<WS>`/`<STATE>`; journal `und_<hash>` tokens - per-call identities -
+  are rewritten. A tool that declared itself `stateful` (session or host) is held
+  to `ok` + error code only: its data may reflect live state, which is exactly what
+  the declaration promised. Anything else is diffed byte-for-byte.
+- **Eval.** `sk eval --suite tests/eval/*.jsonl` scores scripted tasks (one JSON
+  object per line: `id`, `setup`, `steps`, `expect`). A step's args may reference
+  an earlier step's data as `"$<step>.data.<path>"` - the only way a static script
+  can use a `job_id` or token it can only know after the fact. The report scores
+  task success, calls/task, tokens/task, and the refusal-then-recovery rate.
+
+The ledger keeps exactly one row per call (asserted across the replay), and every
+row's `context_receipt` records what the host could and could not call at that
+moment - so after the fact, an eval can read *why* an agent never saw a tool.
+
+## 7d. Publishing: the write-only store and placeholder injection
+
+The `pub.*` group (nine tools) ships credentials to a publish without letting the
+agent *see* them again. The contract, enforced by code and tested at the wire:
+
+- **The store is write-only to the agent.** `pub.store_put {id, kind, value}`
+  persists to a JSON file **outside the workspace roots** (default
+  `<user config dir>/skeletonkey/publish/store.json`, mode `0600` best-effort,
+  override `[publish] store_path`). The fs sandbox is the wall: `fs.*` tools
+  cannot read or write the store at all. No `pub.*` tool returns a raw value —
+  `pub.store_list`/`store_put` return metadata plus a short non-inverting mask
+  (`ab…YZ(19)`). The only path a value leaves the process is `pub.inject`.
+- **Secrets in args are redacted by name, declared on the manifest.**
+  `pub.store_put` declares `secret_args: ["value"]`; the engine replaces exactly
+  those keys with `***REDACTED***` before the ledger row is written (a second
+  backstop: `redact_obj` also masks bare `value`-named keys). A test asserts the
+  raw value appears in **no** ledger row.
+- **Placeholders are `{{PUB.<id>}}`** (id grammar `[a-z0-9][a-z0-9._-]{0,63}`).
+  `pub.placeholders {path?}` reports every occurrence with **exact
+  file/line/column**, the bound store id, and `bound`/`missing` status, plus
+  `ready_to_publish`. Files that policy denies are *skipped with a note*, not a
+  fatal error — a protected file is a statement that the agent may not touch it.
+- **`pub.inject` is a two-pass write with no partial publishes.** Pass 1 reads
+  every file and plans every replacement; if any marker's store id is missing,
+  it raises `ENOENT` (listing the missing ids) **before a single byte is
+  written**. Pass 2 writes only changed files through `fs.write` with
+  `expect_sha`, so each write is conflict-detected and journaled. `dry_run`
+  returns the plan and writes nothing. `bindings` maps a marker id to a
+  different store id (maps to stored credentials).
+- **Undo scope is the call, not the session.** Every engine call carries its own
+  `task_id`, so the result's `undo` block points at `fs.undo_task {task_id}` —
+  reverts exactly this injection's files, nothing the agent did before. Per-file
+  `undo_token`s are still in `data.written[]` for token-granular rollbacks.
+- **The knowledge tools are static data, not memory.** `pub.platforms` /
+  `pub.payments` / `pub.packaging` surface `skeletonkey/publish_data.py`
+  (single source of truth: console/docs URLs, steps, credential kinds,
+  placeholder examples). `pub.testers` returns a machine-executable release
+  test plan — steps as tool calls or commands with acceptance lines and
+  on-fail behavior — that references `{{PUB.<id>}}` placeholders and never raw
+  secrets.
 
 ## 8. Adding a tool
 

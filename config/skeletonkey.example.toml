@@ -30,7 +30,7 @@ newline = "preserve"              # preserve | lf | crlf | native (native = per-
 encoding = "utf-8"
 reject_device_names = true        # CON/NUL/COM1 on Windows are files you can hang on
 long_path_prefix = true           # \\?\ past 259 chars on Windows
-trash = "journal"                 # journal (undoable) | delete | off
+trash = "journal"                 # journal (undoable) | os-trash (recycle bin + journal) | delete (hard, unjournaled)
 # backup_suffix = ".bak"          # default: none
 allow_dotfiles = true
 # Defaults, written out so you can edit them rather than guess. Patterns are anchored
@@ -52,6 +52,31 @@ confirm_destructive = true        # false + "destructive" in auto_approve = unat
 escalate = []                     # tool or group ids forced to risk=privileged
 max_timeout_s = 900               # caps a handler's own timeout_s
 deny_outside_roots = true
+# Per-tool rate limits: tool id (or glob) -> max calls per rate_window_s.
+# The built-in default keeps a bulk-delete loop from erasing a workspace
+# before the per-task caps get a chance to say anything.
+rate_limits = { "fs.delete" = 20 }
+rate_window_s = 60
+# Mutation circuit breaker: at most this many *successful* mutating calls per
+# rolling 60s on one engine, whatever the task caps say. 0 disables it.
+max_mutations_per_minute = 120
+# Structured rules (see core/policy.py for the grammar). `action` is one of
+# deny | allow | escalate | rate_limit; matchers are a conjunction of
+# `paths` (globs on path-ish args), `argv_prefix` (prefixes of the `argv`
+# array arg) and `env` (globs of `env` arg names). Deny is absolute: no
+# approval token, grant or allow rule overrides it, and every refusal carries
+# the rule text plus this `reason`, so a denial is a statement an agent can
+# act on instead of a wall.
+# [[policy.rule]]
+# action = "deny"
+# tool = "shell.run"
+# argv_prefix = [["git", "push", "--force"], ["rm", "-rf"]]
+# reason = "not on this host; destructive git operations go through the review queue"
+# [[policy.rule]]
+# action = "allow"
+# tool = "shell.run"
+# argv_prefix = [["git", "status"], ["git", "diff"]]
+# reason = "read-only git inspection, safe unattended"
 
 # ------------------------------------------------------------------ budget
 # The envelope is bounded before it reaches the model, so an oversized `cat` can

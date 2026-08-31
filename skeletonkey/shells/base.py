@@ -18,6 +18,7 @@ Non-obvious decisions baked in here (each learned from real agent-run failures):
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -530,6 +531,40 @@ class ShellRunner:
                 "exit_code_from_sentinel": (parsed.rc if parsed else None),
                 "stdout_tail": parsed.head if parsed else out,
                 "stderr_tail": decode_clixml(_read_tail(job.err_path, tail_bytes))[0]}
+
+    def job_watch(self, job_id: str, *, until: str, timeout: float = 30.0,
+                  poll_s: float = 0.5, tail_bytes: int = 8000) -> dict[str, Any]:
+        """Poll a background job's stdout until a line matches `until` (a regular
+        expression), or the timeout cap is reached. It only *watched*, so it never
+        kills or disturbs the job: a timeout leaves it running."""
+        job = self.job(job_id)
+        try:
+            rx = re.compile(until)
+        except re.error as exc:
+            raise SkeletonKeyError(E.BAD_ARGS, f"`until` is not a valid regular expression: {exc}") from None
+        t0 = time.monotonic()
+        deadline = t0 + timeout
+        while True:
+            content = _read_tail(job.out_path, 1_000_000)  # scan a bounded window, every poll
+            matched = next((ln.strip() for ln in content.splitlines() if rx.search(ln)), None)
+            if matched is not None:
+                return {"job_id": job_id, "matched_line": matched, "timed_out": False,
+                        "running": job.running, "exit_code": job.poll(),
+                        "elapsed_s": round(time.monotonic() - t0, 2),
+                        "stdout_tail": _read_tail(job.out_path, tail_bytes)}
+            if not job.running:
+                # it exited before printing the line: it never will
+                return {"job_id": job_id, "matched_line": None, "timed_out": False,
+                        "running": False, "exit_code": job.poll(),
+                        "elapsed_s": round(time.monotonic() - t0, 2),
+                        "stdout_tail": _read_tail(job.out_path, tail_bytes)}
+            if time.monotonic() >= deadline:
+                # the cap: report it and LEAVE THE JOB RUNNING — watching is not killing
+                return {"job_id": job_id, "matched_line": None, "timed_out": True,
+                        "running": job.running, "exit_code": job.poll(),
+                        "elapsed_s": round(time.monotonic() - t0, 2),
+                        "stdout_tail": _read_tail(job.out_path, tail_bytes)}
+            time.sleep(min(poll_s, max(0.05, deadline - time.monotonic())))
 
     def job_kill(self, job_id: str, *, tree: bool = True) -> dict[str, Any]:
         job = self.job(job_id)

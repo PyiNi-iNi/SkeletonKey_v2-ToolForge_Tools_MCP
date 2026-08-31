@@ -82,6 +82,35 @@ def test_fs_read_on_a_directory_points_at_fs_list(writable_toolkit):
     assert any(a.get("tool") == "fs.list" for a in r.next_actions)
 
 
+def test_fs_read_result_carries_via_provenance(writable_toolkit):
+    eng = writable_toolkit.engine
+    ws = writable_toolkit.workspace
+    root = os.path.realpath(str(ws))
+    # direct path: the matched root, and nothing else
+    r = call(eng, "fs.read", path="src/pkg/mod.py")
+    assert r.ok, r.error
+    assert r.data["via"] == {"root": root}
+    # through a symlink: the hop and the final file are named
+    target = ws / "src" / "real_target.py"
+    target.write_text("x = 1\n", encoding="utf-8")
+    link = ws / "src" / "alias_mod.py"
+    try:
+        os.symlink(str(target), str(link))
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks unavailable")
+    r2 = call(eng, "fs.read", path="src/alias_mod.py")
+    assert r2.ok, r2.error
+    assert r2.data["content"] == "x = 1\n", "the default policy follows in-root links"
+    via = r2.data["via"]
+    assert via["symlink"]["hops"] == [str(target.resolve())]
+    assert via["symlink"]["final"] == str(target.resolve())
+    # writes and deletes echo it too
+    w = call(eng, "fs.write", path="src/prov.txt", content="p\n")
+    assert w.ok and w.data["via"]["root"] == root
+    d = call(eng, "fs.delete", path="src/prov.txt")
+    assert d.ok and d.data["via"]["root"] == root
+
+
 def test_fs_read_outside_the_root_is_refused(writable_toolkit):
     r = call(writable_toolkit.engine, "fs.read", path="../../etc/passwd")
     assert not r.ok and r.error.code == "SANDBOX_VIOLATION"
@@ -241,6 +270,119 @@ def test_undo_accepts_either_argument_name(writable_toolkit):
     assert r.data["undone"] is True
     missing = call(eng, "fs.undo", dry_run=True)
     assert not missing.ok and missing.error.code == "BAD_ARGS"
+
+
+def test_fs_undo_stale_expect_sha_is_a_conflict_and_touches_nothing(writable_toolkit):
+    eng = writable_toolkit.engine
+    ws = writable_toolkit.workspace
+    w = call(eng, "fs.write", path="guard.txt", content="v1\n")
+    assert w.ok, w.error
+    # a second change makes the file hold something other than the stale sha
+    w2 = call(eng, "fs.write", path="guard.txt", content="v2\n")
+    assert w2.ok, w2.error
+    r = call(eng, "fs.undo", token=w2.data["undo_token"], expect_sha="deadbeefdeadbeef")
+    assert not r.ok and r.error.code == "CONFLICT"
+    assert (ws / "guard.txt").read_text(encoding="utf-8") == "v2\n", "the file must be untouched"
+    # the token is still live - the sha the file actually holds (as fs.read returns it)
+    read = call(eng, "fs.read", path="guard.txt")
+    assert read.ok, read.error
+    ok = call(eng, "fs.undo", token=w2.data["undo_token"], expect_sha=read.data["sha256"])
+    assert ok.ok, ok.error
+    assert ok.data["undone"] is True
+    assert (ws / "guard.txt").read_text(encoding="utf-8") == "v1\n"
+
+
+def test_fs_undo_without_expect_sha_keeps_the_p1_warning(writable_toolkit):
+    eng = writable_toolkit.engine
+    ws = writable_toolkit.workspace
+    (ws / "warn.txt").write_text("base\n", encoding="utf-8")
+    w = call(eng, "fs.write", path="warn.txt", content="agent\n")
+    assert w.ok, w.error
+    (ws / "warn.txt").write_text("human edit\n", encoding="utf-8")
+    r = call(eng, "fs.undo", token=w.data["undo_token"])
+    assert r.ok, r.error
+    assert r.data["undone"] is True, "the P1 behaviour is unchanged: undo still goes through"
+    assert any("changed since" in n for n in r.data.get("warnings", [])), \
+        "the divergence warning is still there, pinned as a regression"
+    assert (ws / "warn.txt").read_text(encoding="utf-8") == "base\n"
+
+
+def test_fs_redo_reapplies_the_most_recent_undone_change(writable_toolkit):
+    eng = writable_toolkit.engine
+    ws = writable_toolkit.workspace
+    w = call(eng, "fs.write", path="redo.txt", content="v1\n")
+    assert w.ok, w.error
+    u = call(eng, "fs.undo", token=w.data["undo_token"])
+    assert u.ok, u.error
+    # v1 was a create (the path did not exist), so undoing it removes the file
+    assert not (ws / "redo.txt").exists()
+    r = call(eng, "fs.redo")
+    assert r.ok, r.error
+    assert r.data["redone"] is True and r.data["action"] == "create"
+    assert r.data["undo_token"], "the redo is journaled and therefore undoable again"
+    assert (ws / "redo.txt").read_text(encoding="utf-8") == "v1\n"
+    back = call(eng, "fs.undo", token=r.data["undo_token"])
+    assert back.ok, back.error
+    assert not (ws / "redo.txt").exists()
+
+
+def test_fs_redo_of_a_write_change_round_trips(writable_toolkit):
+    eng = writable_toolkit.engine
+    ws = writable_toolkit.workspace
+    (ws / "w.txt").write_text("before\n", encoding="utf-8")
+    w = call(eng, "fs.write", path="w.txt", content="after\n")
+    assert w.ok, w.error
+    u = call(eng, "fs.undo", token=w.data["undo_token"])
+    assert u.ok, u.error
+    assert (ws / "w.txt").read_text(encoding="utf-8") == "before\n"
+    r = call(eng, "fs.redo")
+    assert r.ok, r.error
+    assert r.data["redone"] is True and r.data["action"] == "write"
+    assert (ws / "w.txt").read_text(encoding="utf-8") == "after\n"
+
+
+def test_fs_redo_refuses_to_roll_over_drift_and_is_path_filtered(writable_toolkit):
+    eng = writable_toolkit.engine
+    ws = writable_toolkit.workspace
+    (ws / "a.txt").write_text("a0\n", encoding="utf-8")
+    (ws / "b.txt").write_text("b0\n", encoding="utf-8")
+    wa = call(eng, "fs.write", path="a.txt", content="a1\n")
+    wb = call(eng, "fs.write", path="b.txt", content="b1\n")
+    assert wa.ok and wb.ok
+    call(eng, "fs.undo", token=wb.data["undo_token"])
+    call(eng, "fs.undo", token=wa.data["undo_token"])
+    (ws / "a.txt").write_text("drifted\n", encoding="utf-8")
+    # path-filtered: b redoes even though a is the one that drifted
+    rb = call(eng, "fs.redo", path="b.txt")
+    assert rb.ok, rb.error
+    assert (ws / "b.txt").read_text(encoding="utf-8") == "b1\n"
+    assert (ws / "a.txt").read_text(encoding="utf-8") == "drifted\n"
+    # the remaining undone change is a's, and the redo must refuse the drift
+    r = call(eng, "fs.redo")
+    assert not r.ok and r.error.code == "CONFLICT"
+    assert (ws / "a.txt").read_text(encoding="utf-8") == "drifted\n", "file untouched by the refusal"
+
+
+def test_fs_redo_with_nothing_undone_is_enoent(writable_toolkit):
+    r = call(writable_toolkit.engine, "fs.redo")
+    assert not r.ok and r.error.code == "ENOENT"
+    assert "nothing to redo" in (r.error.message + json.dumps(r.error.details))
+
+
+def test_fs_redo_dry_run_reports_without_touching(writable_toolkit):
+    eng = writable_toolkit.engine
+    ws = writable_toolkit.workspace
+    w = call(eng, "fs.write", path="dryredo.txt", content="v1\n")
+    assert w.ok, w.error
+    u = call(eng, "fs.undo", token=w.data["undo_token"])
+    assert u.ok, u.error
+    r = call(eng, "fs.redo", dry_run=True)
+    assert r.ok, r.error
+    assert r.data["dry_run"] is True and r.data["would_redo"] == "create"
+    assert not (ws / "dryredo.txt").exists(), "dry_run must not write"
+    # the entry is still there for the real redo
+    r2 = call(eng, "fs.redo")
+    assert r2.ok and (ws / "dryredo.txt").exists()
 
 
 def test_delete_dir_without_recursive_is_refused_with_advice(writable_toolkit):
@@ -673,6 +815,116 @@ def test_read_only_mode_plans_instead_of_writing_and_still_previews(workspace):
     prev = eng.call("fs.write", {"path": "nope.txt", "content": "x", "dry_run": True})
     assert prev.ok, prev.error
     assert prev.data["dry_run"] is True and not (workspace / "nope.txt").exists()
+
+
+# ------------------------------------------------------- policy.grant (P3)
+def test_policy_grant_records_a_receipt_for_a_safe_target(writable_toolkit):
+    """A grant for a tool the caller could already run is record-keeping: it
+    goes through without an approver and hands back a receipt the ledger shows."""
+    eng = writable_toolkit.engine
+    ctx = CallContext(task_id="grant-task", cwd=str(writable_toolkit.workspace))
+    r = eng.call("policy.grant", {"tool": "fs.write", "scope": "task"}, ctx=ctx)
+    assert r.ok, r.error
+    d = r.data
+    assert d["granted"] is True and d["approval_token"] == "grant:fs.write"
+    assert "grant:fs.write" in ctx.granted
+    assert d["target_risk"] == "write"
+    assert d["receipt"]["granted_by"] == "no approval required for this target"
+    assert d["receipt"]["task_id"] == "grant-task" and d["receipt"]["ts"]
+
+
+def test_policy_grant_for_a_destructive_target_is_itself_approval_gated(workspace):
+    """The hole this tool closes: an unattended self-grant for a destructive
+    tool. With an approver the grant records who decided; without one it is
+    refused with a reason, and a declining approver is final."""
+    (workspace / "victim.txt").write_text("x\n", encoding="utf-8")
+    base = {"roots": [str(workspace)], "state": {"dir": str(workspace / ".sk")},
+            "log_level": "ERROR"}
+
+    tk_auto = build(config=Config.load(cwd=str(workspace),
+                                       overrides={**base, "policy": {"auto_approve": ["none", "read"]}}),
+                    approver=lambda req: True)
+    ctx = CallContext(task_id="g1", cwd=str(workspace))
+    r = tk_auto.engine.call("policy.grant", {"tool": "fs.delete", "scope": "task"}, ctx=ctx)
+    assert r.ok, r.error
+    assert r.data["target_risk"] == "destructive"
+    assert r.data["receipt"]["granted_by"] == "approver callback"
+    assert "grant:fs.delete" in ctx.granted
+    # and the grant does what a grant is for: the destructive call now passes
+    ok = tk_auto.engine.call("fs.delete", {"path": "victim.txt"}, ctx=ctx)
+    assert ok.ok, ok.error
+    assert not (workspace / "victim.txt").exists()
+    tk_auto.close()
+
+    tk_none = build(config=Config.load(cwd=str(workspace), overrides=base))
+    r2 = tk_none.engine.call("policy.grant", {"tool": "fs.delete", "scope": "task"},
+                             ctx=CallContext(task_id="g2", cwd=str(workspace)))
+    assert not r2.ok and r2.error.code == "APPROVAL_REQUIRED"
+    assert "approver" in r2.error.details["advice"]
+
+    tk_decline = build(config=Config.load(cwd=str(workspace), overrides=base),
+                       approver=lambda req: False)
+    r3 = tk_decline.engine.call("policy.grant", {"tool": "fs.delete", "scope": "task"},
+                                ctx=CallContext(task_id="g3", cwd=str(workspace)))
+    assert not r3.ok and r3.error.code == "APPROVAL_REQUIRED"
+    assert "declined" in r3.error.message
+    tk_none.close()
+    tk_decline.close()
+
+
+def test_policy_grant_unknown_target_suggests(writable_toolkit):
+    r = writable_toolkit.engine.call("policy.grant", {"tool": "fs.reed", "scope": "task"},
+                                     ctx=CallContext(task_id="g4"))
+    assert not r.ok and r.error.code == "UNKNOWN_TOOL"
+    assert "fs.read" in json.dumps(r.error.details.get("suggested", []))
+
+
+def test_approval_prompt_carries_real_args_and_a_diff_preview(workspace):
+    """args_preview must show the call's *values* (an Exception subclass once
+    returned a tuple of the dict's keys for this field), and write-risk
+    approvals carry what will change."""
+    (workspace / "f.txt").write_text("line one\nline two\n", encoding="utf-8")
+    cfg = Config.load(cwd=str(workspace), overrides={
+        "roots": [str(workspace)], "state": {"dir": str(workspace / ".sk")}, "log_level": "ERROR",
+        "policy": {"require_approval": ["write", "destructive"], "auto_approve": ["none", "read"]}})
+    eng = build(config=cfg).engine
+
+    r = eng.call("fs.write", {"path": "f.txt", "content": "line one\nLINE TWO\n"})
+    assert r.error.code == "APPROVAL_REQUIRED"
+    prompt = r.error.details["prompt"]
+    assert "f.txt" in prompt["args_preview"] and "LINE TWO" in prompt["args_preview"], \
+        "args_preview shows values, not the argument names"
+    assert prompt["diff_preview"] and "-line two" in prompt["diff_preview"] \
+        and "+LINE TWO" in prompt["diff_preview"]
+
+    newf = eng.call("fs.write", {"path": "brand-new.txt", "content": "fresh\n"})
+    assert "(new file" in newf.error.details["prompt"]["diff_preview"]
+
+    patch = eng.call("fs.patch", {"path": "f.txt",
+                                  "edits": [{"old_text": "line one", "new_text": "LINE ONE"}]})
+    assert "+LINE ONE" in patch.error.details["prompt"]["diff_preview"]
+
+
+def test_fs_delete_burst_hits_the_default_rate_limit(writable_toolkit):
+    """Acceptance 2 (PLAN P3), at the scale the plan specifies: a burst of 21
+    `fs.delete` calls. The 21st is BUDGET_EXCEEDED, `details.exceeded` names
+    the rule, and the over-limit delete is *not executed*."""
+    eng = writable_toolkit.engine
+    ws = writable_toolkit.workspace
+    for i in range(21):
+        r = call(eng, "fs.write", path=f"burst/{i}.txt", content=f"i={i}\n")
+        assert r.ok, r.error
+    for i in range(20):
+        r = call(eng, "fs.delete", path=f"burst/{i}.txt")
+        assert r.ok, r.error
+        assert r.data["deleted"] is True and r.data["undo_token"]
+    last = call(eng, "fs.delete", path="burst/20.txt")
+    assert last.error.code == "BUDGET_EXCEEDED", "the 21st delete in 60s crosses the default 20/min"
+    assert any("rate_limit fs.delete" in x and "policy.rate_limits['fs.delete']" in x
+               for x in last.error.details["exceeded"]), last.error.details["exceeded"]
+    assert last.error.details["retry_after_s"] > 0
+    assert (ws / "burst" / "20.txt").exists(), "the over-limit call must not have run"
+    assert last.next_actions and last.next_actions[0]["action"] == "summarize_and_stop"
 
 
 # ------------------------------------------------------------------ skills tools

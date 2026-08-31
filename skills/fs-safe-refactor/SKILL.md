@@ -10,7 +10,7 @@ version: "1"
 tags: [filesystem, refactor, safety, undo]
 priority: 65
 requires: [fs]
-allowed-tools: [fs.read, fs.write, fs.patch, fs.search, fs.glob, fs.list, fs.stat, fs.move, fs.delete, fs.mkdir, fs.chmod, fs.undo, fs.undo_task, fs.journal_list]
+allowed-tools: [fs.read, fs.write, fs.patch, fs.search, fs.glob, fs.list, fs.stat, fs.move, fs.delete, fs.mkdir, fs.chmod, fs.undo, fs.redo, fs.undo_task, fs.journal_list, policy.grant]
 ---
 
 # Safe filesystem changes
@@ -95,6 +95,7 @@ Each mutation returns `undo_token`; the batch id is the `task_id` on the context
 fs.journal_list {task_id}          # what we would undo, newest first
 fs.undo {undo_token}               # one change
 fs.undo_task {task_id}             # every change in the task, in reverse order
+fs.redo {path?}                    # re-apply the most recently undone change
 ```
 
 `fs.delete` embeds `{"undo": ...}` in its data - delete is *not* permanent while the
@@ -103,6 +104,12 @@ metadata for writes/patches/deletes/moves; directories are snapshotted as a tar.
 Inline snapshots cover files ≤96 KB; larger files keep a shadow copy. If
 `fs.undo` says the shadow copy is gone (a `prune` happened), rebuild from VCS
 instead of improvising - and say which you did.
+
+If the undo was the mistake, `fs.redo` re-applies the last undone change - the redo is
+journaled itself (fresh `undo_token`), so undo/redo can ping-pong. It refuses with
+`CONFLICT` instead of overwriting when the file changed after the undo or the path was
+re-created. When undoing with the file open in another tool, pass `expect_sha` (the sha
+from the last `fs.read`) so a stale rollback is a `CONFLICT`, not a silent clobber.
 
 A permission change is a mutation too. `fs.chmod {path, mode}` journals the previous
 *bits* rather than a copy of the file, so the same `undo_token` puts them back, and an
@@ -121,6 +128,28 @@ a file edit.
   any flag, and `SANDBOX_VIOLATION` means "wrong root", not "try harder". Adding a
   root is a human decision; report the path you needed and stop.
 
+## 7b. When a call asks for permission
+
+- `APPROVAL_REQUIRED` is a *pause*, not a failure: the envelope's `prompt` carries
+  a `diff_preview` of what would change (for writes), an `approve_token`, and
+  `grant_options`. Replay the call with the token after the approval, or record a
+  standing grant with `policy.grant {tool, scope: "task"}` so the rest of the task
+  stops re-asking. A grant for a tool that itself needs approval is approval-gated
+  too, and its receipt (`data.receipt`) records who decided.
+- `DENY_RULE` names the rule in `error.details.rule`, which argument matched in
+  `details.matched`, and the operator's `reason` when one was written. Deny is not
+  negotiable by any token or flag: if a deny rule blocks the work, report the rule
+  and the need, and stop — do not route around it with another tool spelling the
+  same action.
+- `BUDGET_EXCEEDED` with `details.exceeded` naming a `rate_limit` means the tool
+  crossed its per-minute window (default: `fs.delete` at 20 per 60s): wait
+  `details.retry_after_s`, or batch the work into fewer calls. The mutation
+  breaker trips the same way across tools — when it does, summarize what you have
+  done rather than retrying.
+- Every result carries `metrics.budget` — the task's position after the call.
+  `exhausted` flips on the very call that crosses a cap: that result is your last
+  real answer — fold it in and summarize.
+
 ## 8. Batch etiquette for autopilots
 
 1. Discover the target set once (`fs.glob`/`fs.search`), don't re-derive per file.
@@ -134,6 +163,11 @@ formatter, a codegen step) in the same batch: the second edit's `expect_sha` wil
 conflict, and by then you have partially reformatted code. Order: generate, then
 read, then patch.
 
+Plan and prove the turn: `toolkit.plan(task)` ranks tools, skills, and budgets;
+`RunRecorder` + `sk replay` re-runs the recording in a scratch copy and diffs the
+envelopes; `sk eval` scores scripted task sets (details:
+`references/undo-and-journal.md`). A mutation retires every cached read.
+
 ## Quick reference
 
 | Situation | Call |
@@ -145,5 +179,9 @@ read, then patch.
 | new file | `fs.write {overwrite: false, create_dirs: true}` |
 | move/rename | `fs.move` (journals both sides) |
 | remove a scratch dir | `fs.delete {recursive: true}` (undo holds it) |
+| host wants a recycle bin | the `trash` setting under `[fs]`: `journal` \| `os-trash` \| `delete` |
 | "undo that" | `fs.undo_task {task_id}` |
+| "redo that" / the undo was wrong | `fs.redo {path?}` (journaled itself) |
+| undo a file that may have moved on | `fs.undo {token, expect_sha: <last read sha>}` |
+| asked to approve | replay with the `approve_token`, or `policy.grant {tool, scope: "task"}` |
 | not sure it's text | `fs.sniff` first |

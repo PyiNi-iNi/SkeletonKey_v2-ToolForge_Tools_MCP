@@ -58,6 +58,12 @@ class ToolManifest:
     input_schema: dict[str, Any] = field(default_factory=lambda: {"type": "object", "properties": {}})
     output_schema: dict[str, Any] | None = None
 
+    # secret args: keys of `args` that must never be persisted or logged in
+    # clear text. The engine redacts exactly these in ledger rows; tool
+    # handlers additionally must not echo them in results (the manifest
+    # declaration is the backstop for the audit trail, not a license to print).
+    secret_args: list[str] = field(default_factory=list)
+
     # adaptive metadata
     capability: str = ""                     # "search.text" - what need it fills
     provides: list[str] = field(default_factory=list)   # capabilities this can satisfy

@@ -53,6 +53,7 @@ class SearchOutcome:
     duration_ms: int = 0
     scanned_files: int = 0
     notes: list[str] = field(default_factory=list)
+    via: dict[str, Any] | None = None
 
     def to_dict(self, *, max_hits: int = 200) -> dict[str, Any]:
         shown = self.hits[:max_hits]
@@ -63,6 +64,7 @@ class SearchOutcome:
                 "scanned_files": self.scanned_files, "duration_ms": self.duration_ms,
                 "next": ({"tool": "fs.search", "args": {"pattern": self.pattern, "limit": max_hits * 2}}
                          if len(self.hits) > max_hits else None),
+                **({"via": self.via} if self.via else {}),
                 **({"notes": self.notes} if self.notes else {})}
 
 
@@ -107,6 +109,7 @@ class SearchBackend:
                                word=word, context=context, glob=glob, limit=limit, max_bytes=max_bytes,
                                multiline=multiline, files_with_matches=files_with_matches)
         out.duration_ms = int((time.monotonic() - t0) * 1000)
+        out.via = root.via()
         return out
 
     # ------------------------------------------------------------------ ripgrep
@@ -226,8 +229,10 @@ class SearchBackend:
         base = root.real
         for dirpath, dirnames, filenames in os.walk(base, followlinks=False):
             rel_dir = os.path.relpath(dirpath, base).replace(os.sep, "/")
-            dirnames[:] = [d for d in dirnames if not d.startswith(".")
-                           and not self.sb.should_ignore(_join(rel_dir, d))]
+            # sorted walk: an agent's search must return the same order on every
+            # host and in a replay, whatever the filesystem's directory order is
+            dirnames[:] = sorted(d for d in dirnames if not d.startswith(".")
+                                 and not self.sb.should_ignore(_join(rel_dir, d)))
             for fn in sorted(filenames):
                 rel = _join(rel_dir, fn)
                 if self.sb.should_ignore(rel) or (grx and not grx.search(rel.lower())):

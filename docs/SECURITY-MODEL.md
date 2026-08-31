@@ -1,35 +1,38 @@
 # Security model
 
-Scope: `skeletonkey` as shipped in P0–P2 (35 tools registered, 33 advertised —
-`shell.run`, `fs.*`, and the two tools synthesized from a skill pack). Written from the
-code, not ahead of it; each layer names the file that implements it and the test that
-pins it.
+Scope: `skeletonkey` as shipped in P0–P3 (37 tools registered, 35 advertised —
+`shell.selftest` is never advertised, and `skills.install` stays hidden while the
+install gate is closed). Written from the code, not ahead of it; each layer names the
+file that implements it and the test that pins it.
 
 ## Adversary and trust boundary
 
 The threat we design against is **a misled autonomous agent**, not an attacker who has
 already compromised the process:
 
-| We protect | From |
-| --- | --- |
-| files outside `roots` | an agent that "just tidies up" `~/.bashrc` |
-| secret-bearing paths (`.env`, keys) | an agent that reads them into the context window |
-| the context window | one `cat` of a 4 GB log (byte budget, spill artifact) |
-| the user's work-in-progress | an agent that edits 60 files wrong (journal + `undo_task`) |
-| the audit trail | a rerun that cannot explain itself (hash-chained ledger) |
-| the host process | a runaway loop (`budget.task_max_calls`, timeouts, kill-tree) |
+| We protect | From | Test |
+| --- | --- | --- |
+| files outside `roots` | an agent that "just tidies up" `~/.bashrc` | `test_sandbox.py`, `test_mcp_stdio.py::test_sandbox_escape_is_a_tool_error_not_a_broken_connection` |
+| secret-bearing paths (`.env`, keys) | an agent that reads them into the context window | `test_sandbox.py`, `test_ledger_redaction.py` |
+| the context window | one `cat` of a 4 GB log (byte budget, spill artifact) | `test_envelope.py::test_budget_spills_large_data_to_artifact` |
+| the user's work-in-progress | an agent that edits 60 files wrong (journal + `undo_task`) | `test_journal.py`, `test_fs_ops.py` |
+| the audit trail | a rerun that cannot explain itself (hash-chained ledger) | `test_ledger_redaction.py` |
+| the host process | a runaway loop (`budget.task_max_calls`, timeouts, kill-tree) | `test_engine_policy.py::test_call_budget_is_a_hard_stop_with_summarize_and_stop`, `test_policy_property.py` |
 
-| We do **not** protect | Because |
-| --- | --- |
-| containment of `shell.run` payloads | running arbitrary commands **is** the tool; see §Gaps |
-| a hostile process/user with our config | `policy.deny` is non-overridable *per call*, not per file |
-| multi-tenant isolation | single-user, local (Non-goals) |
-| OS-level sandboxing | no seccomp/nsjail/Job Objects (Non-goals, ADR) |
+| We do **not** protect | Because | Test |
+| --- | --- | --- |
+| containment of `shell.run` payloads | running arbitrary commands **is** the tool; script-content rules match path *tokens* in the text, not arbitrary command grammar | `test_policy_property.py` (the walls that *do* exist hold `shell.run` too), `test_engine_policy.py::test_deny_script_content_secret_path_blocks_shell_run` |
+| a hostile process/user with our config | `policy.deny` is non-overridable *per call*, not per file | `test_engine_policy.py::test_deny_rule_cannot_be_negotiated` (per-call) |
+| multi-tenant isolation | single-user, local (Non-goals) | — (non-goal, no test) |
+| OS-level sandboxing | no seccomp/nsjail/Job Objects (Non-goals, ADR) | — (non-goal, no test) |
 
 `fs.deny` is a **policy on `fs.*`**, not a wall around the machine: `shell.run {script:
-"cat ~/.ssh/id_rsa"}` will read it, because the shell opens the file itself. Anyone who
-needs that blocked must add a policy rule on script content (weak), run the agent as a
-separate user, or run it in a container. This is stated here rather than discovered later.
+"cat ~/.ssh/id_rsa"}` will read it, because the shell opens the file itself. A policy
+rule on script content closes the common case - `paths` globs are also matched against
+the path-like tokens *inside* the text, so `paths = ["**/id_rsa*"]` (deny or escalate)
+blocks that exact call and nothing else; arbitrary command grammar is out of reach, so
+the full answers remain: run the agent as a separate user, or run it in a container.
+This is stated here rather than discovered later.
 
 ## The layers, in evaluation order
 
@@ -42,9 +45,13 @@ separate user, or run it in a container. This is stated here rather than discove
    `SANDBOX_VIOLATION` with `details.roots`. `policy.deny_outside_roots = true` is not
    relaxable by a call argument.
    `fsx/sandbox.py` · `tests/test_sandbox.py`
-2. **Symlink policy.** `fs.follow_symlinks = "within-roots"` (default) resolves the final
-   target and re-checks it against the roots, so `link → /etc/passwd` is refused while
-   repo-internal links keep working. `never` refuses any link; `always` is opt-in.
+2. **Symlink policy + provenance.** `fs.follow_symlinks = "within-roots"` (default)
+   resolves the final target and re-checks it against the roots, so `link → /etc/passwd`
+   is refused while repo-internal links keep working. `never` refuses any link; `always`
+   is opt-in. Every `fs.*` result echoes where the path landed in `data.via` (matched
+   root, each symlink hop, the resolved final target), so a host sees a traversal instead
+   of guessing at one; the default policy is exercised on a real link in
+   `tests/test_sandbox.py::test_follow_symlinks_within_roots_follows_an_in_root_link`.
 3. **`fs.deny`** (12 default globs: `.env`, `.env.*`, `id_rsa`, `id_ed25519`, `.ssh/**`,
    `*.pem`, `*.key`, `credentials`, `.gitconfig`, `.aws/credentials`, `.netrc`,
    `secrets.*`) — refused with `DENY_RULE` naming the pattern; unreadable *and*
@@ -61,12 +68,16 @@ separate user, or run it in a container. This is stated here rather than discove
    `AUX`, `NUL`, `COM1`…, trailing dots/spaces that silently truncate on write);
    `fs.long_path_prefix = true` (the `\\?\` prefix is applied for the syscall and
    stripped from the returned logical path so a drive-letter path never comes back mangled).
-6. **`policy.deny`** — `tool-id-or-glob(arg-glob)` rules evaluated before everything else
-   in `_authorize`, before any approval token, and reported as
-   `{"advice": "deny rules cannot be overridden per-call by design"}`. Defaults:
-   `fs.delete(**/.ssh/**)`, `fs.delete(**/cookies*)`. The glob is tested against every
-   string argument, plus the basename of path-ish keys.
-   `core/engine.py::_match_deny`
+6. **Policy rules as data.** `[[policy.rule]]` entries (action = deny | allow |
+   escalate | rate_limit; matchers for tool globs, path globs, argv prefixes, env
+   *names*) plus the legacy spellings (`deny` strings, `escalate` list) compile to
+   `CompiledPolicy` in `core/policy.py` and are evaluated in `_authorize` before any
+   handler and before any approval token. A deny is reported as
+   `{"advice": "deny rules cannot be overridden per-call by design"}` and outranks an
+   allow for the same call; a malformed rule is reported and skipped, never guessed.
+   Defaults: `fs.delete(**/.ssh/**)`, `fs.delete(**/cookies*)`. The glob is tested
+   against every string argument, plus the basename of path-ish keys.
+   `core/policy.py`, `core/engine.py::_match_deny` · `tests/test_engine_policy.py`
 7. **`policy.read_only`.** Plan mode, not a gag: mutating tools are *withheld from
    advertisement* (so a host cannot pick one by accident) **and** refused at dispatch
    (`READ_ONLY_MODE` + `details.plan`) unless the tool declares a `dry_run` property, in
@@ -80,24 +91,55 @@ separate user, or run it in a container. This is stated here rather than discove
    intent, not the payload. Grants are `once | task | session | deny`; a `task`/`session`
    grant becomes `grant:<tool>` in `ctx.granted` and is echoed in
    `metrics.approval_grant` so a reviewer can see it in the ledger. **An approver
-   callback that throws is `INTERNAL`, never consent.**
-9. **Escalation.** `policy.escalate = ["fs.write", …]` re-risks tools at *dispatch* time
-   (not advertisement time, so `tools/list` stays stable across a mid-task config edit).
+   callback that throws is `INTERNAL`, never consent.** P3 makes the prompt show
+   intent, not just arguments: write-risk prompts carry `diff_preview` (a unified diff
+   for `fs.write` against the current file, dry-run-applied edits for `fs.patch`) and
+   `args_preview` shows *values* (a `BaseException.args` trap had silently turned it
+   into argument names since P0 — regression-pinned). And approval is a tool, not a
+   side channel: `policy.grant {tool, scope}` records a grant in the calling task's
+   context and returns a `receipt` (`granted_by, tool, scope, task_id, session_id, ts`)
+   plus its own ledger row; a grant for a tool that itself needs approval is
+   approval-gated, which is what closes the unattended self-grant hole.
+   `core/engine.py`, `tools/builtin.py` · `tests/test_tools_builtin.py`,
+   `tests/test_mcp_stdio.py::test_policy_grant_over_the_wire`
+9. **Escalation.** `policy.escalate = ["fs.write", …]` (or a `[[policy.rule]]` with
+   `action = "escalate"`) re-risks tools at *dispatch* time (not advertisement time, so
+   `tools/list` stays stable across a mid-task config edit); a `policy.grant` for the
+   tool is re-evaluated at the escalated risk.
+   `tests/test_engine_policy.py::test_escalate_rule_reevaluates_risk_only_for_matched_calls`
 10. **Budget.** `max_output_bytes` (spill, never truncation), `max_result_tokens`,
     `task_max_calls` / `task_max_mutations` / `task_max_wall_s` / `task_max_tokens_out`,
     `budget.max_read_bytes` / `budget.max_write_bytes`, `shell.timeout_s` (hard kill + tree kill,
     `+2 s` slack so the sentinel wins the race), `shell.max_output_bytes`.
-    `BUDGET_EXCEEDED` names `details.exceeded[]`.
+    `BUDGET_EXCEEDED` names `details.exceeded[]`. P3 adds per-tool `rate_limit` rules —
+    the default ships `fs.delete` ≤ 20 per 60 s — and a mutation-burst breaker: a call
+    past the limit is `BUDGET_EXCEEDED` naming `details.exceeded` (the rule) and is not
+    executed, and previews are not charged.
+    `tests/test_engine_policy.py::test_rate_limit_refuses_before_dispatch_and_names_the_rule`,
+    `::test_mutation_burst_breaker_stops_a_runaway`, `::test_default_rate_limit_covers_fs_delete`
 11. **Reversibility.** `fs.journal = true`: before-images staged under
-    `<state>/journal/shadow/` *before* the write, `undo_token` returned, `fs.undo`
-    refusing to roll over a file it did not change (warns; `expect_sha` in P3 makes it a
-    hard `CONFLICT`), `undo_task` for whole-turn retract. Deleting removes the file, and
-    the shadow copy is kept until `state.keep_snapshots` pruning.
+    `<state>/journal/shadow/` *before* the write, `undo_token` returned, `undo_task`
+    for whole-turn retract. P3 hardens the rollback itself: `fs.undo {token,
+    expect_sha}` refuses with `CONFLICT` (file untouched) when the file no longer holds
+    the sha the caller recorded — the P1 warn-and-proceed is unchanged without it,
+    regression-pinned; and `fs.redo {path?}` re-applies the last *undone* change,
+    journaled itself (fresh `undo_token`) and refused with `CONFLICT` over a file that
+    drifted since the undo, a re-created path, or a pruned after-image. Deletion honors
+    `fs.trash`: `journal` (default), `os-trash` (platform recycle bin, with the journal
+    as a second copy; a host with no trash API gets `UNSUPPORTED_PLATFORM` and deletes
+    nothing), `delete` (hard, unjournaled). The after-image is retained on disk, so
+    redo survives a restart.
+    `fsx/journal.py`, `fsx/ops.py` · `tests/test_journal.py`, `tests/test_fs_ops.py`,
+    `tests/test_mcp_stdio.py::test_os_trash_tier_over_the_wire`
 12. **Redaction.** `state.redact = true` masks values in everything that persists: ledger
     `result_preview`, `error.message`/`hint`, `details`, dry-run plans, session env dumps.
 13. **Audit.** `<state>/ledger.ndjson`, one row per call, hash-chained; `ledger.verify()`
     reports `broken_at`, and a torn tail line is trimmed on open (a crash must not make the
     whole log unreadable). `ledger.stats()` is agent-visible via `registry.stats`.
+    Every row also carries a `context_receipt` (`exposed_results`, `withheld`,
+    `stop_reason`) inside the chain: the advertised set the host could call, every
+    registered tool it could not with the gate's reasons, and the call's outcome —
+    after the fact, an agent (or an eval) can read *why* it never saw a tool.
 
 ## Secrets handling
 
@@ -131,6 +173,39 @@ lets a host obey `fetch_rest` (it is just `fs.read`, still sandboxed). Point it 
 roots and spilled payloads become unreadable; point it at an unwritable path and the
 envelope degrades honestly — inlined prefix plus `artifacts[].meta.spill_error`, never a
 silent loss.
+
+### The publish store (P4b)
+
+`pub.*` (ADR-0010) adds a credential store for publishing — platform tokens, signing
+keys, OAuth, 2FA, account identifiers — and the honest claims about it:
+
+- **Location is the wall.** The store file lives *outside the workspace roots*
+  (default `<user config dir>/skeletonkey/publish/store.json`, override
+  `[publish] store_path`), so the fs sandbox — not a policy rule — keeps every
+  `fs.*` tool from it. `fs.read` on the store path is a sandbox violation, and a
+  test pins that the default location is outside the roots.
+- **Write-only to the agent.** No tool returns a raw stored value. `pub.store_put`
+  and `pub.store_list` return metadata with a short non-inverting mask
+  (`ab…YZ(19)` — first/last two chars + length, which is guessable for short
+  values and is *not* a substitute for rotation). The only value flow out of the
+  process is `pub.inject`, which writes values into workspace files through the
+  journaled fs layer (undoable).
+- **Secret args are redacted by declaration, not by pattern-matching luck.**
+  `pub.store_put` declares `secret_args: ["value"]` on its manifest; the engine
+  replaces exactly those keys with `***REDACTED***` before the ledger row is
+  written. A second, independent backstop: `redact_obj` (the key-name matcher)
+  now masks bare `value`-named keys too. `tests/test_publish.py` asserts the raw
+  value appears in no ledger row and no envelope.
+- **No partial publishes.** `pub.inject` plans all replacements first; a marker
+  whose store id is missing raises before any write, so a publish never half-
+  happens. `dry_run` writes nothing.
+- **The honest gap: `shell.run`.** The wall is against *fs tools*; a shell command
+  can still `cat` the store file if the user's OS permissions allow it. That is
+  true of every user-level file this toolkit keeps (the journal, the ledger) and
+  is stated here rather than papered over: the store is protected by location
+  and `0600` file permissions, **not** encryption, and there is deliberately no
+  keyring dependency (zero-mandatory-deps). On a shared machine, `0600` does not
+  mean "nobody else can read this" (the NT note above applies).
 
 ## Skills: adding capability at runtime
 
@@ -168,8 +243,9 @@ order the code applies them:
    files/directories. The archive is one we wrote from a directory the agent chose, which is
    precisely when "we wrote it" stops being a security argument.
 7. **What a skill cannot claim.** `risk` stops at `write`; `destructive = true` in a `[[tool]]`
-   is refused outright, and shadowing a built-in id needs `tools.override_builtin`. P3's policy
-   engine is what will make those ceilings configurable instead of hardcoded.
+   is refused outright, and shadowing a built-in id needs `tools.override_builtin`. Those
+   ceilings are hardcoded in `skills/compiler.py`; P3's rule engine gives the engine
+   deny/allow/escalate/rate-limit, but the compiler's ceilings remain fixed (open item).
 
 The residual, stated plainly: with `skills.allow_install = true`, an agent that can write files
 inside the roots can write a skill and then run it. That is why the default is false, why the
@@ -191,27 +267,42 @@ returns `effective` plus `partial_apply` when the bits you asked for did not sti
 success for a permission the OS ignored is the security-relevant part: `0600` on Windows
 does not mean "nobody else can read this".
 
-## Known gaps (P3 closes these)
+## What P3 closed, and the one gap that remains
 
-| Gap | Now | After P3 |
+| Gap | P0–P2 | P3 |
 | --- | --- | --- |
-| `shell.run` script content | deny on `script` glob only (over-matches, so not shipped as a default) | argv-prefix + secret-path matcher, deny stays non-overridable |
-| Rate limits | per-task caps only | per-tool (`fs.delete` ≤ 20/min) + mutation circuit breaker |
-| Undo safety | warns on divergence | `expect_sha` hard `CONFLICT`, `fs.redo` (P3) |
-| Deletion | journal copy | recycle-bin tier (`fs.trash = "os-trash"`) |
-| Grant audit | `metrics.approval_grant` | explicit `policy.grant` (P3) + ledger `receipt` |
+| Rate limits | per-task caps only | per-tool `rate_limit` rules (default: `fs.delete` ≤ 20/min) + a mutation-burst breaker; `BUDGET_EXCEEDED` names the rule and the call does not run |
+| Undo safety | warns on divergence | `expect_sha` hard `CONFLICT`, file untouched (warn-and-proceed unchanged without it); `fs.redo` journaled, drift-refusing, restart-safe |
+| Deletion | journal copy only | `fs.trash` tiers: `journal` \| `os-trash` (recycle bin + journal) \| `delete`; a no-trash host refuses and deletes nothing |
+| Grant audit | `metrics.approval_grant` | `policy.grant` returns a `receipt` + ledger row; a self-grant for a gated tool is itself approval-gated |
+| **`shell.run` script content** | argv-prefix rules + secret-path matcher: `paths` globs match path tokens in script text (deny/escalate only — allow never scans free-form content); deny stays non-overridable | `test_engine_policy.py::test_deny_argv_prefix_blocks_shell_run_even_with_an_approval_token`, `::test_deny_script_content_secret_path_blocks_shell_run`, `::test_escalate_rule_scans_script_content`, `::test_allow_rules_do_not_match_script_content` |
 
 ## Test map
 
 | Claim | Test |
 | --- | --- |
-| `../../../etc/passwd` refused (also over MCP, session survives) | `test_sandbox.py`, `test_mcp_stdio.py` |
-| symlink to outside a root refused | `test_sandbox.py` |
+| `../../../etc/passwd` refused (also over MCP, session survives) | `test_sandbox.py`, `test_mcp_stdio.py::test_sandbox_escape_is_a_tool_error_not_a_broken_connection` |
+| symlink to outside a root refused | `test_sandbox.py::test_symlink_in_parent_directory_also_denied` |
+| default symlink policy follows an in-root link (real link, real test) | `test_sandbox.py::test_follow_symlinks_within_roots_follows_an_in_root_link` |
 | `.env` denied, existence not leaked | `test_sandbox.py`, `test_tools_builtin.py` |
-| deny rule beats an approval token | `test_engine_policy.py` |
-| `read_only` withholds **and** refuses, preview still runs | `test_engine_policy.py`, `test_tools_builtin.py` |
-| throwing approver ≠ consent | `test_engine_policy.py` |
+| deny rule beats an approval token | `test_engine_policy.py::test_deny_argv_prefix_blocks_shell_run_even_with_an_approval_token` |
+| deny rule outranks an allow for the same call | `test_engine_policy.py::test_deny_outranks_an_allow_rule_for_the_same_call` |
+| 21st `fs.delete` in a burst → `BUDGET_EXCEEDED` naming the rule, not executed | `test_tools_builtin.py::test_fs_delete_burst_hits_the_default_rate_limit`, `test_engine_policy.py::test_rate_limit_refuses_before_dispatch_and_names_the_rule` |
+| `read_only` withholds **and** refuses, preview still runs | `test_engine_policy.py::test_read_only_mode_blocks_mutations_with_a_plan`, `test_tools_builtin.py` |
+| throwing approver ≠ consent | `test_engine_policy.py::test_a_throwing_approver_never_counts_as_consent` |
+| grant receipt + self-grant gated on a UI-less host | `test_tools_builtin.py`, `test_mcp_stdio.py::test_policy_grant_unblocks_the_same_connection_with_an_approver` |
+| stale `expect_sha` → `CONFLICT`, file untouched; no `expect_sha` → P1 warning pinned | `test_journal.py::test_undo_with_stale_expect_sha_conflicts_and_touches_nothing`, `test_tools_builtin.py::test_fs_undo_without_expect_sha_keeps_the_p1_warning` |
+| `fs.redo` round-trips write/create/delete/move/chmod/mkdir; drift → `CONFLICT` | `test_journal.py::test_redo_refuses_to_roll_over_a_drifted_file`, `test_mcp_stdio.py::test_fs_redo_and_expect_sha_over_the_wire` |
+| redo survives a restart; after-image pruned → refuse, don't guess | `test_journal.py::test_redo_survives_a_journal_restart`, `::test_redo_of_an_entry_without_after_image_is_a_conflict_not_a_guess` |
+| os-trash: file in the bin, journal second copy after a restart; no-trash host deletes nothing | `test_fs_ops.py::test_os_trash_moves_to_the_recycle_bin_and_keeps_a_journal_copy`, `test_mcp_stdio.py::test_os_trash_tier_over_the_wire` |
+| `read_only` / deny wall ⇒ zero writes for **every** mutating tool | `test_policy_property.py::test_read_only_wall_means_zero_writes`, `::test_deny_rule_wall_means_zero_writes` |
+| `via` provenance: matched root + symlink hops, over the wire | `test_sandbox.py::test_via_reports_root_and_chain_for_multi_hop_links`, `test_mcp_stdio.py::test_fs_read_carries_via_provenance_over_the_wire` |
 | ledger chain detects a 1-byte tamper | `test_ledger_redaction.py` |
 | redaction of 10 secret shapes in both previews and errors | `test_ledger_redaction.py` |
 | spill artifact holds the full payload; unwritable spill dir reports `spill_error` | `test_envelope.py`, `test_tools_builtin.py` |
 | undo works after a process restart | `test_journal.py`, `test_mcp_stdio.py` |
+| publish store is write-only: no tool or ledger row ever carries the raw value | `test_publish.py::test_store_put_result_never_carries_the_value`, `::test_secret_arg_never_reaches_the_ledger`, `test_mcp_stdio.py::test_publish_store_and_inject_over_the_wire` |
+| default store location is outside the workspace roots (fs sandbox is the wall) | `test_publish.py::test_store_path_default_is_outside_the_workspace` |
+| `pub.inject` with an unbound marker writes **no** file (no partial publish) | `test_publish.py::test_inject_refuses_unbound_markers_and_writes_nothing` |
+| `pub.inject` is journaled and reverts via `fs.undo_task` (per-call scope) | `test_publish.py::test_inject_writes_through_the_journal_and_undoes` |
+| policy-denied file (e.g. `.env`) is skipped with a note, not a fatal error | `test_publish.py` (workspace fixture carries a denied `.env`) |

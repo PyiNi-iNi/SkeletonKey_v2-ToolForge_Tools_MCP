@@ -21,6 +21,7 @@ import shutil
 import tarfile
 import time
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import Any
 
 from ..core.errors import E, SkeletonKeyError
@@ -42,12 +43,17 @@ class JournalEntry:
     inline: str | None = None   # base64 of previous content (small files)
     sha_before: str | None = None
     sha_after: str | None = None      # what we were about to write: lets undo detect a clobber
+    # the *after*-image, staged to disk when it is retained: the bytes a redo
+    # re-applies. Always a file (never inlined into the index), so it survives
+    # a restart exactly like the before-shadow does.
+    after_shadow: str | None = None
     existed_before: bool = True
     bytes_before: int = 0
     mode: int = 0o644
     mtime: float = 0.0
     moved_to: str | None = None
     restored: bool = False
+    redone: bool = False
     meta: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -148,16 +154,34 @@ class FsJournal:
         except OSError as exc:
             entry.meta["capture_error"] = str(exc)
             entry.meta["undo_reliable"] = False
+        # The after-image is what a redo re-applies. Retaining it costs one more
+        # shadow copy; entries without it (or that predate the capture) simply
+        # refuse the redo with CONFLICT instead of guessing.
+        try:
+            entry.after_shadow = self._stage_after(upcoming_bytes, entry.token)
+        except OSError as exc:
+            entry.meta["after_capture_error"] = str(exc)
         return self._commit(entry)
 
-    def record_new(self, res: Any, *, action: str = "create", task_id: str = "") -> str:
+    def record_new(self, res: Any, *, action: str = "create", task_id: str = "",
+                   upcoming_bytes: bytes | None = None) -> str:
         entry = self._new_entry(action, res, task_id)
         entry.existed_before = False
         entry.shadow = None
         entry.inline = None
+        # At record time a *directory* already exists (mkdir makedirs first), a
+        # *file* does not yet: that is the fact a redo of a create needs.
+        entry.meta["is_dir"] = bool(getattr(res, "is_dir", False)) or os.path.isdir(
+            getattr(res, "real", ""))
+        if upcoming_bytes is not None:
+            try:
+                entry.after_shadow = self._stage_after(upcoming_bytes, entry.token)
+            except OSError as exc:
+                entry.meta["after_capture_error"] = str(exc)
         return self._commit(entry)
 
-    def record_meta(self, res, *, action: str = "chmod", task_id: str = "") -> str:
+    def record_meta(self, res, *, action: str = "chmod", task_id: str = "",
+                    mode_after: int | None = None) -> str:
         """Journal a metadata-only change: no content moved, so there is no before-image to
         keep - the previous mode *is* the before-image.
 
@@ -178,6 +202,8 @@ class FsJournal:
             entry.mode = bits
             entry.mtime = _mtime(res.real)
             entry.meta["mode_before"] = bits
+        if mode_after is not None:
+            entry.meta["mode_after"] = mode_after
         return self._commit(entry)
 
     def record_delete(self, res: Any, *, recursive: bool = False, task_id: str = "") -> str:
@@ -218,6 +244,8 @@ class FsJournal:
             self._order.remove(entry.token)
         if entry and entry.shadow:
             _rm(entry.shadow)
+        if entry and entry.after_shadow:
+            _rm(entry.after_shadow)
 
     # ---------------------------------------------------------------------- undo
     def _refuse_if_disabled(self) -> None:
@@ -232,7 +260,8 @@ class FsJournal:
             next_actions=[{"tool": "fs.journal_list", "args": {}, "note": "confirms enabled: false"}],
         )
 
-    def undo(self, token: str, *, dry_run: bool = False) -> dict[str, Any]:
+    def undo(self, token: str, *, dry_run: bool = False,
+             expect_sha: str | None = None) -> dict[str, Any]:
         self._refuse_if_disabled()
         entry = self._entries.get(token)
         if entry is None:
@@ -243,6 +272,8 @@ class FsJournal:
             )
         if entry.restored:
             return {"token": token, "undone": False, "note": "already undone", "action": entry.action}
+        if expect_sha:
+            self._check_expect_sha(entry, expect_sha)
         plan = self._plan(entry)
         if dry_run:
             return {"token": token, "dry_run": True, "plan": plan, "action": entry.action,
@@ -278,6 +309,222 @@ class FsJournal:
         return {"task_id": task_id, "undone": len(results), "failed": failures, "results": results,
                 **({"dry_run": True} if dry_run else {}),
                 **({} if dry_run else {"note": "reverse order applied; later edits to the same file win"})}
+
+    def _check_expect_sha(self, entry: JournalEntry, expect_sha: str) -> None:
+        """The clobber guard for undo: proceed only if the path still holds the
+        state the caller recorded.
+
+        `fs.read` hands back the first 16 hex chars of the sha256, so the
+        comparison is a 16-char-prefix match on either side. If the content no
+        longer matches, someone (or something) edited the file after this change
+        and an undo would silently roll their work over - refuse instead.
+        """
+        current = _sha_file(entry.abs_path) if os.path.isfile(entry.abs_path) else None
+        if current is None:
+            raise SkeletonKeyError(
+                E.CONFLICT, f"{entry.path} no longer exists; the state you recorded is already gone",
+                details={"token": entry.token, "path": entry.path, "expected_sha": expect_sha,
+                         "actual_sha": None,
+                         "advice": "if you just undid this change, fs.redo re-applies it; "
+                                   "otherwise re-read the tree and decide what should be there"},
+            )
+        if not current.startswith(expect_sha[:16]):
+            raise SkeletonKeyError(
+                E.CONFLICT, f"{entry.path} does not hold the content you recorded",
+                details={"token": entry.token, "path": entry.path, "expected_sha": expect_sha,
+                         "actual_sha": current[:16],
+                         "advice": "the file was modified after this change; re-read it, re-decide, "
+                                   "and re-undo with the fresh sha"},
+            )
+
+    # ---------------------------------------------------------------------- redo
+    def redo(self, path: str | None = None, *, dry_run: bool = False) -> dict[str, Any]:
+        """Re-apply the most recent undone change (the mirror of undo).
+
+        Only an entry that is currently *restored* (i.e. already undone) is
+        eligible, so redo can never be chained onto a live change. The redo
+        itself is journaled - it returns a fresh undo token - and anything that
+        no longer holds (file drifted since the undo, after-image pruned, path
+        re-created) is a CONFLICT, not a silent overwrite.
+        """
+        self._refuse_if_disabled()
+        entry = None
+        for token in reversed(self._order):
+            e = self._entries[token]
+            if not e.restored:
+                continue
+            if path is not None and path not in (e.path, e.abs_path) \
+                    and os.path.normpath(path) != e.abs_path:
+                continue
+            entry = e
+            break
+        if entry is None:
+            where = f" for {path}" if path else ""
+            raise SkeletonKeyError(
+                E.ENOENT, f"nothing to redo{where}",
+                details={"path": path,
+                         "advice": "fs.redo re-applies the most recently undone change" + where
+                                   + "; the journal has no undone entry to replay"},
+            )
+        if dry_run:
+            return {"token": entry.token, "dry_run": True, "would_redo": entry.action,
+                    "action": entry.action, "path": entry.path}
+        return self._redo_apply(entry)
+
+    def _res_for(self, path: str, display: str) -> Any:
+        return SimpleNamespace(real=path, display=display,
+                               is_dir=os.path.isdir(path), exists=os.path.exists(path), abs=path)
+
+    def _after_image(self, entry: JournalEntry, purpose: str) -> bytes:
+        if not entry.after_shadow or not os.path.exists(entry.after_shadow):
+            raise SkeletonKeyError(
+                E.CONFLICT, f"the after-image of this change is not retained, so it cannot be {purpose}",
+                details={"path": entry.path, "token": entry.token,
+                         "advice": "the journal pruned it, or the entry predates after-capture - "
+                                   "re-apply the change by hand and let the journal record it"},
+            )
+        with open(entry.after_shadow, "rb") as fh:
+            return fh.read()
+
+    @staticmethod
+    def _write_bytes(path: str, data: bytes) -> None:
+        tmp = f"{path}.sk-redo"
+        try:
+            with open(tmp, "wb") as fh:
+                fh.write(data)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(tmp, path)
+        finally:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+
+    def _redo_apply(self, entry: JournalEntry) -> dict[str, Any]:
+        target = entry.abs_path
+        plan = {"target": target, "display": entry.path, "entry": entry, "action": entry.action}
+        if entry.action in ("write", "patch"):
+            after = self._after_image(entry, "re-applied")
+            if not os.path.isfile(target):
+                raise SkeletonKeyError(
+                    E.CONFLICT, f"{entry.path} no longer exists; redoing a write would be a create",
+                    details={"path": entry.path, "token": entry.token,
+                             "advice": "write the file again with fs.write so the change is journaled"},
+                )
+            if entry.sha_before and not _sha_file(target).startswith(entry.sha_before[:16]):
+                raise SkeletonKeyError(
+                    E.CONFLICT, f"{entry.path} changed after the undo; redoing would roll over that edit",
+                    details={"path": entry.path, "token": entry.token,
+                             "expected_sha": entry.sha_before[:16], "actual_sha": _sha_file(target)[:16],
+                             "advice": "re-read the file and re-derive the change against what is there now"},
+                )
+            res = self._res_for(target, entry.path)
+            new_token = self.record_before(res, after, action="write", task_id=entry.task_id)
+            self._approve(target, "write", plan)
+            self._write_bytes(target, after)
+        elif entry.action in ("create", "mkdir"):
+            if os.path.exists(target):
+                raise SkeletonKeyError(
+                    E.CONFLICT, f"{entry.path} exists again; redoing a create would clobber it",
+                    details={"path": entry.path, "token": entry.token,
+                             "advice": "remove it first, or apply the original change by hand"},
+                )
+            if entry.meta.get("is_dir"):
+                self._approve(target, "write", plan)
+                os.makedirs(target, exist_ok=True)
+                # makedirs first, then record - the same order ops.mkdir uses, so
+                # the redo entry carries is_dir=true for the next undo/redo round-trip.
+                new_token = self.record_new(self._res_for(target, entry.path), task_id=entry.task_id)
+            else:
+                after = self._after_image(entry, "re-created")
+                res = self._res_for(target, entry.path)
+                new_token = self.record_new(res, task_id=entry.task_id, upcoming_bytes=after)
+                self._approve(target, "write", plan)
+                self._write_bytes(target, after)
+        elif entry.action == "delete":
+            if not os.path.exists(target):
+                raise SkeletonKeyError(
+                    E.CONFLICT, f"{entry.path} is already gone; there is nothing to re-delete",
+                    details={"path": entry.path, "token": entry.token,
+                             "advice": "the undo brought it back and it was deleted again - "
+                                       "check fs.journal_list for the later entry"},
+                )
+            res = self._res_for(target, entry.path)
+            new_token = self.record_delete(res, recursive=bool(entry.meta.get("recursive", False)),
+                                           task_id=entry.task_id)
+            self._approve(target, "delete", plan)
+            try:
+                if os.path.isdir(target) and not os.path.islink(target):
+                    if entry.meta.get("recursive"):
+                        shutil.rmtree(target)
+                    else:
+                        os.rmdir(target)
+                else:
+                    os.unlink(target)
+            except OSError as exc:
+                self.discard(new_token)
+                raise SkeletonKeyError(E.IO, f"could not re-delete {entry.path}: {exc}",
+                                       details={"path": entry.path}) from exc
+        elif entry.action == "move":
+            src = entry.moved_to
+            if not os.path.exists(target):
+                raise SkeletonKeyError(
+                    E.CONFLICT, f"{entry.path} is not at its undone location; the move cannot be redone",
+                    details={"path": entry.path, "token": entry.token,
+                             "advice": "re-read the tree and re-run fs.move by hand"},
+                )
+            if src and os.path.exists(src):
+                raise SkeletonKeyError(
+                    E.CONFLICT, f"the move's original destination {src} exists again; redoing would clobber it",
+                    details={"path": entry.path, "token": entry.token,
+                             "advice": "resolve the destination first, or move by hand"},
+                )
+            dst_res = SimpleNamespace(abs=src,
+                                      display=entry.meta.get("dst_display", os.path.basename(src or "")),
+                                      exists=False)
+            new_token = self.record_move(self._res_for(target, entry.path), dst_res,
+                                         task_id=entry.task_id)
+            self._approve(target, "write", plan)
+            self._approve(src, "write", plan)
+            try:
+                os.makedirs(os.path.dirname(src) or ".", exist_ok=True)
+                shutil.move(target, src)
+            except OSError as exc:
+                self.discard(new_token)
+                raise SkeletonKeyError(E.IO, f"could not re-move {entry.path}: {exc}",
+                                       details={"path": entry.path}) from exc
+        elif entry.action == "chmod":
+            want = entry.meta.get("mode_after")
+            if want is None:
+                raise SkeletonKeyError(
+                    E.CONFLICT, "this entry records no mode to re-apply",
+                    details={"path": entry.path, "token": entry.token,
+                             "advice": "set the mode explicitly with fs.chmod"},
+                )
+            if not os.path.exists(target):
+                raise SkeletonKeyError(
+                    E.CONFLICT, f"{entry.path} no longer exists; the mode has nowhere to go",
+                    details={"path": entry.path, "token": entry.token},
+                )
+            new_token = self.record_meta(self._res_for(target, entry.path), task_id=entry.task_id,
+                                         mode_after=want)
+            self._approve(target, "write", plan)
+            try:
+                os.chmod(target, want)
+            except OSError as exc:
+                self.discard(new_token)
+                raise SkeletonKeyError(E.IO, f"could not re-apply the mode on {entry.path}: {exc}",
+                                       details={"path": entry.path, "mode": oct(want)}) from exc
+        else:
+            raise SkeletonKeyError(E.CONFLICT, f"the journal has no redo for a {entry.action!r} entry",
+                                   details={"token": entry.token, "action": entry.action})
+        entry.restored = False
+        entry.redone = True
+        self._rewrite_index()
+        return {"token": entry.token, "redone": True, "action": entry.action, "path": entry.path,
+                "undo_token": new_token,
+                "undo": {"tool": "fs.undo", "args": {"token": new_token}}}
 
     def _plan(self, entry: JournalEntry) -> dict[str, Any]:
         """What restoring this entry means, without touching the disk yet."""
@@ -466,6 +713,8 @@ class FsJournal:
             entry = self._entries.pop(token, None)
             if entry and entry.shadow:
                 _rm(entry.shadow)
+            if entry and entry.after_shadow:
+                _rm(entry.after_shadow)
             removed += 1
         self._order = self._order[over:]
         self._rewrite_index()
@@ -509,6 +758,15 @@ class FsJournal:
         os.makedirs(os.path.dirname(dst), exist_ok=True)
         with open(dst, "wb") as fh:
             fh.write(base64.b64decode(entry.inline))
+        return dst
+
+    def _stage_after(self, data: bytes, token: str) -> str:
+        # Always a file, never inlined into the index line: an after-image can be
+        # the whole new file, and the index is a JSONL that agents read.
+        dst = os.path.join(self.shadow_dir, f"{token}__after")
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        with open(dst, "wb") as fh:
+            fh.write(data)
         return dst
 
     def _copy_shadow(self, path: str, token: str) -> str:

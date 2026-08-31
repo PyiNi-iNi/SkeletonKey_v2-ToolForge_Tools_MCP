@@ -129,6 +129,48 @@ def strip_ansi(text: str) -> str:
     return ANSI_RE.sub("", text)
 
 
+# ---------------------------------------------------------------------- globs
+# Shared by the policy engine (core/policy.py) and the engine's gate/deny
+# matching: one implementation, so a rule's `**` cannot mean different things
+# in the two places that refuse a call.
+
+_GLOB_CACHE: dict[str, re.Pattern[str]] = {}
+
+
+def glob_to_re(glob: str) -> re.Pattern[str]:
+    """fnmatch-ish with `**` spanning separators; `**/...` also matches the tail."""
+    out: list[str] = []
+    i = 0
+    while i < len(glob):
+        c = glob[i]
+        if c == "*":
+            if glob[i:i + 2] == "**":
+                if glob[i + 2:i + 3] == "/":
+                    out.append("(?:.*/)?")
+                    i += 3
+                    continue
+                out.append(".*")
+                i += 2
+                continue
+            out.append("[^/]*")
+            i += 1
+            continue
+        if c == "?":
+            out.append("[^/]")
+        else:
+            out.append(re.escape(c))
+        i += 1
+    return re.compile(r"^(?:" + "".join(out) + r")(?:/.*)?$")
+
+
+def glob_hit(glob: str, candidate: str) -> bool:
+    rx = _GLOB_CACHE.get(glob)
+    if rx is None:
+        rx = glob_to_re(glob)
+        _GLOB_CACHE[glob] = rx
+    return bool(rx.search(candidate))
+
+
 def env_fingerprint(env: dict[str, str] | None = None) -> str:
     """Hash of PATH + key discriminators; used to invalidate probes/caches."""
     import os

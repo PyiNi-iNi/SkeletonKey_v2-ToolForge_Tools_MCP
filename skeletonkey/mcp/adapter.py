@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 from contextlib import asynccontextmanager, suppress
 from typing import Any
 
@@ -186,23 +187,58 @@ def build_server(toolkit: Any, *, include_resources: bool = True, include_prompt
             "sk.registered": len(bridge.engine.registry.all()),
             "sk.selected_providers": snap.selected})
 
+    # tools that can scan a large tree: the client asks for progress by sending a
+    # progressToken in the request's _meta, and the server answers with
+    # notifications/progress while the scan runs (indeterminate: elapsed seconds,
+    # no total - a tree walk's total is unknown until it finishes)
+    PROGRESS_TOOLS = frozenset({"fs.search", "fs.glob"})
+
+    async def _call_with_progress(tool_id: str, args: dict, token: Any, session: Any) -> Any:
+        loop = asyncio.get_running_loop()
+        start = time.monotonic()
+        future = loop.run_in_executor(
+            None, lambda: bridge.engine.call(tool_id, args, ctx=bridge.ctx,
+                                             max_output_bytes=cfg.budget.max_output_bytes))
+        if session is not None:
+            # acknowledge immediately, then ping while the scan is alive: a host
+            # rendering the turn sees "still working" without polling
+            try:
+                await session.send_progress_notification(token, 0)
+            except Exception:                                     # pragma: no cover - defensive
+                pass
+            while not future.done():
+                await asyncio.sleep(0.5)
+                if session is not None and not future.done():
+                    try:
+                        await session.send_progress_notification(token, round(time.monotonic() - start, 1))
+                    except Exception:                             # pragma: no cover - defensive
+                        break
+        return await future
+
     async def on_call_tool(ctx: Any, req: CallToolRequestParams) -> CallToolResult:
         args = dict(req.arguments or {})
         meta = getattr(req, "meta", None)
-        extra = None
-        if meta is not None:
-            extra = getattr(meta, "additional_properties", None) or getattr(meta, "model_extra", None)
-        if isinstance(extra, dict) and isinstance(extra.get("sk"), dict):
-            sk = extra["sk"]
-            if sk.get("task_id"):
-                bridge.ctx.task_id = str(sk["task_id"])
+        extra = meta if isinstance(meta, dict) else (
+            getattr(meta, "additional_properties", None) or getattr(meta, "model_extra", None)
+            if meta is not None else None)
+        progress_token = None
+        if isinstance(extra, dict):
+            if isinstance(extra.get("sk"), dict) and extra["sk"].get("task_id"):
+                bridge.ctx.task_id = str(extra["sk"]["task_id"])
+            progress_token = extra.get("progressToken", extra.get("progress_token"))
         try:
             tool_id = bridge.resolve_name(req.name)
         except SkeletonKeyError as exc:
             return _error_result(exc.err.to_dict(), req.name)
 
-        res = bridge.engine.call(tool_id, args, ctx=bridge.ctx,
-                                 max_output_bytes=cfg.budget.max_output_bytes)
+        session = getattr(ctx, "session", None)
+        if session is not None:
+            bridge.session = session
+        if progress_token is not None and tool_id in PROGRESS_TOOLS and session is not None:
+            res = await _call_with_progress(tool_id, args, progress_token, session)
+        else:
+            res = bridge.engine.call(tool_id, args, ctx=bridge.ctx,
+                                     max_output_bytes=cfg.budget.max_output_bytes)
         payload = res.to_dict(max_bytes=cfg.budget.max_output_bytes, spill_dir=cfg.budget.spill_dir)
         text = compact_json(payload)
         structured = {k: v for k, v in payload.items() if k in ("ok", "data", "error", "hints",
@@ -214,11 +250,21 @@ def build_server(toolkit: Any, *, include_resources: bool = True, include_prompt
         # refresh, `tools.enable`. Push tools/list_changed on the session that made the call
         # instead of polling for a diff nobody asked about, and never let a closed session turn a
         # successful call into a failed one.
-        session = getattr(ctx, "session", None)
         if session is not None:
-            bridge.session = session
             try:
                 await notify_tools_changed(bridge, session)
+            except Exception:                                     # pragma: no cover - defensive
+                pass
+        # The host opted in with --log-level debug: stream this call's outcome as a
+        # notifications/message log line for hosts that render it. Never let a logging
+        # failure turn a successful call into a failed one.
+        if session is not None and cfg.log_level.lower() == "debug":
+            try:
+                await session.send_log_message("debug", {
+                    "tool": tool_id, "ok": res.ok, "ms": res.metrics.duration_ms,
+                    "tokens": res.metrics.est_tokens,
+                    "error_code": res.error.code if res.error else None,
+                }, logger="skeletonkey")
             except Exception:                                     # pragma: no cover - defensive
                 pass
         return CallToolResult(content=[TextContent(type="text", text=text)],

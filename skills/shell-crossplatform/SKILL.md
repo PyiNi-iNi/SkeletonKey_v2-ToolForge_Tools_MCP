@@ -11,7 +11,7 @@ tags: [shell, windows, linux, portability, pwsh, bash]
 priority: 70
 requires: [shell]
 allowed-tools: [shell.run, shell.quote, shell.quote_check, shell.selftest, shell.available,
-                shell.jobs, shell.job_wait, shell.job_kill]
+                shell.jobs, shell.job_wait, shell.job_watch, shell.job_kill]
 ---
 
 # Cross-platform shell calls
@@ -95,10 +95,16 @@ shell.run {script, dialect: "pwsh"}     -> explicit when you know why
 Never `sleep`-poll inside a blocking call. Use:
 
 ```
-shell.run {script: "make -j8", background: true}   -> {job_id}
-shell.job_wait {job_id, timeout_s: 60, tail_bytes: 4000}
-shell.job_kill {job_id}
+shell.run {script: "make -j8", background: true}
+    -> data {job_id, next_call: {tool: "shell.job_wait", ...}}
+shell.job_wait  {job_id, timeout_s: 60, tail_bytes: 4000}   # "is it done?"
+shell.job_watch {job_id, until: "<regex>", timeout_s, poll_s}  # "is it ready?"
+shell.job_kill  {job_id}
 ```
+
+`job_wait` blocks for the exit; `job_watch` blocks for a *line* (a build that prints
+`OK` long before it exits is a `job_watch`). A `job_watch` timeout returns
+`timed_out: true` and leaves the job running — watching never kills.
 
 Timeouts kill the whole process group; the `kill_tree` key in the `[shell]` section of config
 is what turns that off, and a single call cannot choose for itself, because a child that reaps

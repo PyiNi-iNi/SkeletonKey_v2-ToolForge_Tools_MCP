@@ -65,6 +65,9 @@ class Metrics:
     attempts: int = 1
     cached: bool = False
     spill_count: int = 0
+    # the task's budget position after this call (spent/limits/remaining/exhausted):
+    # the agent's "should I summarize now?" branch is a lookup on this, not a guess
+    budget: dict[str, Any] | None = None
     extra: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:

@@ -15,10 +15,11 @@ import os
 from dataclasses import dataclass, field
 from typing import Any
 
-from .core.config import Config
+from .core.config import Config, _user_dir
 from .core.engine import Engine
 from .core.ledger import Ledger
 from .core.profile import CapabilityProfile, Prober
+from .core.publish import PublishStore
 from .core.registry import Registry
 from .fsx.journal import FsJournal
 from .fsx.ops import Fs
@@ -42,6 +43,7 @@ class Toolkit:
     engine: Engine
     skills: SkillLoader
     ledger: Ledger | None = None
+    publish: PublishStore | None = None
     build_report: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -54,6 +56,42 @@ class Toolkit:
         import pathlib
 
         return pathlib.Path(self.config.workspace)
+
+    def plan(self, task: str, *, k: int = 5, skills_limit: int = 3) -> dict[str, Any]:
+        """The autopilot loop's integration surface (P4): everything it needs to plan a turn.
+
+        A ranked shortlist of tools (the deterministic lexical ranking - P5 adds the
+        optional semantic stage), the skills matched to the task, the exact budgets to
+        charge, and a replayable `sk call` invocation per shortlist row. The loop consumes
+        this; that is what ends the ad-hoc glue.
+        """
+        from .core.util import compact_json
+
+        short = self.registry.search(task, limit=max(1, int(k)))
+        rows: list[dict[str, Any]] = []
+        for s in short:
+            man = self.registry.get(s["id"])
+            args = dict(man.examples[0].get("args", {})) if man.examples else {}
+            rows.append({
+                **s,
+                "tokens_estimate": man.tokens_estimate(),
+                "typical_output_bytes": man.typical_output_bytes,
+                "replay": {"tool": man.id, "args": args,
+                           "sk_call": f"sk call {man.id} '{compact_json(args)}'"},
+            })
+        block = self.skills.context_block(task, limit=max(1, int(skills_limit)))
+        cfg = self.config
+        return {
+            "task": task,
+            "shortlist": rows,
+            "skills": block,
+            "budgets": {"task_max_calls": cfg.budget.task_max_calls,
+                        "task_max_mutations": cfg.budget.task_max_mutations,
+                        "task_max_tokens_out": cfg.budget.task_max_tokens_out,
+                        "task_max_wall_s": cfg.budget.task_max_wall_s,
+                        "max_output_bytes": cfg.budget.max_output_bytes,
+                        "per_tool_max_bytes": dict(cfg.budget.per_tool_max_bytes)},
+        }
 
     def describe(self) -> dict[str, Any]:
         snap = self.engine.advertise()
@@ -157,8 +195,15 @@ def build(*, config: Config | None = None, overrides: dict[str, Any] | None = No
     # with the build-time snapshot forever (shell.run would ignore a re-detect).
     engine.attach(search_backends=SearchBackend(sandbox, profile), shells=shells)
 
+    # publish store: user-level by default (outside the workspace roots, so the
+    # fs sandbox cannot reach it). Override via [publish] store_path.
+    store_path = cfg.publish.store_path or os.path.join(_user_dir(), "publish", "store.json")
+    publish_store = PublishStore(store_path)
+    report["publish_store"] = str(publish_store.path)
+
     # 1. built-ins
-    rep = builtin.register(registry, engine=engine, shells=shells, fs=fs, journal=journal)
+    rep = builtin.register(registry, engine=engine, shells=shells, fs=fs, journal=journal,
+                           publish=publish_store)
     report["builtin"] = rep
     # 2. skills -> tool manifests (declarative), and the skills.* tools themselves
     skills = SkillLoader(cfg.skills.dirs, max_body_bytes=cfg.skills.max_body_bytes,
@@ -178,7 +223,8 @@ def build(*, config: Config | None = None, overrides: dict[str, Any] | None = No
             report["entry_points"] = registry.load_entry_points()
     report["registered_after_load"] = len(registry.all())
     return Toolkit(config=cfg, profile=profile, sandbox=sandbox, fs=fs, journal=journal, shells=shells,
-                   registry=registry, engine=engine, skills=skills, ledger=ledger, build_report=report)
+                   registry=registry, engine=engine, skills=skills, ledger=ledger,
+                   publish=publish_store, build_report=report)
 
 
 def _mk_overrides(overrides: dict[str, Any] | None, roots: list[str] | None,

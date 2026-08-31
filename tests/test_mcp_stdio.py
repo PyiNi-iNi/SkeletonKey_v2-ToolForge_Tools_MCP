@@ -269,6 +269,159 @@ def test_method_not_found_is_a_jsonrpc_error(client):
     assert exc.value.code == -32601
 
 
+def test_policy_grant_over_the_wire(client, ws):
+    """The grant is advertised, answers with a receipt for a safe target, and
+    denies-with-reason for a destructive target on a host with no UI (the
+    default stdio posture)."""
+    listing = client.request("tools/list", {})
+    grant = next(t for t in listing["tools"] if t["name"] == "policy.grant")
+    assert set(grant["inputSchema"]["properties"]) == {"tool", "scope"}
+    assert grant["inputSchema"]["required"] == ["tool"]
+
+    safe = client.request("tools/call", {"name": "policy.grant",
+                                         "arguments": {"tool": "fs.write", "scope": "task"}})
+    assert safe["isError"] is False, safe
+    body = _payload(safe)
+    assert body["data"]["granted"] is True
+    assert body["data"]["receipt"]["granted_by"] == "no approval required for this target"
+    assert body["data"]["receipt"]["task_id"]
+
+    (ws / "wired.txt").write_text("x\n", encoding="utf-8")
+    guarded = client.request("tools/call", {"name": "policy.grant",
+                                            "arguments": {"tool": "fs.delete", "scope": "task"}})
+    assert guarded["isError"] is True, guarded
+    gbody = _payload(guarded)
+    assert gbody["error"]["code"] == "APPROVAL_REQUIRED", \
+        "a destructive self-grant on a UI-less stdio host is refused, not a hole"
+    assert (ws / "wired.txt").exists()
+
+
+def test_policy_grant_unblocks_the_same_connection_with_an_approver(ws):
+    """With SKELETONKEY_AUTO_APPROVE=1 (the explicit autopilot dial) the grant
+    records a receipt and the destructive call it covers then passes on the
+    same connection - one ctx, one ledger."""
+    root = ws / "grantws"
+    root.mkdir(exist_ok=True)
+    (root / "victim.txt").write_text("x\n", encoding="utf-8")
+    c = spawn(str(root), "--root", str(root), env={"SKELETONKEY_AUTO_APPROVE": "1"})
+    try:
+        c.start()
+        g = c.request("tools/call", {"name": "policy.grant",
+                                     "arguments": {"tool": "fs.delete", "scope": "task"}})
+        assert g["isError"] is False, g
+        body = _payload(g)
+        assert body["data"]["granted"] is True
+        assert body["data"]["receipt"]["granted_by"] == "approver callback"
+        d = c.request("tools/call", {"name": "fs.delete", "arguments": {"path": "victim.txt"}})
+        assert d["isError"] is False, d
+        assert not (root / "victim.txt").exists(), "the grant must actually cover the call"
+    finally:
+        c.close()
+
+
+def test_fs_redo_and_expect_sha_over_the_wire(client, ws):
+    # advertised with its schema, and the full create -> undo -> redo round trip works
+    listing = client.request("tools/list", {})
+    redo = next(t for t in listing["tools"] if t["name"] == "fs.redo")
+    assert set(redo["inputSchema"]["properties"]) == {"path", "dry_run"}
+    res = client.request("tools/call", {"name": "fs.write",
+                                        "arguments": {"path": "redo-wire.txt", "content": "wire\n"}})
+    assert res["isError"] is False, res
+    token = _payload(res)["data"]["undo_token"]
+    u = client.request("tools/call", {"name": "fs.undo", "arguments": {"token": token}})
+    assert u["isError"] is False, u
+    assert not (ws / "redo-wire.txt").exists(), "undoing a create removes the file"
+    r = client.request("tools/call", {"name": "fs.redo", "arguments": {}})
+    assert r["isError"] is False, r
+    body = _payload(r)
+    assert body["data"]["redone"] is True and body["data"]["action"] == "create"
+    assert body["data"]["undo_token"], "the redo is journaled itself - it comes with a token"
+    assert (ws / "redo-wire.txt").read_text(encoding="utf-8") == "wire\n"
+    # and the fresh token undoes it again, over the same connection
+    back = client.request("tools/call", {"name": "fs.undo",
+                                         "arguments": {"token": body["data"]["undo_token"]}})
+    assert back["isError"] is False, back
+    assert not (ws / "redo-wire.txt").exists()
+    # expect_sha is now part of fs.undo's advertised schema, and a stale sha is a
+    # tool error, not a silent overwrite
+    undo_spec = next(t for t in client.request("tools/list", {})["tools"] if t["name"] == "fs.undo")
+    assert "expect_sha" in undo_spec["inputSchema"]["properties"]
+    res2 = client.request("tools/call", {"name": "fs.write",
+                                         "arguments": {"path": "redo-wire.txt", "content": "v2\n"}})
+    token2 = _payload(res2)["data"]["undo_token"]
+    c = client.request("tools/call", {"name": "fs.undo",
+                                      "arguments": {"token": token2, "expect_sha": "deadbeefdeadbeef"}})
+    assert c["isError"] is True, "a stale sha must refuse"
+    assert "CONFLICT" in json.dumps(_payload(c))
+    assert (ws / "redo-wire.txt").read_text(encoding="utf-8") == "v2\n", "file untouched"
+
+
+def test_os_trash_tier_over_the_wire(tmp_path):
+    """fs.trash = "os-trash" from the server's own skeletonkey.toml: on a host
+    without a trash API the delete refuses with UNSUPPORTED_PLATFORM and deletes
+    nothing; with `gio` on PATH the file lands in the bin and the journal keeps
+    a second copy that survives into a new server process."""
+    root = tmp_path / "trashws"
+    root.mkdir()
+    (root / "victim.txt").write_text("x\n", encoding="utf-8")
+    (root / "skeletonkey.toml").write_text('[fs]\ntrash = "os-trash"\n', encoding="utf-8")
+    empty = tmp_path / "emptybin"
+    empty.mkdir()
+    c = spawn(str(root), "--root", str(root),
+              env={"PATH": str(empty), "SKELETONKEY_AUTO_APPROVE": "1"})
+    c.start()
+    try:
+        r = c.request("tools/call", {"name": "fs.delete", "arguments": {"path": "victim.txt"}})
+        assert r["isError"] is True, r
+        assert "UNSUPPORTED_PLATFORM" in json.dumps(_payload(r))
+        assert (root / "victim.txt").exists(), "a no-trash host deletes nothing"
+    finally:
+        c.close()
+
+    bin_dir = tmp_path / "fakebin"
+    bin_dir.mkdir()
+    (bin_dir / "gio").write_text(
+        "#!/bin/sh\n"
+        'mkdir -p "$FAKE_TRASH_DIR"\n'
+        'mv "$2" "$FAKE_TRASH_DIR/$(basename "$2")" || exit 1\n',
+        encoding="utf-8", newline="\n")
+    os.chmod(bin_dir / "gio", 0o755)
+    fake_bin = tmp_path / "trashbin"
+    env = {"PATH": str(bin_dir) + os.pathsep + os.environ["PATH"],
+           "FAKE_TRASH_DIR": str(fake_bin), "SKELETONKEY_AUTO_APPROVE": "1"}
+    c = spawn(str(root), "--root", str(root), env=env)
+    c.start()
+    try:
+        r = c.request("tools/call", {"name": "fs.delete", "arguments": {"path": "victim.txt"}})
+        assert r["isError"] is False, r
+        body = _payload(r)
+        assert body["data"]["deleted"] is True and body["data"]["trash"] == "recycle bin"
+        assert not (root / "victim.txt").exists()
+        assert (fake_bin / "victim.txt").read_text(encoding="utf-8") == "x\n"
+        # the journal (the second copy) is on disk and visible to a *new* server
+        assert os.path.isdir(root / ".sk" / "journal")
+    finally:
+        c.close()
+    c = spawn(str(root), "--root", str(root))
+    c.start()
+    try:
+        rows = json.loads(c.request("resources/read", {"uri": "skeletonkey://journal"})
+                          ["contents"][0]["text"])
+        assert any(r["path"] == "victim.txt" and r.get("token") for r in rows), \
+            "the journal entry for the os-trash delete survives a restart"
+    finally:
+        c.close()
+
+
+def test_fs_read_carries_via_provenance_over_the_wire(client, ws):
+    res = client.request("tools/call", {"name": "fs.read",
+                                        "arguments": {"path": "src/mod.py"}})
+    assert res["isError"] is False, res
+    via = _payload(res)["data"]["via"]
+    assert via["root"] == os.path.realpath(str(ws)), \
+        "the host sees which root the path resolved against"
+
+
 # ------------------------------------------------------------------ prompts / resources
 def test_prompts_expose_bootstrap_and_skills(client):
     prompts = {p["name"] for p in client.request("prompts/list", {})["prompts"]}
@@ -489,3 +642,216 @@ def test_server_exits_cleanly_when_stdin_closes(tmp_path):
     assert c.proc.poll() is not None, "closing the pipe must not leave a wedged server"
     assert "Traceback" not in c.stderr()
     c.proc.kill()
+
+
+# ------------------------------------------------- P4 budget governor (wire)
+
+def test_wire_metrics_carry_budget_position(tmp_path):
+    (tmp_path / "skeletonkey.toml").write_text(
+        "[budget]\ntask_max_tokens_out = 60\n", encoding="utf-8")
+    (tmp_path / "big.txt").write_text("x" * 4000, encoding="utf-8")
+    c = spawn(str(tmp_path), "--root", str(tmp_path))
+    c.start()
+    try:
+        res = c.request("tools/call", {"name": "fs.read", "arguments": {"path": "big.txt"}})
+        assert not res.get("isError"), _payload(res)
+        env = _payload(res)
+        b = env["metrics"]["budget"]
+        # spent is the charged (pre-block) estimate; est_tokens also covers the
+        # budget block itself, so it is larger by exactly that block's cost
+        assert 0 < env["metrics"]["est_tokens"] - b["spent"]["tokens_out"] <= 100
+        assert b["exhausted"] is True, \
+            "the read that crossed the cap flags it in the same envelope"
+        assert b["remaining"]["tokens_out"] == 0
+
+        res2 = c.request("tools/call", {"name": "fs.read", "arguments": {"path": "big.txt"}})
+        env2 = _payload(res2)
+        assert env2["ok"] is False and env2["error"]["code"] == "BUDGET_EXCEEDED"
+        assert env2["next_actions"][0]["action"] == "summarize_and_stop"
+        assert env2["metrics"]["budget"]["exhausted"] is True
+    finally:
+        c.close()
+
+
+# ------------------------------------------------- P4 async jobs (wire)
+
+def test_wire_background_turn_shape_and_job_watch(tmp_path):
+    if not os.path.exists("/bin/bash"):
+        pytest.skip("needs /bin/bash")
+    c = spawn(str(tmp_path), "--root", str(tmp_path), env={"SKELETONKEY_AUTO_APPROVE": "1"})
+    c.start()
+    try:
+        res = c.request("tools/call", {"name": "shell.run", "arguments": {
+            "script": "sleep 0.3; echo compiling; sleep 0.2; echo BUILD OK",
+            "dialect": "bash", "background": True}})
+        assert not res.get("isError"), _payload(res)
+        data = _payload(res)["data"]
+        jid = data["job_id"]
+        assert data["next_call"] == {"tool": "shell.job_wait",
+                                     "args": {"job_id": jid, "timeout_s": 30}}, \
+            "the background turn shape: job_id + the exact next call"
+
+        res2 = c.request("tools/call", {"name": "shell.job_watch", "arguments": {
+            "job_id": jid, "until": "BUILD OK", "timeout_s": 20, "poll_s": 0.1}})
+        assert not res2.get("isError"), _payload(res2)
+        watch = _payload(res2)["data"]
+        assert watch["matched_line"] == "BUILD OK" and watch["timed_out"] is False
+
+        res3 = c.request("tools/call", {"name": "shell.run", "arguments": {
+            "script": "sleep 0.2; echo go; sleep 3", "dialect": "bash", "background": True}})
+        jid2 = _payload(res3)["data"]["job_id"]
+        res4 = c.request("tools/call", {"name": "shell.job_watch", "arguments": {
+            "job_id": jid2, "until": "NEVER", "timeout_s": 1, "poll_s": 0.1}})
+        watch2 = _payload(res4)["data"]
+        assert watch2["timed_out"] is True and watch2["running"] is True, \
+            "watching never kills what it was only watching"
+
+        jobs = _payload(c.request("tools/call", {"name": "shell.jobs", "arguments": {}}))["data"]["jobs"]
+        assert {j["job_id"] for j in jobs} >= {jid, jid2}
+    finally:
+        c.close()
+
+
+def test_wire_ledger_rows_carry_context_receipt(tmp_path):
+    (tmp_path / "skeletonkey.toml").write_text(
+        f"[state]\ndir = \"{(tmp_path / 'state').as_posix()}\"\n", encoding="utf-8")
+    c = spawn(str(tmp_path), "--root", str(tmp_path))
+    c.start()
+    try:
+        c.request("tools/call", {"name": "fs.read", "arguments": {"path": "nope.txt"}})
+        ledger = tmp_path / "state" / "ledger.ndjson"
+        lines = [json.loads(ln) for ln in ledger.read_text().splitlines() if ln.strip()]
+        assert lines, "the call must have produced a ledger row"
+        rc = lines[-1].get("context_receipt")
+        assert rc is not None, "the ledger row carries its context receipt"
+        assert set(rc) == {"exposed_results", "withheld", "stop_reason"}
+        assert "fs.read" in rc["exposed_results"]
+        assert rc["stop_reason"] == "ENOENT", "the call's own outcome is the stop reason"
+    finally:
+        c.close()
+
+
+# ------------------------------------------------- P4 streaming (wire)
+def test_wire_log_notifications_stream_per_call_at_debug(tmp_path):
+    """--log-level debug: every call streams a notifications/message log line."""
+    (tmp_path / "a.txt").write_text("hello\n", encoding="utf-8")
+    c = spawn(str(tmp_path), "--root", str(tmp_path), "--log-level", "debug")
+    c.start()
+    try:
+        collected = []
+        c.request("tools/call", {"name": "fs.read", "arguments": {"path": "a.txt"}},
+                  collect=collected)
+        logs = [n for n in collected if n.get("method") == "notifications/message"]
+        assert logs, "a debug-level call must stream a log line"
+        p = logs[0]["params"]
+        assert p["level"] == "debug" and p["logger"] == "skeletonkey"
+        assert p["data"]["tool"] == "fs.read" and p["data"]["ok"] is True
+        assert p["data"]["ms"] >= 0
+    finally:
+        c.close()
+
+
+def test_wire_no_log_notifications_below_debug(tmp_path):
+    (tmp_path / "a.txt").write_text("hello\n", encoding="utf-8")
+    c = spawn(str(tmp_path), "--root", str(tmp_path))
+    c.start()
+    try:
+        collected = []
+        c.request("tools/call", {"name": "fs.read", "arguments": {"path": "a.txt"}},
+                  collect=collected)
+        assert [n for n in collected if n.get("method") == "notifications/message"] == [], \
+            "log lines stream only when the host opted in with --log-level debug"
+    finally:
+        c.close()
+
+
+def test_wire_progress_notifications_for_a_search(tmp_path):
+    """A tools/call carrying a progressToken answers with notifications/progress -
+    an immediate 'started' ping, then pings while the scan is alive. No token, no pings."""
+    for i in range(40):
+        d = tmp_path / "tree" / f"d{i // 7}"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / f"f{i}.txt").write_text(f"needle {i}\n", encoding="utf-8")
+    c = spawn(str(tmp_path), "--root", str(tmp_path))
+    c.start()
+    try:
+        collected = []
+        res = c.request("tools/call", {"name": "fs.search",
+                                       "arguments": {"pattern": "needle"},
+                                       "_meta": {"progressToken": "tok-1"}},
+                        collect=collected)
+        assert res["isError"] is False
+        progs = [n for n in collected if n.get("method") == "notifications/progress"]
+        assert progs, "a progressToken must be answered with notifications/progress"
+        assert all(p["params"]["progressToken"] == "tok-1" for p in progs)
+        assert progs[0]["params"]["progress"] == 0, "the first ping acknowledges the start"
+        collected2 = []
+        c.request("tools/call", {"name": "fs.search", "arguments": {"pattern": "needle"}},
+                  collect=collected2)
+        assert [n for n in collected2 if n.get("method") == "notifications/progress"] == [], \
+            "no progressToken, no unsolicited progress"
+    finally:
+        c.close()
+
+
+# ---------------------------------------------------------------- publishing
+def test_publish_store_and_inject_over_the_wire(tmp_path):
+    """The publish flow through the real MCP endpoint: store a secret, scan for
+    markers with exact locations, inject, and confirm the secret never rode in a
+    tool result. A dedicated client (own env) so the store lands in a temp dir,
+    never the developer's real user store."""
+    ws = tmp_path / "ws"
+    (ws / "deploy").mkdir(parents=True)
+    (ws / "deploy" / "app.env").write_text(
+        "PYPY={{PUB.pypi.token}}\nGH={{PUB.github.token}}\n", encoding="utf-8")
+    xdg = tmp_path / "xdg"
+    c = spawn(str(ws), "--root", str(ws), env={"XDG_CONFIG_HOME": str(xdg)})
+    c.start()
+    try:
+        # 1. store a token - the value must not echo back over the wire
+        put = c.request("tools/call", {"name": "pub.store_put",
+                                       "arguments": {"id": "pypi.token", "kind": "token",
+                                                     "value": "pypi-pypi-WIRE-SECRET"}})
+        assert put["isError"] is False, put
+        assert "pypi-pypi-WIRE-SECRET" not in json.dumps(put), \
+            "the secret must not echo back in the store_put result"
+        # the store file must be outside the workspace root
+        store_files = list(xdg.rglob("store.json"))
+        assert store_files and not str(store_files[0]).startswith(str(ws)), \
+            "the store must live outside the sandboxed workspace"
+
+        # 2. scan: exact file/line/column, one bound and one missing
+        scan = c.request("tools/call", {"name": "pub.placeholders", "arguments": {}})
+        assert scan["isError"] is False, scan
+        d = _payload(scan)["data"]
+        marks = {(m["file"], m["line"], m["column"], m["id"]): m["status"] for m in d["markers"]}
+        assert marks[("deploy/app.env", 1, 6, "pypi.token")] == "bound"
+        assert marks[("deploy/app.env", 2, 4, "github.token")] == "missing"
+        assert d["missing_ids"] == ["github.token"] and d["ready_to_publish"] is False
+
+        # 3. inject while a marker is unbound -> refused, file untouched
+        fail = c.request("tools/call", {"name": "pub.inject", "arguments": {}})
+        assert fail["isError"] is True
+        assert (ws / "deploy" / "app.env").read_text(encoding="utf-8") == \
+            "PYPY={{PUB.pypi.token}}\nGH={{PUB.github.token}}\n"
+
+        # 4. bind the rest, then the real inject succeeds and is journaled
+        c.request("tools/call", {"name": "pub.store_put",
+                                 "arguments": {"id": "github.token", "kind": "token",
+                                               "value": "ghp-WIRE-SECRET-2"}})
+        inj = c.request("tools/call", {"name": "pub.inject", "arguments": {}})
+        assert inj["isError"] is False, inj
+        body = _payload(inj)
+        assert body["data"]["files_written"] == 1
+        assert body["data"]["written"][0]["undo_token"]
+        assert (ws / "deploy" / "app.env").read_text(encoding="utf-8") == \
+            "PYPY=pypi-pypi-WIRE-SECRET\nGH=ghp-WIRE-SECRET-2\n"
+        # ...but the injected file is a WORKSPACE file, so fs.read may show it;
+        # the point is no pub.* result carried a raw value
+        assert "WIRE-SECRET" not in json.dumps(inj) and "WIRE-SECRET" not in json.dumps(scan)
+        # 5. the knowledge tools answer over the wire too
+        kb = c.request("tools/call", {"name": "pub.packaging", "arguments": {"target": "msi"}})
+        assert kb["isError"] is False
+        assert "wixtoolset.org" in json.dumps(_payload(kb))
+    finally:
+        c.close()

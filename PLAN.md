@@ -3,7 +3,7 @@
 **Dynamic toolset + skills + MCP server for autopilot and autonomous agents.**
 Adaptive by host, reversible by default, bounded in bytes and tokens.
 
-Status: **P0, P1 and P2 shipped**, and documented. CI is specified (§6) but not
+Status: **P0, P1, P2 and P3 shipped**, and documented. CI is specified (§6) but not
 committed as a workflow file yet.
 
 ```bash
@@ -15,11 +15,11 @@ sk skills install ./my-skill      # an agent-authored tool, in this process
 python -m skeletonkey.mcp         # stdio server: 33 tools, prompts, resources
 ```
 
-Measured on this box: 35 tools registered / 33 advertised / **2 424 tokens** of
-advertisement (`digest fc1ca30868f2e469`), 10 probed capabilities, 4 skills discovered
+Measured on this box: 37 tools registered / 35 advertised / **3 038 tokens** of
+advertisement (`digest 3206898a746f3fde`), 10 probed capabilities, 4 skills discovered
 (one of them shipping two scripts that compile into callable tools), 0 load errors. Code:
-11 738 lines in `skeletonkey/`, 15 test modules (495 passing, 2 skipped,
-1 xfailed), 2 235 lines of docs (this plan, four contract docs, README; seven ADRs). No workflow file is committed on this branch — the pushing token
+12 678 lines in `skeletonkey/`, 16 test modules (551 passing, 3 skipped,
+1 xfailed), 2 450 lines of docs (this plan, four contract docs, README; eight ADRs). No workflow file is committed on this branch — the pushing token
 cannot write to `.github/workflows/` — and the pipeline is specified in §6 for whoever
 lands it (one command reproduces it locally: `ruff check . && pytest -q -m "not slow"`).
 
@@ -377,6 +377,12 @@ from it, not in advance), and the threat-model table has a test id per row.
 carry the rule text and the fix. Effort saved by refusing to build an OS sandbox (see
 Non-goals); state that plainly in the docs. **Effort: 7–9 days.**
 
+**Status at ship time.** All five acceptance criteria landed and are pinned by name in
+`docs/SECURITY-MODEL.md`'s test map; the exit gate is met (scope line re-measured,
+threat tables carry a test id per row, ADR 0008 recorded). One line of the plan read
+"policy.grant (already present)" — it was present as a handler but unregistered; it
+shipped as a registered tool with the receipt, which is strictly more than planned.
+
 ---
 
 ### P4 — Autopilot integration
@@ -423,6 +429,67 @@ jobs it can await, receipts it can replay, and a way to grade itself.
 surface and stops calling tools through ad-hoc glue. **Risks.** Replay fidelity is
 easy to over-promise: anything that reads wall time or host state must declare
 `stateful` and be excluded from strict diff. **Effort: 9–12 days.**
+
+---
+
+### P4b — Publishing tools: credential store, placeholder injection, platform knowledge
+
+**Why.** Shipping an artifact (app, package, installer, store listing) requires
+platform credentials (Play Console, App Store Connect, PyPI, GitHub, Stripe, …)
+and copy/manifest files full of the same secrets. Today an agent must copy
+secrets into files by hand, and the toolset has no idea where the console URLs,
+payment-provider setup, or packaging paths are. This phase adds a `pub.*` tool
+group (9 tools) with one honest wall: **the store is write-only to the agent —
+no tool can read a stored value back**; the only value flow is `pub.inject`
+into workspace files, journaled and undoable.
+
+**The store.** User-level JSON file, default `~/.config/skeletonkey/publish/store.json`
+(overridable via `[publish] store_path`), written `0600` best-effort, **outside
+the workspace roots** so `fs.*` tools cannot reach it (sandbox wall, not
+policy). Entry = `{id, kind, value, note, created, updated}`. Ids are
+`[a-z0-9][a-z0-9._-]{0,63}`; kinds are a validated set (token, api_key,
+client_id, client_secret, oauth_token, password, email, phone, two_factor,
+social_account, signing_key, certificate, webhook, other). Plaintext on disk —
+no keyring dependency (zero-deps rule); protected by file permissions and
+location, and said so in the SECURITY-MODEL.
+
+**Placeholders.** `{{PUB.<id>}}` markers in workspace files.
+`pub.placeholders` reports every marker with **exact file/line/column**, the
+bound store id, and bound/missing status. `pub.inject` replaces markers with
+store values, reading and writing through the fs layer (per-file
+`expect_sha`, so a file touched under the agent's feet becomes a conflict,
+not a clobber); every file is journaled → the whole publish is undoable.
+Missing store ids fail **before any write** (no partial publish). `dry_run`
+reports the plan without touching anything. Values never appear in any
+envelope, ledger row, or skill output: the handler never echoes them, and a
+new manifest field `secret_args` makes the engine redact exactly those args
+from the ledger.
+
+**Knowledge bases** (static data, real console/docs URLs, concise steps —
+data lives in `skeletonkey/publish_data.py`, single source of truth, surfaced
+by read-only tools): `pub.platforms` (google_play, apple_appstore, github,
+pypi, npm, custom/self-hosted), `pub.payments` (stripe, paddle,
+google_play_billing, apple_iap — with the honest note that Apple Pay checkout
+is a PSP feature, not a direct API), `pub.packaging` (pypi, github_release,
+windows_installer, msi, scoop, chocolatey, winget, homebrew, self_hosted).
+
+**AI testers.** `pub.testers` generates a machine-executable release test
+plan: ordered steps, each a tool call or shell command with acceptance lines
+and on-fail behavior. Plans reference placeholders, never raw secrets —
+secret material flows only through `pub.inject` before a test step runs.
+
+**Deliverables.** `core/publish.py` (store + placeholder engine),
+`publish_data.py` (knowledge bases), 9 `pub.*` tools, `sk pub` CLI
+subcommand, `secret_args` manifest field + ledger redaction,
+`skills/publishing/SKILL.md`, ADR-0010, TOOL-CONTRACT section,
+SECURITY-MODEL section, unit + wire-level tests.
+
+**Exit gate.** With a fixture store and fixture template, an MCP client can:
+store a token (value never reappears in any tool result or ledger row), scan
+for markers with exact locations, inject with dry-run then real (undoable via
+the journal), and generate a test plan for a packaging target — with a store
+id it does not have, inject reports the missing id and changes no file.
+**Effort: 2–3 days.**
 
 ---
 
@@ -641,6 +708,8 @@ silent-ish failure).
 | 0005 | Never fabricate a default: report what is unknown (`sniff`, empty search, gates) | accepted |
 | 0006 | Journal-and-undo in the toolkit, not delegated to git | accepted |
 | 0007 | Values are `argv`, never interpolated text; quoting is a separate explicit tool | accepted |
+| 0008 | Policy is data; approval is a tool with a receipt; undo is a precondition | accepted |
+| 0009 | Replay proves the turn: explicit normalization, `stateful` means loose, mutations retire cached reads | accepted |
 
 `docs/adr/` holds the full text of each, with the options rejected and the observable
 consequence (usually a test id).
