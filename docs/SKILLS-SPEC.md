@@ -125,8 +125,11 @@ tool.
 P2 replaces the stub with a compiler: `handler_script` + `input_schema` →
 `shells.run {dialect, argv/stdin mapping, returns}`. The three bindings that will be
 supported are exactly `--flag {name}`, `$ARG_json`, and stdin-JSON (PowerShell); anything
-else must stay a documented manual step, not an emergent `eval`. Until then
-`skills.allow_install` stays `false` (see `docs/SECURITY-MODEL.md` §Gaps).
+else must stay a documented manual step, not an emergent `eval`. Note what P1 does *not*
+have: no install path at all (`skills.dirs` is operator input, and there is no
+`skills.install`), so a skill can only arrive by commit. When P2 adds installation, its
+`skills.allow_install` flag must default to `false` — a skill that can run arbitrary
+commands should be a decision, not a default (see `docs/SECURITY-MODEL.md` §Gaps).
 
 ## Working examples in this repo
 
