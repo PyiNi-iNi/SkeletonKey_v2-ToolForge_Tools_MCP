@@ -319,6 +319,43 @@ def test_policy_grant_unblocks_the_same_connection_with_an_approver(ws):
         c.close()
 
 
+def test_fs_redo_and_expect_sha_over_the_wire(client, ws):
+    # advertised with its schema, and the full create -> undo -> redo round trip works
+    listing = client.request("tools/list", {})
+    redo = next(t for t in listing["tools"] if t["name"] == "fs.redo")
+    assert set(redo["inputSchema"]["properties"]) == {"path", "dry_run"}
+    res = client.request("tools/call", {"name": "fs.write",
+                                        "arguments": {"path": "redo-wire.txt", "content": "wire\n"}})
+    assert res["isError"] is False, res
+    token = _payload(res)["data"]["undo_token"]
+    u = client.request("tools/call", {"name": "fs.undo", "arguments": {"token": token}})
+    assert u["isError"] is False, u
+    assert not (ws / "redo-wire.txt").exists(), "undoing a create removes the file"
+    r = client.request("tools/call", {"name": "fs.redo", "arguments": {}})
+    assert r["isError"] is False, r
+    body = _payload(r)
+    assert body["data"]["redone"] is True and body["data"]["action"] == "create"
+    assert body["data"]["undo_token"], "the redo is journaled itself - it comes with a token"
+    assert (ws / "redo-wire.txt").read_text(encoding="utf-8") == "wire\n"
+    # and the fresh token undoes it again, over the same connection
+    back = client.request("tools/call", {"name": "fs.undo",
+                                         "arguments": {"token": body["data"]["undo_token"]}})
+    assert back["isError"] is False, back
+    assert not (ws / "redo-wire.txt").exists()
+    # expect_sha is now part of fs.undo's advertised schema, and a stale sha is a
+    # tool error, not a silent overwrite
+    undo_spec = next(t for t in client.request("tools/list", {})["tools"] if t["name"] == "fs.undo")
+    assert "expect_sha" in undo_spec["inputSchema"]["properties"]
+    res2 = client.request("tools/call", {"name": "fs.write",
+                                         "arguments": {"path": "redo-wire.txt", "content": "v2\n"}})
+    token2 = _payload(res2)["data"]["undo_token"]
+    c = client.request("tools/call", {"name": "fs.undo",
+                                      "arguments": {"token": token2, "expect_sha": "deadbeefdeadbeef"}})
+    assert c["isError"] is True, "a stale sha must refuse"
+    assert "CONFLICT" in json.dumps(_payload(c))
+    assert (ws / "redo-wire.txt").read_text(encoding="utf-8") == "v2\n", "file untouched"
+
+
 # ------------------------------------------------------------------ prompts / resources
 def test_prompts_expose_bootstrap_and_skills(client):
     prompts = {p["name"] for p in client.request("prompts/list", {})["prompts"]}

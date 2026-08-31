@@ -243,6 +243,119 @@ def test_undo_accepts_either_argument_name(writable_toolkit):
     assert not missing.ok and missing.error.code == "BAD_ARGS"
 
 
+def test_fs_undo_stale_expect_sha_is_a_conflict_and_touches_nothing(writable_toolkit):
+    eng = writable_toolkit.engine
+    ws = writable_toolkit.workspace
+    w = call(eng, "fs.write", path="guard.txt", content="v1\n")
+    assert w.ok, w.error
+    # a second change makes the file hold something other than the stale sha
+    w2 = call(eng, "fs.write", path="guard.txt", content="v2\n")
+    assert w2.ok, w2.error
+    r = call(eng, "fs.undo", token=w2.data["undo_token"], expect_sha="deadbeefdeadbeef")
+    assert not r.ok and r.error.code == "CONFLICT"
+    assert (ws / "guard.txt").read_text(encoding="utf-8") == "v2\n", "the file must be untouched"
+    # the token is still live - the sha the file actually holds (as fs.read returns it)
+    read = call(eng, "fs.read", path="guard.txt")
+    assert read.ok, read.error
+    ok = call(eng, "fs.undo", token=w2.data["undo_token"], expect_sha=read.data["sha256"])
+    assert ok.ok, ok.error
+    assert ok.data["undone"] is True
+    assert (ws / "guard.txt").read_text(encoding="utf-8") == "v1\n"
+
+
+def test_fs_undo_without_expect_sha_keeps_the_p1_warning(writable_toolkit):
+    eng = writable_toolkit.engine
+    ws = writable_toolkit.workspace
+    (ws / "warn.txt").write_text("base\n", encoding="utf-8")
+    w = call(eng, "fs.write", path="warn.txt", content="agent\n")
+    assert w.ok, w.error
+    (ws / "warn.txt").write_text("human edit\n", encoding="utf-8")
+    r = call(eng, "fs.undo", token=w.data["undo_token"])
+    assert r.ok, r.error
+    assert r.data["undone"] is True, "the P1 behaviour is unchanged: undo still goes through"
+    assert any("changed since" in n for n in r.data.get("warnings", [])), \
+        "the divergence warning is still there, pinned as a regression"
+    assert (ws / "warn.txt").read_text(encoding="utf-8") == "base\n"
+
+
+def test_fs_redo_reapplies_the_most_recent_undone_change(writable_toolkit):
+    eng = writable_toolkit.engine
+    ws = writable_toolkit.workspace
+    w = call(eng, "fs.write", path="redo.txt", content="v1\n")
+    assert w.ok, w.error
+    u = call(eng, "fs.undo", token=w.data["undo_token"])
+    assert u.ok, u.error
+    # v1 was a create (the path did not exist), so undoing it removes the file
+    assert not (ws / "redo.txt").exists()
+    r = call(eng, "fs.redo")
+    assert r.ok, r.error
+    assert r.data["redone"] is True and r.data["action"] == "create"
+    assert r.data["undo_token"], "the redo is journaled and therefore undoable again"
+    assert (ws / "redo.txt").read_text(encoding="utf-8") == "v1\n"
+    back = call(eng, "fs.undo", token=r.data["undo_token"])
+    assert back.ok, back.error
+    assert not (ws / "redo.txt").exists()
+
+
+def test_fs_redo_of_a_write_change_round_trips(writable_toolkit):
+    eng = writable_toolkit.engine
+    ws = writable_toolkit.workspace
+    (ws / "w.txt").write_text("before\n", encoding="utf-8")
+    w = call(eng, "fs.write", path="w.txt", content="after\n")
+    assert w.ok, w.error
+    u = call(eng, "fs.undo", token=w.data["undo_token"])
+    assert u.ok, u.error
+    assert (ws / "w.txt").read_text(encoding="utf-8") == "before\n"
+    r = call(eng, "fs.redo")
+    assert r.ok, r.error
+    assert r.data["redone"] is True and r.data["action"] == "write"
+    assert (ws / "w.txt").read_text(encoding="utf-8") == "after\n"
+
+
+def test_fs_redo_refuses_to_roll_over_drift_and_is_path_filtered(writable_toolkit):
+    eng = writable_toolkit.engine
+    ws = writable_toolkit.workspace
+    (ws / "a.txt").write_text("a0\n", encoding="utf-8")
+    (ws / "b.txt").write_text("b0\n", encoding="utf-8")
+    wa = call(eng, "fs.write", path="a.txt", content="a1\n")
+    wb = call(eng, "fs.write", path="b.txt", content="b1\n")
+    assert wa.ok and wb.ok
+    call(eng, "fs.undo", token=wb.data["undo_token"])
+    call(eng, "fs.undo", token=wa.data["undo_token"])
+    (ws / "a.txt").write_text("drifted\n", encoding="utf-8")
+    # path-filtered: b redoes even though a is the one that drifted
+    rb = call(eng, "fs.redo", path="b.txt")
+    assert rb.ok, rb.error
+    assert (ws / "b.txt").read_text(encoding="utf-8") == "b1\n"
+    assert (ws / "a.txt").read_text(encoding="utf-8") == "drifted\n"
+    # the remaining undone change is a's, and the redo must refuse the drift
+    r = call(eng, "fs.redo")
+    assert not r.ok and r.error.code == "CONFLICT"
+    assert (ws / "a.txt").read_text(encoding="utf-8") == "drifted\n", "file untouched by the refusal"
+
+
+def test_fs_redo_with_nothing_undone_is_enoent(writable_toolkit):
+    r = call(writable_toolkit.engine, "fs.redo")
+    assert not r.ok and r.error.code == "ENOENT"
+    assert "nothing to redo" in (r.error.message + json.dumps(r.error.details))
+
+
+def test_fs_redo_dry_run_reports_without_touching(writable_toolkit):
+    eng = writable_toolkit.engine
+    ws = writable_toolkit.workspace
+    w = call(eng, "fs.write", path="dryredo.txt", content="v1\n")
+    assert w.ok, w.error
+    u = call(eng, "fs.undo", token=w.data["undo_token"])
+    assert u.ok, u.error
+    r = call(eng, "fs.redo", dry_run=True)
+    assert r.ok, r.error
+    assert r.data["dry_run"] is True and r.data["would_redo"] == "create"
+    assert not (ws / "dryredo.txt").exists(), "dry_run must not write"
+    # the entry is still there for the real redo
+    r2 = call(eng, "fs.redo")
+    assert r2.ok and (ws / "dryredo.txt").exists()
+
+
 def test_delete_dir_without_recursive_is_refused_with_advice(writable_toolkit):
     r = call(writable_toolkit.engine, "fs.delete", path="src")
     assert not r.ok and r.error.code == "BAD_ARGS"

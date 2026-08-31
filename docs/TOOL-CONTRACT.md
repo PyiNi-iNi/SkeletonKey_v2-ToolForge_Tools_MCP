@@ -198,6 +198,24 @@ could not be read while recording, the entry carries `meta.undo_reliable: false`
 refuses with `CONFLICT` rather than restoring the dataclass default: "unknown" and `0o644`
 are different facts, and confusing them opens a file somebody locked.
 
+### Undo with a precondition: `expect_sha`
+
+`fs.undo` accepts `expect_sha` (a sha256, full or the 16-char prefix that `fs.read`
+returns): the undo proceeds only while the file still holds that content, otherwise
+`CONFLICT` — the same precondition `fs.write`'s `expect_sha` enforces at write time,
+applied at rollback time. Without it the P1 behaviour is unchanged: the undo proceeds
+and appends a divergence warning when the file had moved on.
+
+### Redo
+
+`fs.redo {path?}` re-applies the most recently *undone* change, optionally limited to one
+path, and journals the redo itself — the result carries a fresh `undo_token`, so undo and
+redo can ping-pong. A redo is never a silent overwrite: a file that changed after the
+undo, a path that was re-created, a destination that exists again, or a pruned
+after-image is a `CONFLICT` that says which state broke. Entries that predate after-image
+capture (or lost it to pruning) refuse the redo instead of guessing; a fresh
+`fs.journal_list` shows what is still reversible.
+
 ## 7. Composition and caching
 
 - Tools may call other tools through `engine.call` (that is how `registry.search` and the

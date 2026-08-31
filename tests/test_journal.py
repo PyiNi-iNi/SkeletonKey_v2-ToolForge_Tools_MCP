@@ -242,7 +242,11 @@ def test_prune_drops_oldest_first_and_deletes_shadow_files(tmp_path, tree):
     # not be able to fill the disk with before-images nobody can reach any more.
     live = [e["token"] for e in j.list(limit=99)]
     assert live == tokens[2:][::-1]
-    assert len(os.listdir(j.shadow_dir)) == 2, "pruning must reclaim the shadow copies"
+    # each live entry keeps a before-image and an after-image on disk; pruning must
+    # reclaim both for every dropped entry
+    names = os.listdir(j.shadow_dir)
+    assert names and all(n.split("__")[0] in set(live) for n in names), "pruning must reclaim the shadow copies"
+    assert len([n for n in names if n.endswith("__after")]) == 2
     assert j.prune() == 0, "already at the limit"
 
 
@@ -252,7 +256,12 @@ def test_keep_bounds_entries_at_record_time(tmp_path, tree):
     for _ in range(6):
         j.record_before(res_for(tree / "src" / "a.py"), b"n\n", task_id="t")
     assert len(j.list(limit=99)) == 3
-    assert len(os.listdir(j.shadow_dir)) == 3
+    # 3 live entries x (before-image + after-image): the bound is on entries, and
+    # every file on disk belongs to one of the live entries
+    names = os.listdir(j.shadow_dir)
+    live = {e["token"] for e in j.list(limit=99)}
+    assert len(names) == 6
+    assert all(n.split("__")[0] in live for n in names)
 
 
 def test_summary_reports_size_and_actions(tmp_path, tree):
@@ -312,6 +321,226 @@ def test_undo_warns_when_the_content_is_not_what_we_wrote(tree, tmp_path):
     out = j.undo(token)
     assert out["undone"] is True, "undo still honours the request..."
     assert "changed since" in out["warnings"][0], "...and says it rolled over someone's edit"
+    assert target.read_text(encoding="utf-8") == "print('a')\n"
+
+
+# ------------------------------------------------------------ expect_sha / redo
+def test_undo_with_stale_expect_sha_conflicts_and_touches_nothing(tree, tmp_path):
+    import hashlib
+
+    j = FsJournal(str(tmp_path / "j"))
+    target = tree / "src" / "a.py"
+    token = j.record_before(res_for(target), b"NEW\n", task_id="t")
+    target.write_text("new content\n", encoding="utf-8")
+    # a sha the file does not hold: the guard must refuse, file untouched
+    with pytest.raises(SkeletonKeyError) as exc:
+        j.undo(token, expect_sha="deadbeefdeadbeef")
+    assert exc.value.code == "CONFLICT"
+    assert target.read_text(encoding="utf-8") == "new content\n"
+    # and the token is still live - a matching sha (16-char prefix, as fs.read
+    # returns one) proceeds exactly as before
+    ok_sha = hashlib.sha256(b"new content\n").hexdigest()[:16]
+    out = j.undo(token, expect_sha=ok_sha)
+    assert out["undone"] is True
+    assert target.read_text(encoding="utf-8") == "print('a')\n"
+
+
+def test_undo_with_expect_sha_on_a_missing_path_conflicts(tree, tmp_path):
+    j = FsJournal(str(tmp_path / "j"))
+    target = tree / "src" / "a.py"
+    token = j.record_delete(res_for(target), task_id="t")
+    target.unlink()
+    with pytest.raises(SkeletonKeyError) as exc:
+        j.undo(token, expect_sha="deadbeefdeadbeef")
+    assert exc.value.code == "CONFLICT"
+    assert "no longer exists" in str(exc.value)
+
+
+def test_redo_reapplies_the_most_recent_undone_write(tree, tmp_path):
+    j = FsJournal(str(tmp_path / "j"))
+    target = tree / "src" / "a.py"
+    token = j.record_before(res_for(target), b"NEW\n", task_id="t")
+    target.write_text("NEW\n", encoding="utf-8")
+    assert j.undo(token)["undone"] is True
+    out = j.redo()
+    assert out["redone"] is True and out["action"] == "write"
+    assert out["undo_token"] and out["undo_token"] != token, "the redo is journaled itself"
+    assert target.read_text(encoding="utf-8") == "NEW\n"
+    # ...and the fresh token undoes it, so undo/redo can ping-pong
+    assert j.undo(out["undo_token"])["undone"] is True
+    assert target.read_text(encoding="utf-8") == "print('a')\n"
+    again = j.redo()
+    assert target.read_text(encoding="utf-8") == "NEW\n"
+    assert j.undo(again["undo_token"])["undone"] is True
+
+
+def test_redo_with_nothing_undone_is_enoent(tree, tmp_path):
+    j = FsJournal(str(tmp_path / "j"))
+    with pytest.raises(SkeletonKeyError) as exc:
+        j.redo()
+    assert exc.value.code == "ENOENT"
+    assert "nothing to redo" in str(exc.value)
+
+
+def test_redo_refuses_to_roll_over_a_drifted_file(tree, tmp_path):
+    j = FsJournal(str(tmp_path / "j"))
+    target = tree / "src" / "a.py"
+    token = j.record_before(res_for(target), b"NEW\n", task_id="t")
+    target.write_text("NEW\n", encoding="utf-8")
+    assert j.undo(token)["undone"] is True
+    target.write_text("work done after the undo\n", encoding="utf-8")
+    with pytest.raises(SkeletonKeyError) as exc:
+        j.redo()
+    assert exc.value.code == "CONFLICT"
+    assert "changed after the undo" in str(exc.value)
+    assert target.read_text(encoding="utf-8") == "work done after the undo\n"
+    # ...but the entry is still the most recent undone change, and once the file is
+    # exactly what the undo produced (the before-image), the redo goes through
+    target.write_text("print('a')\n", encoding="utf-8")
+    assert j.redo()["redone"] is True
+    assert target.read_text(encoding="utf-8") == "NEW\n"
+
+
+def test_redo_of_a_create_round_trips(tree, tmp_path):
+    j = FsJournal(str(tmp_path / "j"))
+    target = tree / "src" / "brand_new.py"
+    token = j.record_new(res_for(target), action="create", task_id="t",
+                         upcoming_bytes=b"made by the agent\n")
+    target.write_text("made by the agent\n", encoding="utf-8")
+    os.unlink(target)
+    assert j.undo(token)["undone"] is True
+    assert not target.exists()
+    # recreating the path by hand while the change is still undone would be clobbered
+    # by the redo - refused instead
+    target.write_text("written by someone else\n", encoding="utf-8")
+    with pytest.raises(SkeletonKeyError) as exc:
+        j.redo(path=str(target))
+    assert exc.value.code == "CONFLICT" and "exists again" in str(exc.value)
+    assert target.read_text(encoding="utf-8") == "written by someone else\n"
+    # ...and once the path is clear again the redo goes through
+    os.unlink(target)
+    out = j.redo(path=str(target))
+    assert out["redone"] is True and out["action"] == "create"
+    assert target.read_text(encoding="utf-8") == "made by the agent\n"
+
+
+def test_redo_of_a_delete_round_trips(tree, tmp_path):
+    j = FsJournal(str(tmp_path / "j"))
+    target = tree / "src" / "a.py"
+    token = j.record_delete(res_for(target), task_id="t")
+    os.unlink(target)
+    assert j.undo(token)["undone"] is True
+    assert target.read_text(encoding="utf-8") == "print('a')\n"
+    # deleted behind the journal's back while the change is still undone: the redo
+    # has nothing to re-delete - it says so instead of silently succeeding
+    os.unlink(target)
+    with pytest.raises(SkeletonKeyError) as exc:
+        j.redo(path=str(target))
+    assert exc.value.code == "CONFLICT" and "already gone" in str(exc.value)
+    # ...and once the file is back at its undone location the redo goes through
+    target.write_text("print('a')\n", encoding="utf-8")
+    out = j.redo(path=str(target))
+    assert out["redone"] is True and out["action"] == "delete"
+    assert not target.exists()
+
+
+def test_redo_of_a_move_round_trips(tree, tmp_path):
+    j = FsJournal(str(tmp_path / "j"))
+    src = tree / "src" / "a.py"
+    dst = tree / "src" / "a_moved.py"
+    token = j.record_move(res_for(src), res_for(dst), task_id="t")
+    os.replace(src, dst)
+    assert j.undo(token)["undone"] is True
+    assert (tree / "src" / "a.py").exists() and not dst.exists()
+    out = j.redo(path=str(src))
+    assert out["redone"] is True and out["action"] == "move"
+    assert dst.exists() and not (tree / "src" / "a.py").exists()
+
+
+def test_redo_of_a_chmod_round_trips(tree, tmp_path):
+    j = FsJournal(str(tmp_path / "j"))
+    target = tree / "src" / "a.py"
+    os.chmod(target, 0o755)
+    token = j.record_meta(res_for(target), task_id="t", mode_after=0o600)
+    os.chmod(target, 0o600)
+    assert j.undo(token)["undone"] is True
+    assert oct(os.stat(target).st_mode & 0o777) == "0o755", "undo restores the before mode"
+    out = j.redo(path=str(target))
+    assert out["redone"] is True
+    assert oct(os.stat(target).st_mode & 0o777) == "0o600", "redo re-applies the requested mode"
+
+
+def test_redo_of_a_mkdir_round_trips_twice(tree, tmp_path):
+    j = FsJournal(str(tmp_path / "j"))
+    target = tree / "fresh_dir"
+    os.makedirs(target)
+    token = j.record_new(res_for(target), action="create", task_id="t")
+    os.rmdir(target)
+    assert j.undo(token)["undone"] is True
+    out = j.redo(path=str(target))
+    assert out["redone"] is True and os.path.isdir(target)
+    # the redo of a mkdir is itself a journaled mkdir: one more round-trip must work
+    assert j.undo(out["undo_token"])["undone"] is True
+    assert not target.exists()
+    out2 = j.redo(path=str(target))
+    assert os.path.isdir(target)
+    j.undo(out2["undo_token"])
+
+
+def test_redo_is_path_filtered_and_keeps_other_paths_alone(tree, tmp_path):
+    j = FsJournal(str(tmp_path / "j"))
+    a = tree / "src" / "a.py"
+    b = tree / "src" / "big.txt"
+    tok_a = j.record_before(res_for(a), b"AA\n", task_id="t")
+    a.write_text("AA\n", encoding="utf-8")
+    tok_b = j.record_before(res_for(b), b"BB\n", task_id="t")
+    b.write_text("BB\n", encoding="utf-8")
+    assert j.undo(tok_b)["undone"] is True
+    assert j.undo(tok_a)["undone"] is True
+    # undoing b's change only, redo must not touch a
+    assert j.redo(path=str(b))["action"] == "write"
+    assert b.read_text(encoding="utf-8") == "BB\n"
+    assert a.read_text(encoding="utf-8") == "print('a')\n"
+
+
+def test_redo_survives_a_journal_restart(tree, tmp_path):
+    j = FsJournal(str(tmp_path / "j"))
+    target = tree / "src" / "a.py"
+    token = j.record_before(res_for(target), b"NEW\n", task_id="t")
+    target.write_text("NEW\n", encoding="utf-8")
+    assert j.undo(token)["undone"] is True
+    j2 = FsJournal(str(tmp_path / "j"))
+    rows = {e["token"]: e for e in j2.list()}
+    assert rows[token].get("restored") is True, "the restored flag round-trips through the index"
+    assert rows[token].get("after_shadow") and os.path.exists(rows[token]["after_shadow"]), \
+        "the after-image is a file, so it survives the restart"
+    out = j2.redo()
+    assert out["redone"] is True
+    assert target.read_text(encoding="utf-8") == "NEW\n"
+    # the drift check works off the reloaded state too
+    assert j2.undo(out["undo_token"])["undone"] is True
+    target.write_text("drifted after restart\n", encoding="utf-8")
+    with pytest.raises(SkeletonKeyError) as exc:
+        j2.redo()
+    assert exc.value.code == "CONFLICT"
+    assert target.read_text(encoding="utf-8") == "drifted after restart\n"
+
+
+def test_redo_of_an_entry_without_after_image_is_a_conflict_not_a_guess(tree, tmp_path):
+    j = FsJournal(str(tmp_path / "j"))
+    target = tree / "src" / "a.py"
+    token = j.record_before(res_for(target), b"NEW\n", task_id="t")
+    target.write_text("NEW\n", encoding="utf-8")
+    assert j.undo(token)["undone"] is True
+    # simulate the after-image being pruned (pre-P3 entry, or an eviction)
+    entry = j._entries[token]
+    assert entry.after_shadow and os.path.exists(entry.after_shadow)
+    os.unlink(entry.after_shadow)
+    entry.after_shadow = None
+    with pytest.raises(SkeletonKeyError) as exc:
+        j.redo()
+    assert exc.value.code == "CONFLICT"
+    assert "not retained" in str(exc.value)
     assert target.read_text(encoding="utf-8") == "print('a')\n"
 
 
@@ -418,7 +647,7 @@ def test_poisoned_shadow_archive_is_refused_whole(tree, tmp_path, shape):
 
     with pytest.raises(SkeletonKeyError) as exc:
         j.undo(token)
-    assert exc.value.code == E.CONFLICT.code, str(exc.value)
+    assert exc.value.code == "CONFLICT", str(exc.value)
     expected = {"dotdot": "outside the restore target",
                 "absolute": "outside the restore target",
                 "escaping-link": "links outside the restore target"}[shape]

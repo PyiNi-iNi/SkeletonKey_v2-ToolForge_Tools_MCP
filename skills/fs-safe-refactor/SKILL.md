@@ -10,7 +10,7 @@ version: "1"
 tags: [filesystem, refactor, safety, undo]
 priority: 65
 requires: [fs]
-allowed-tools: [fs.read, fs.write, fs.patch, fs.search, fs.glob, fs.list, fs.stat, fs.move, fs.delete, fs.mkdir, fs.chmod, fs.undo, fs.undo_task, fs.journal_list]
+allowed-tools: [fs.read, fs.write, fs.patch, fs.search, fs.glob, fs.list, fs.stat, fs.move, fs.delete, fs.mkdir, fs.chmod, fs.undo, fs.redo, fs.undo_task, fs.journal_list, policy.grant]
 ---
 
 # Safe filesystem changes
@@ -95,6 +95,7 @@ Each mutation returns `undo_token`; the batch id is the `task_id` on the context
 fs.journal_list {task_id}          # what we would undo, newest first
 fs.undo {undo_token}               # one change
 fs.undo_task {task_id}             # every change in the task, in reverse order
+fs.redo {path?}                    # re-apply the most recently undone change
 ```
 
 `fs.delete` embeds `{"undo": ...}` in its data - delete is *not* permanent while the
@@ -103,6 +104,12 @@ metadata for writes/patches/deletes/moves; directories are snapshotted as a tar.
 Inline snapshots cover files ≤96 KB; larger files keep a shadow copy. If
 `fs.undo` says the shadow copy is gone (a `prune` happened), rebuild from VCS
 instead of improvising - and say which you did.
+
+If the undo was the mistake, `fs.redo` re-applies the last undone change - the redo is
+journaled itself (fresh `undo_token`), so undo/redo can ping-pong. It refuses with
+`CONFLICT` instead of overwriting when the file changed after the undo or the path was
+re-created. When undoing with the file open in another tool, pass `expect_sha` (the sha
+from the last `fs.read`) so a stale rollback is a `CONFLICT`, not a silent clobber.
 
 A permission change is a mutation too. `fs.chmod {path, mode}` journals the previous
 *bits* rather than a copy of the file, so the same `undo_token` puts them back, and an
@@ -165,5 +172,7 @@ read, then patch.
 | move/rename | `fs.move` (journals both sides) |
 | remove a scratch dir | `fs.delete {recursive: true}` (undo holds it) |
 | "undo that" | `fs.undo_task {task_id}` |
+| "redo that" / the undo was wrong | `fs.redo {path?}` (journaled itself) |
+| undo a file that may have moved on | `fs.undo {token, expect_sha: <last read sha>}` |
 | asked to approve | replay with the `approve_token`, or `policy.grant {tool, scope: "task"}` |
 | not sure it's text | `fs.sniff` first |

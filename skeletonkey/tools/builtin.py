@@ -362,14 +362,34 @@ _spec(
 _spec(
     id="fs.undo", title="Undo one journaled change",
     description="Restore the before-image of one fs.write/fs.patch/fs.delete/fs.move using its undo token. "
-                "Pass the `undo_token` value the mutating call returned (either argument name works).",
+                "Pass the `undo_token` value the mutating call returned (either argument name works). "
+                "Set `expect_sha` (the sha256 from the last fs.read, full or 16-char prefix) to refuse with "
+                "CONFLICT if the file no longer holds that content - the guard against rolling over work that "
+                "happened after the change.",
     capability="fs.undo", risk="write", idempotent=True, reversible=False, typical_latency_ms=25,
     tags=["undo", "revert", "rollback", "restore"],
     input_schema={"type": "object", "properties": {
         "token": {"type": "string", "description": "Undo token, e.g. 'und_1a2b3c4d5e6f'."},
         "undo_token": {"type": "string", "description": "Alias for `token`."},
-        "dry_run": {"type": "boolean", "default": False}},
+        "dry_run": {"type": "boolean", "default": False},
+        "expect_sha": {"type": "string", "description": "If set, refuse with CONFLICT unless the file still "
+                                                       "holds this sha256 (or its 16-char prefix)."}},
         "anyOf": [{"required": ["token"]}, {"required": ["undo_token"]}],
+        "additionalProperties": False},
+)
+
+_spec(
+    id="fs.redo", title="Re-apply the most recent undone change",
+    description="The mirror of fs.undo: re-apply the most recently *undone* journaled change, optionally "
+                "limited to one path. The redo itself is journaled - the result carries a fresh `undo_token` "
+                "so it can be undone again. Anything that no longer holds (the file changed after the undo, "
+                "the after-image was pruned, the path was re-created) is CONFLICT, never a silent overwrite.",
+    capability="fs.redo", risk="write", idempotent=False, reversible=True, typical_latency_ms=25,
+    tags=["redo", "reapply", "undo", "rollback"],
+    see_also=["fs.undo", "fs.journal_list"],
+    input_schema={"type": "object", "properties": {
+        "path": {"type": "string", "description": "Limit to the most recent undone change on this path."},
+        "dry_run": {"type": "boolean", "default": False}},
         "additionalProperties": False},
 )
 
@@ -720,7 +740,7 @@ def register(reg: Any, *, engine: Any, shells: Any, fs: Any, journal: Any, skill
                         task_id=ctx.task_id if ctx else "")
 
     def fs_undo(token: str | None = None, undo_token: str | None = None,
-                 dry_run: bool = False) -> dict[str, Any]:
+                 dry_run: bool = False, expect_sha: str | None = None) -> dict[str, Any]:
         picked = token or undo_token
         if not picked:
             raise SkeletonKeyError(
@@ -728,7 +748,10 @@ def register(reg: Any, *, engine: Any, shells: Any, fs: Any, journal: Any, skill
                 details={"hint": "fs.write/fs.patch/fs.delete/fs.move/fs.mkdir/fs.chmod return undo_token",
                          "recent": [e.get("token") for e in journal.list(limit=5)]},
             )
-        return journal.undo(picked, dry_run=dry_run)
+        return journal.undo(picked, dry_run=dry_run, expect_sha=expect_sha)
+
+    def fs_redo(path: str | None = None, dry_run: bool = False) -> dict[str, Any]:
+        return journal.redo(path, dry_run=dry_run)
 
     def fs_undo_task(task_id: str, dry_run: bool = False) -> dict[str, Any]:
         return journal.undo_task(task_id, dry_run=dry_run)
@@ -854,7 +877,7 @@ def register(reg: Any, *, engine: Any, shells: Any, fs: Any, journal: Any, skill
                      ("fs.stat", fs_stat), ("fs.sniff", fs_sniff),
                      ("fs.delete", fs_delete), ("fs.move", fs_move),
                      ("fs.mkdir", fs_mkdir), ("fs.chmod", fs_chmod), ("fs.undo", fs_undo),
-                     ("fs.undo_task", fs_undo_task),
+                     ("fs.redo", fs_redo), ("fs.undo_task", fs_undo_task),
                      ("fs.journal_list", fs_journal_list), ("profile.probe", profile_probe),
                      ("registry.list", registry_list), ("registry.search", registry_search),
                      ("registry.describe", registry_describe), ("registry.stats", registry_stats),

@@ -393,7 +393,9 @@ class Fs:
         if exists and self.journal is not None:
             result.undo_token = self.journal.record_before(res, raw, action="write", task_id=task_id)
         elif self.journal is not None:
-            result.undo_token = self.journal.record_new(res, action="create", task_id=task_id)
+            # the after-image is the file's new content itself - that is what a redo recreates
+            result.undo_token = self.journal.record_new(res, action="create", task_id=task_id,
+                                                        upcoming_bytes=raw)
         self._atomic_write(res.real, raw, create_dirs=create_dirs, encoding=target_enc if not binary else None)
         return result
 
@@ -724,7 +726,8 @@ class Fs:
             if current == want:
                 skipped.append(t.display)
                 continue
-            token = self.journal.record_meta(t, task_id=task_id) if self.journal else ""
+            token = (self.journal.record_meta(t, task_id=task_id, mode_after=want)
+                     if self.journal else "")
             try:
                 os.chmod(t.real, want)
             except (OSError, NotImplementedError) as exc:

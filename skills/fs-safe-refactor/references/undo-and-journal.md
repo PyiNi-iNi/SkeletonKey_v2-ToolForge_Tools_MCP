@@ -6,15 +6,20 @@ the code actually does — including the places where it deliberately refuses.
 
 ## What is stored
 
-| Change | Snapshot | Undo does |
-| --- | --- | --- |
-| `fs.write` (existing file) | previous bytes | restores them, plus mode and mtime |
-| `fs.write` (new file) | nothing — `action: "create"` | deletes the file |
-| `fs.patch` | previous bytes (the whole file, not the hunks) | restores the pre-patch file |
-| `fs.delete` (file) | the bytes | writes the file back |
-| `fs.delete` (dir) | a tar of the tree | unpacks the tree |
-| `fs.move` | both sides | moves it back, and restores an overwritten destination |
-| `fs.mkdir` | nothing | removes the directory **only if it is empty** |
+| Change | Snapshot | Undo does | Redo re-applies |
+| --- | --- | --- | --- |
+| `fs.write` (existing file) | previous bytes + the new bytes | restores them, plus mode and mtime | writes the new bytes back |
+| `fs.write` (new file) | the new bytes — `action: "create"` | deletes the file | writes the file back |
+| `fs.patch` | previous bytes + the new bytes (the whole file, not the hunks) | restores the pre-patch file | writes the post-patch file back |
+| `fs.delete` (file) | the bytes | writes the file back | deletes it again |
+| `fs.delete` (dir) | a tar of the tree | unpacks the tree | deletes the tree again |
+| `fs.move` | both sides | moves it back, and restores an overwritten destination | moves it forward again |
+| `fs.chmod` | the previous mode bits | restores the previous mode | re-applies the requested mode |
+| `fs.mkdir` | nothing | removes the directory **only if it is empty** | recreates the empty directory |
+
+A change that is *retained* keeps both images, which is what `fs.redo` needs: entries
+whose after-image was pruned (or that predate after-image capture) refuse the redo with
+`CONFLICT` rather than guessing.
 
 Before-images at or below `inline_limit` (96 KiB) are written to a small *staged*
 file as well as held in memory, so an undo still works after the process restarts —
@@ -31,6 +36,7 @@ ACLs and creation times are not — undo is not a root operation.
   journal/index.ndjson              one JSON line per journaled change (append-only)
   journal/shadow/<token>__<name>     the before-image, when it was too big to inline
   journal/shadow/<token>__staged     the before-image, when it was small
+  journal/shadow/<token>__after      the after-image (what fs.redo re-applies)
   journal/shadow/<token>__tree.tar   directory snapshots
   shell/                            scratch scripts, job logs, session state
 ```
@@ -67,12 +73,21 @@ record, the journal is a working set. Each journal line carries `sha_before` and
 4. Diverged content is warned about, not refused: if the file no longer holds what this
    entry wrote, undo still restores the before-image (that *is* the request) and appends
    `"content had changed since this entry wrote it…"`. If a human edited the file in the
-   meantime, re-apply their change right after — the warning tells you to.
-5. Undo re-checks the sandbox against the **current** roots. If a path left the roots
+   meantime, re-apply their change right after — the warning tells you to. When the
+   rollback must be *conditional* instead, pass `expect_sha` (the sha from the last
+   `fs.read`, full or 16-char prefix): a mismatch is a hard `CONFLICT` and nothing is
+   written.
+5. `fs.redo {path?}` re-applies the most recently *undone* change. It is the mirror of
+   undo, not a second undo: only an already-undone entry is eligible, and the redo is
+   journaled itself (fresh `undo_token`). It refuses with `CONFLICT` — never a silent
+   overwrite — when the file changed after the undo, the path was re-created, or the
+   after-image is gone. `ENOENT: nothing to redo` means there is no undone entry (yet)
+   on that path.
+6. Undo re-checks the sandbox against the **current** roots. If a path left the roots
    between the mutation and the undo, you get `SANDBOX_VIOLATION` and nothing is written.
-6. Undo never deletes a populated directory and never touches paths it did not record.
+7. Undo never deletes a populated directory and never touches paths it did not record.
    A `fs.mkdir` that created a whole parent chain only removes the leaf, and only if empty.
-7. Re-`fs.stat` after an undo. `undone: true` means the snapshot was applied; it cannot
+8. Re-`fs.stat` after an undo. `undone: true` means the snapshot was applied; it cannot
    promise the *build* is consistent again — re-run your tests, that is the check.
 
 ## Diagnosing the common failures
@@ -88,6 +103,15 @@ record, the journal is a working set. Each journal line carries `sha_before` and
 - `SANDBOX_VIOLATION` on undo — the recorded path is outside today's roots.
 - `PATCH_CONFLICT` when you re-apply after an undo — your re-read raced with a formatter.
   Read again; the file is fine.
+- `CONFLICT: does not hold the content you recorded` — the `expect_sha` you passed to
+  `fs.undo` does not match the file's current sha. Read the file, re-decide, retry with
+  the fresh sha. `details.actual_sha` is there to diff against.
+- `CONFLICT: changed after the undo` on `fs.redo` — someone (or some tool) edited the
+  file after the undo. The file is exactly as you left it; re-derive the change against
+  what is there now.
+- `CONFLICT: …not retained…` on `fs.redo` — the after-image was pruned or predates
+  capture. Re-apply the change by hand (it will be journaled), rather than trusting a
+  guess.
 
 ## Relationship to git
 
