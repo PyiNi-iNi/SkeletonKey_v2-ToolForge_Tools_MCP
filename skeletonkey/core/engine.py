@@ -2,8 +2,9 @@
 
 Pipeline (each stage can stop the call, and every stop is explained):
 
-  resolve -> validate(args vs manifest) -> gate(profile) -> policy(approval/risk/
-  deny/read-only) -> budget -> dispatch(timeout, redact) -> envelope -> ledger ->
+  resolve -> validate(args vs manifest) -> gate(profile) -> policy(deny rules ->
+  rate limits -> approval/risk/allow rules) -> budget (task caps + mutation
+  breaker) -> dispatch(timeout, redact) -> envelope -> ledger ->
   stats(feedback to registry ranking)
 
 The first-party autopilot imports this class directly; MCP hosts get the same
@@ -12,10 +13,11 @@ engine behind a thin transport adapter. No second implementation of any check.
 
 from __future__ import annotations
 
-import fnmatch
 import os
 import re
+import threading
 import time
+from collections import deque
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutTimeout
@@ -27,10 +29,11 @@ from .config import Config
 from .envelope import Metrics, ToolResult
 from .errors import E, SkeletonKeyError, ToolError, classify_exception
 from .manifest import ToolManifest
+from .policy import CompiledPolicy, PolicyRule
 from .profile import CapabilityProfile
 from .redact import redact_obj
 from .registry import Registry
-from .util import compact_json, new_run_id, short_hash
+from .util import compact_json, glob_hit, glob_to_re, new_run_id, short_hash
 from .validate import apply_defaults, validate
 
 APPROVAL_TOKEN_RE = re.compile(r"^[A-Za-z0-9_.:-]{8,128}$")
@@ -137,7 +140,14 @@ class Engine:
         self._pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="sk-tool")
         self._started = time.monotonic()
         self._negotiated = False
+        # rate limiting: one sliding window per tool + one mutation-burst window
+        # per engine, both read under the same lock (the pool dispatches handlers
+        # concurrently, and a limit checked twice is a limit that leaked once)
+        self._rate_lock = threading.Lock()
+        self._rate_windows: dict[str, deque[float]] = {}
+        self._mutation_window: deque[float] = deque()
         self._policy_errors: list[str] = []
+        self._policy = CompiledPolicy()
         self._compile_policy()
 
     # ------------------------------------------------------------------ lifecycle
@@ -243,7 +253,7 @@ class Engine:
             dry = self.config.policy.read_only if dry_run is None else dry_run
             dry = bool(dry) or asked_preview
             self._authorize(man, args, ctx, approval_token=approval_token, dry_run=bool(dry))  # 4. policy
-            self._charge_budget(ctx, man)                           # 5. budget
+            self._charge_budget(ctx, man, dry_run=bool(dry))                    # 5. budget
 
             cache_key = self._cache_key(man, args, ctx)
             if cache_key and cache_key in self._cache:
@@ -262,6 +272,12 @@ class Engine:
             res.metrics.provider = res.metrics.provider or man.provider
             if man.reversible and not res.metrics.extra.get("undo"):
                 res.metrics.extra["undo_available"] = True
+            # Who approved what belongs on the receipt, not only in the
+            # transcript: a ledger reader must see the grant without
+            # re-deriving it from the approval flow.
+            for key in ("approval_grant", "policy_allow"):
+                if key in ctx.extras:
+                    res.metrics.extra[key] = ctx.extras.pop(key)
             if cache_key and res.ok and man.idempotent and not man.is_mutating:
                 self._cache[cache_key] = (time.time(), res)
             return res
@@ -297,6 +313,7 @@ class Engine:
                     ctx.tokens_out += res.metrics.est_tokens
                     if res.ok and man is not None and man.is_mutating:
                         ctx.mutations += 1
+                        self._record_mutation()
             except Exception:
                 pass
             try:
@@ -411,30 +428,44 @@ class Engine:
         return out
 
     def _compile_policy(self) -> None:
-        """Parse `tool(glob)` deny rules into matchers, validating config."""
-        self._deny_rules: list[tuple[str | None, str]] = []
-        for rule in self.config.policy.deny:
-            m = re.match(r"^([a-z0-9._*-]+)(?:\((.*)\))?$", rule.strip(), re.I)
-            if not m:
-                self._policy_errors.append(f"unparseable deny rule: {rule!r}")
-                continue
-            pat = m.group(2)
-            self._deny_rules.append((m.group(1), pat or "**"))
+        """Compile every policy spelling (legacy `deny` strings, `escalate`
+        list, `rate_limits` map, structured `rule` tables) into one rule list.
+        Malformed entries are recorded in `self._policy_errors` and skipped -
+        never raised (a config typo must not take the toolkit down) and never
+        guessed at (a broken deny rule that widens access is a security hole).
+        """
+        self._policy, self._policy_errors = CompiledPolicy.from_config(self.config)
 
     def _authorize(self, man: ToolManifest, args: dict[str, Any], ctx: CallContext, *,
                    approval_token: str | None = None, dry_run: bool = False) -> None:
         pol = self.config.policy
+
+        # Deny is the first thing read in the whole stage, before any token,
+        # grant or flag could be consulted: it is the rule an operator relies
+        # on when they are not watching, and it must stay non-overridable.
+        deny = self._policy.deny_hit(man.id, args)
+        if deny:
+            rule, evidence = deny
+            raise SkeletonKeyError(
+                E.DENY_RULE, f"{man.id} blocked by policy rule {rule.source}",
+                details={"rule": rule.to_dict(), "matched": evidence,
+                         "reason": rule.reason or "the rule carries no reason; ask the operator "
+                                                 "to record one so the refusal is actionable",
+                         "advice": "deny rules cannot be overridden per-call by design; an "
+                                   "operator must remove or narrow the rule in config"},
+            )
+
         risk = man.risk
-        if man.id in pol.escalate or (man.group in pol.escalate):
+        if (man.id in pol.escalate or (man.group in pol.escalate)
+                or self._policy.escalate_hit(man.id, args) is not None):
             risk = "privileged"
 
-        if self._deny_rules:
-            hit = self._match_deny(man, args)
-            if hit:
-                raise SkeletonKeyError(
-                    E.DENY_RULE, f"{man.id} blocked by policy deny rule",
-                    details={"rule": hit, "advice": "deny rules cannot be overridden per-call by design"},
-                )
+        # Rate limits gate the real call, not its preview: a dry_run answers
+        # with a plan and writes nothing, so it must not burn a rate slot.
+        if not dry_run:
+            rate = self._policy.strictest_rate(man.id, args)
+            if rate:
+                self._charge_rate(man, rate[0], rate[1])
 
         if dry_run and man.is_mutating:
             if self._previewable(man):
@@ -448,6 +479,19 @@ class Engine:
             )
 
         needs = self._needs_approval(man, risk)
+        if needs:
+            allow = self._policy.allow_hit(man.id, args)
+            if allow and not (pol.read_only and man.is_mutating):
+                # An allow rule is an operator decision recorded in config, not
+                # a per-call argument: it removes the approval requirement for
+                # *this shape of call*. It never clears a deny (checked above),
+                # never overrides read_only (the wall stays), and the call
+                # still walks every other gate.
+                rule, evidence = allow
+                ctx.extras["policy_allow"] = {"rule": rule.source,
+                                              "reason": rule.reason or "",
+                                              "matched": evidence}
+                return
         if not needs:
             return
         if approval_token:
@@ -455,6 +499,7 @@ class Engine:
                 raise SkeletonKeyError(E.BAD_ARGS, "approval_token is malformed",
                                        details={"expected": "8-128 chars of [A-Za-z0-9_.:-]"})
             if approval_token in ctx.granted or approval_token == f"grant:{man.id}":
+                ctx.extras["approval_grant"] = approval_token
                 return
             raise SkeletonKeyError(E.APPROVAL_REQUIRED, "approval_token does not cover this tool",
                                    details={"tool": man.id, "granted": sorted(ctx.granted)})
@@ -478,6 +523,7 @@ class Engine:
                 ) from exc
             if granted:
                 ctx.granted.add(f"grant:{man.id}")
+                ctx.extras["approval_grant"] = f"grant:{man.id}"
                 return
             raise SkeletonKeyError(E.APPROVAL_REQUIRED, "approval was declined",
                                    details={"tool": man.id, "risk": risk,
@@ -508,22 +554,37 @@ class Engine:
             return True
         return man.destructive and pol.confirm_destructive
 
-    def _match_deny(self, man: ToolManifest, args: dict[str, Any]) -> str | None:
-        for tool_pat, glob in self._deny_rules:
-            if tool_pat and tool_pat != "*" and tool_pat != man.id and not fnmatch.fnmatch(man.id, tool_pat):
-                continue
-            for key, value in args.items():
-                if not isinstance(value, str) or not value:
-                    continue
-                cand = value.replace("\\", "/")
-                low = cand.lower()
-                if _glob_hit(glob, low):
-                    return f"{tool_pat}({glob})"
-                if key in ("path", "target", "src", "dest", "command", "script", "cwd"):
-                    base = os.path.basename(low)
-                    if _glob_hit(glob, base) or _glob_hit(glob.replace("**/", ""), low):
-                        return f"{tool_pat}({glob})"
-        return None
+    def _charge_rate(self, man: ToolManifest, rule: PolicyRule,
+                     evidence: dict[str, Any]) -> None:
+        """Sliding-window rate limit for one tool. The call that crosses the
+        limit is refused *before dispatch* (the tool does not run) and told
+        when the window will open again - a refusal with a recovery time, not
+        a wall."""
+        now = time.monotonic()
+        with self._rate_lock:
+            dq = self._rate_windows.setdefault(man.id, deque())
+            while dq and now - dq[0] > rule.window_s:
+                dq.popleft()
+            if len(dq) >= rule.rate:
+                retry = max(0.0, rule.window_s - (now - dq[0]))
+                raise SkeletonKeyError(
+                    E.BUDGET_EXCEEDED, f"{man.id} hit its rate limit",
+                    details={"exceeded": [f"rate_limit {man.id}: {len(dq)}/{rule.rate} calls "
+                                          f"within {rule.window_s:g}s (rule {rule.source})"],
+                             "rule": rule.to_dict(), "matched": evidence,
+                             "retry_after_s": round(retry, 1),
+                             "advice": "the limit resets as older calls age out of the window; "
+                                       "batch the work into fewer calls, or wait retry_after_s"},
+                    next_actions=[{"action": "summarize_and_stop",
+                                   "why": "a rate limit is a hard stop for this tool, not a transient error"}],
+                )
+            dq.append(now)
+
+    def _record_mutation(self) -> None:
+        """Feed the mutation circuit breaker from the one place that sees every
+        successful mutating call (the `finally` of `call`)."""
+        with self._rate_lock:
+            self._mutation_window.append(time.monotonic())
 
     def _plan_for(self, man: ToolManifest, args: dict[str, Any]) -> dict[str, Any]:
         """What *would* have happened - lets an agent present intent without side effects."""
@@ -531,13 +592,27 @@ class Engine:
                 "reversible": man.reversible}
 
     # ------------------------------------------------------------------ budget
-    def _charge_budget(self, ctx: CallContext, man: ToolManifest) -> None:
+    def _charge_budget(self, ctx: CallContext, man: ToolManifest, *, dry_run: bool = False) -> None:
         now = time.monotonic()
         exceeded: list[str] = []
         if ctx.max_calls and ctx.calls >= ctx.max_calls:
             exceeded.append(f"calls {ctx.calls}/{ctx.max_calls}")
         if ctx.max_mutations and ctx.mutations >= ctx.max_mutations and man.is_mutating:
             exceeded.append(f"mutations {ctx.mutations}/{ctx.max_mutations}")
+        # Mutation circuit breaker: the per-task caps above assume one task
+        # behaves; this one does not, which is the runaway-loop case. It counts
+        # *successful* mutations on this engine over a rolling 60s, whatever
+        # task they belong to, and it previews nothing (dry_run writes nothing,
+        # so it does not trip the breaker).
+        burst = self.config.policy.max_mutations_per_minute
+        if man.is_mutating and not dry_run and burst > 0:
+            with self._rate_lock:
+                dq = self._mutation_window
+                while dq and now - dq[0] > 60.0:
+                    dq.popleft()
+                if len(dq) >= burst:
+                    exceeded.append(f"mutation burst {len(dq)}/{burst} per 60s "
+                                    "(policy.max_mutations_per_minute)")
         if ctx.max_tokens_out and ctx.tokens_out >= ctx.max_tokens_out:
             exceeded.append(f"tokens_out {ctx.tokens_out}/{ctx.max_tokens_out}")
         if ctx.deadline and now > ctx.deadline:
@@ -709,41 +784,10 @@ def _shrink(args: dict[str, Any], *, limit: int = 700) -> dict[str, Any]:
     return out
 
 
-_GLOB_CACHE: dict[str, re.Pattern[str]] = {}
-
-
-def _glob_hit(glob: str, candidate: str) -> bool:
-    rx = _GLOB_CACHE.get(glob)
-    if rx is None:
-        rx = _glob_to_re(glob)
-        _GLOB_CACHE[glob] = rx
-    return bool(rx.search(candidate))
-
-
-def _glob_to_re(glob: str) -> re.Pattern[str]:
-    """fnmatch-ish with `**` spanning separators; **/... also matches the tail."""
-    out: list[str] = []
-    i = 0
-    while i < len(glob):
-        c = glob[i]
-        if c == "*":
-            if glob[i:i + 2] == "**":
-                if glob[i + 2:i + 3] == "/":
-                    out.append("(?:.*/)?")
-                    i += 3
-                    continue
-                out.append(".*")
-                i += 2
-                continue
-            out.append("[^/]*")
-            i += 1
-            continue
-        if c == "?":
-            out.append("[^/]")
-        else:
-            out.append(re.escape(c))
-        i += 1
-    return re.compile(r"^(?:" + "".join(out) + r")(?:/.*)?$")
+# Glob matching lives in core/util.py (shared with core/policy.py). The old
+# module-level names are kept as aliases because earlier code used them here.
+_glob_hit = glob_hit
+_glob_to_re = glob_to_re
 
 
 def _noop_context() -> Any:

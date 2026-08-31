@@ -194,6 +194,227 @@ def test_escalated_risk_is_respected():
     assert res.error.code == "APPROVAL_REQUIRED", "escalation must outrank auto_approve"
 
 
+# ------------------------------------------------------------------ P3 policy rules
+# The structured `policy.rule` tables (core/policy.py): deny/allow/escalate/
+# rate_limit with path, argv-prefix and env-name matchers. Deny stays the
+# non-overridable wall; allow only removes the approval requirement; every
+# refusal carries the rule text and the matching evidence.
+
+_SHELL_PROPS = {
+    "script": {"type": "string"},
+    "argv": {"type": "array", "items": {"type": "string"}},
+    "env": {"type": "object", "additionalProperties": {"type": "string"}},
+}
+
+
+def test_deny_argv_prefix_blocks_shell_run_even_with_an_approval_token():
+    """Acceptance 1: a deny rule with argv matching blocks the call *even when*
+    the caller passes an approval token, names the rule, and the handler never
+    runs. The token is first proven to unblock a non-matching call."""
+    ran = []
+    eng, _ = mkengine(handlers=[
+        (tool("shell.run", risk="privileged", props=_SHELL_PROPS, required=["script"]),
+         lambda **kw: ran.append(1) or {"ran": True})],
+        overrides={"policy": {"rule": [{"action": "deny", "tool": "shell.run",
+                                        "argv_prefix": [["git", "push", "--force"]],
+                                        "reason": "no force pushes on this host"}]}})
+    ctx = CallContext.from_config(eng.config)
+    assert eng.call("shell.run", {"script": "git push", "argv": ["git", "push"]}, ctx=ctx).error.code \
+        == "APPROVAL_REQUIRED", "privileged needs approval before the token story even starts"
+    ok = eng.call("shell.run", {"script": "git push", "argv": ["git", "push"]},
+                  ctx=ctx, approval_token="grant:shell.run")
+    assert ok.ok and ran == [1], "the token must unblock a non-matching call"
+
+    res = eng.call("shell.run", {"script": "git push --force", "argv": ["git", "push", "--force"]},
+                   ctx=ctx, approval_token="grant:shell.run")
+    assert res.error.code == "DENY_RULE", "deny outranks any token"
+    assert ran == [1], "the handler must not run"
+    det = res.error.details
+    assert det["rule"]["source"] == "policy.rule[0]"
+    assert det["rule"]["reason"] == "no force pushes on this host"
+    assert det["matched"] == {"arg": "argv", "argv": ["git", "push", "--force"],
+                              "prefix": ["git", "push", "--force"]}
+    assert "cannot be overridden" in det["advice"]
+
+
+def test_deny_rule_carries_the_rule_text_and_the_matching_argument():
+    eng, _ = mkengine(handlers=[
+        (tool("fs.write", risk="write", props={"path": {"type": "string"}, "content": {"type": "string"}},
+             required=["path", "content"]), lambda **kw: {"w": 1})],
+        overrides={"policy": {"rule": [{"action": "deny", "tool": "fs.*",
+                                        "paths": ["**/.ssh/**"],
+                                        "reason": "key material is off-limits"}]}})
+    res = eng.call("fs.write", {"path": "/ws/.ssh/id_rsa", "content": "x"})
+    assert res.error.code == "DENY_RULE"
+    det = res.error.details
+    assert det["rule"]["reason"] == "key material is off-limits"
+    assert det["matched"] == {"arg": "path", "value": "/ws/.ssh/id_rsa", "glob": "**/.ssh/**"}
+    assert eng.call("fs.write", {"path": "/ws/notes.txt", "content": "x"}).ok, \
+        "the rule must not poison calls it does not match"
+
+
+def test_deny_outranks_an_allow_rule_for_the_same_call():
+    eng, _ = mkengine(handlers=[
+        (tool("shell.run", risk="privileged", props=_SHELL_PROPS, required=["script"]),
+         lambda **kw: {"ran": True})],
+        overrides={"policy": {"rule": [
+            {"action": "allow", "tool": "shell.run", "argv_prefix": [["git", "push", "--force"]]},
+            {"action": "deny", "tool": "shell.run", "argv_prefix": [["git", "push", "--force"]],
+             "reason": "the operator changed their mind"},
+        ]}})
+    res = eng.call("shell.run", {"script": "git push --force", "argv": ["git", "push", "--force"]})
+    assert res.error.code == "DENY_RULE", "evaluation order is deny-then-allow; allow never wins"
+
+
+def test_allow_rule_removes_the_approval_requirement_for_matched_calls_only():
+    ran = []
+    eng, _ = mkengine(handlers=[
+        (tool("shell.run", risk="privileged", props=_SHELL_PROPS, required=["script"]),
+         lambda **kw: ran.append(1) or {"ran": True})],
+        overrides={"policy": {"rule": [{"action": "allow", "tool": "shell.run",
+                                        "argv_prefix": [["git", "status"], ["git", "diff"]],
+                                        "reason": "read-only git is safe unattended"}]}})
+    res = eng.call("shell.run", {"script": "git status", "argv": ["git", "status"]})
+    assert res.ok, "a matched allow rule removes the approval requirement with no approver configured"
+    assert ran == [1]
+    allow = res.metrics.extra.get("policy_allow")
+    assert allow and allow["rule"] == "policy.rule[0]" and allow["reason"].endswith("unattended")
+    res2 = eng.call("shell.run", {"script": "git push", "argv": ["git", "push"]})
+    assert res2.error.code == "APPROVAL_REQUIRED" and ran == [1], \
+        "the allow is scoped to the matching argv, not to the tool"
+
+
+def test_allow_rule_does_not_override_read_only():
+    ran = []
+    eng, _ = mkengine(read_only=True, handlers=[
+        (tool("fs.write", risk="write", props={"path": {"type": "string"}, "content": {"type": "string"}},
+             required=["path", "content"]), lambda **kw: ran.append(1) or {"w": 1})],
+        overrides={"policy": {"rule": [{"action": "allow", "tool": "fs.write"}]}})
+    res = eng.call("fs.write", {"path": "a.txt", "content": "x"})
+    assert res.error.code == "READ_ONLY_MODE" and ran == [], "read_only is a wall, not a preference"
+
+
+def test_escalate_rule_reevaluates_risk_only_for_matched_calls():
+    eng, _ = mkengine(handlers=[
+        (tool("shell.run", risk="write", props=_SHELL_PROPS, required=["script"]),
+         lambda **kw: {"ran": True})],
+        overrides={"policy": {"rule": [{"action": "escalate", "tool": "shell.run",
+                                        "argv_prefix": [["sudo"]]}]}})
+    res = eng.call("shell.run", {"script": "sudo reboot", "argv": ["sudo", "reboot"]})
+    assert res.error.code == "APPROVAL_REQUIRED", "sudo escalates write -> privileged"
+    assert eng.call("shell.run", {"script": "echo hi", "argv": ["echo", "hi"]}).ok, \
+        "the same tool without sudo stays auto-approved"
+
+
+def test_env_name_matcher_denies_by_name_not_value():
+    eng, _ = mkengine(handlers=[
+        (tool("shell.run", risk="write", props=_SHELL_PROPS, required=["script"]),
+         lambda **kw: {"ran": True})],
+        overrides={"policy": {"rule": [{"action": "deny", "tool": "shell.run",
+                                        "env": ["*TOKEN*"],
+                                        "reason": "no secrets through the shell env"}]}})
+    res = eng.call("shell.run", {"script": "echo hi", "env": {"API_TOKEN": "x"}})
+    assert res.error.code == "DENY_RULE"
+    assert res.error.details["matched"] == {"arg": "env", "name": "API_TOKEN", "glob": "*TOKEN*"}
+    assert eng.call("shell.run", {"script": "echo hi", "env": {"HOME": "/x"}}).ok
+
+
+def test_rate_limit_refuses_before_dispatch_and_names_the_rule():
+    """Acceptance 2 (unit scale): the call that crosses the limit is
+    BUDGET_EXCEEDED, `details.exceeded` names the rule, and the handler does
+    not run."""
+    ran = []
+    eng, _ = mkengine(handlers=[
+        (tool("fs.delete", risk="destructive", destructive=True, props={"path": {"type": "string"}},
+             required=["path"]), lambda **kw: ran.append(1) or {"d": 1})],
+        overrides={"policy": {"rate_limits": {"fs.delete": 3},
+                              "auto_approve": ["none", "read", "write", "destructive"],
+                              "confirm_destructive": False}})
+    for i in range(3):
+        assert eng.call("fs.delete", {"path": f"f{i}"}).ok
+    res = eng.call("fs.delete", {"path": "f3"})
+    assert res.error.code == "BUDGET_EXCEEDED"
+    assert ran == [1, 1, 1], "the over-limit call must not execute"
+    assert any("rate_limit fs.delete" in x and "policy.rate_limits['fs.delete']" in x
+               for x in res.error.details["exceeded"]), res.error.details["exceeded"]
+    assert res.error.details["retry_after_s"] > 0
+    assert res.next_actions[0]["action"] == "summarize_and_stop"
+
+
+def test_rate_limit_does_not_charge_previews():
+    ran = []
+    eng, _ = mkengine(handlers=[
+        (tool("fs.delete", risk="destructive", destructive=True,
+              props={"path": {"type": "string"}, "dry_run": {"type": "boolean", "default": False}},
+              required=["path"]), lambda **kw: ran.append(1) or {"d": 1})],
+        overrides={"policy": {"rate_limits": {"fs.delete": 1},
+                              "auto_approve": ["none", "read", "write", "destructive"],
+                              "confirm_destructive": False}})
+    assert eng.call("fs.delete", {"path": "a", "dry_run": True}).ok, "a preview writes nothing"
+    assert eng.call("fs.delete", {"path": "a", "dry_run": True}).ok, "previews must not burn rate slots"
+    assert eng.call("fs.delete", {"path": "a"}).ok, "the first real call still passes"
+    res = eng.call("fs.delete", {"path": "a"})
+    assert res.error.code == "BUDGET_EXCEEDED", "only real calls count against the limit"
+
+
+def test_default_rate_limit_covers_fs_delete():
+    eng, _ = mkengine()
+    assert eng.config.policy.rate_limits == {"fs.delete": 20}
+    hit = eng._policy.strictest_rate("fs.delete", {"path": "x"})
+    assert hit is not None and hit[0].rate == 20 and hit[0].window_s == 60.0
+    assert eng._policy.strictest_rate("fs.write", {"path": "x"}) is None
+
+
+def test_mutation_burst_breaker_stops_a_runaway():
+    eng, _ = mkengine(handlers=[
+        (tool("fs.write", risk="write", props={"path": {"type": "string"}, "content": {"type": "string"}},
+             required=["path", "content"]), lambda **kw: {"w": 1}),
+        (tool("fs.read", props={"path": {"type": "string"}}, required=["path"]),
+         lambda **kw: {"r": 1})],
+        overrides={"policy": {"max_mutations_per_minute": 3}})
+    ctx = CallContext.from_config(eng.config)
+    for i in range(3):
+        assert eng.call("fs.write", {"path": f"a{i}", "content": "x"}, ctx=ctx).ok
+    res = eng.call("fs.write", {"path": "a3", "content": "x"}, ctx=ctx)
+    assert res.error.code == "BUDGET_EXCEEDED"
+    assert any("mutation burst" in x and "policy.max_mutations_per_minute" in x
+               for x in res.error.details["exceeded"])
+    assert res.next_actions[0]["action"] == "summarize_and_stop"
+    for _ in range(5):
+        assert eng.call("fs.read", {"path": "a0"}, ctx=ctx).ok, "reads never trip the breaker"
+
+
+def test_malformed_policy_rule_is_reported_and_skipped_not_guessed():
+    eng, _ = mkengine(handlers=[
+        (tool("fs.write", risk="write", props={"path": {"type": "string"}, "content": {"type": "string"}},
+             required=["path", "content"]), lambda **kw: {"w": 1})],
+        overrides={"policy": {"rule": [{"action": "deny", "tool": "fs.write", "wat": 1}]}})
+    assert any("unknown field" in e for e in eng._policy_errors), \
+        "a typo in a policy rule must be visible to the operator"
+    assert eng.call("fs.write", {"path": "a", "content": "x"}).ok, \
+        "a broken rule is skipped; it must neither crash the engine nor block the call"
+
+
+def test_legacy_deny_strings_compile_to_rules():
+    eng, _ = mkengine(deny=["fs.delete(**/.ssh/**)"])
+    deny_rules = [r for r in eng._policy.rules if r.action == "deny"]
+    assert any(r.tool == "fs.delete" and r.paths == ("**/.ssh/**",) for r in deny_rules), \
+        "the legacy grammar must compile to the same rule objects"
+
+
+def test_approval_grant_is_echoed_in_metrics():
+    ran = []
+    eng, _ = mkengine(handlers=[
+        (tool("fs.delete", risk="destructive", destructive=True, props={"path": {"type": "string"}},
+             required=["path"]), lambda **kw: ran.append(1) or {"d": 1})])
+    ctx = CallContext.from_config(eng.config)
+    assert eng.call("fs.delete", {"path": "a"}, ctx=ctx).error.code == "APPROVAL_REQUIRED"
+    res = eng.call("fs.delete", {"path": "a"}, ctx=ctx, approval_token="grant:fs.delete")
+    assert res.ok and ran == [1]
+    assert res.metrics.extra.get("approval_grant") == "grant:fs.delete", \
+        "the ledger reader must see who approved what on the receipt"
+
+
 # ------------------------------------------------------------------ budget
 def test_call_budget_is_a_hard_stop_with_summarize_and_stop():
     eng, _ = mkengine(handlers=[(tool("fs.read"), lambda **kw: {"n": 1})])

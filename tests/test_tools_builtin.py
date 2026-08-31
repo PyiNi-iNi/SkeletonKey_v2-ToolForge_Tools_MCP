@@ -675,6 +675,28 @@ def test_read_only_mode_plans_instead_of_writing_and_still_previews(workspace):
     assert prev.data["dry_run"] is True and not (workspace / "nope.txt").exists()
 
 
+def test_fs_delete_burst_hits_the_default_rate_limit(writable_toolkit):
+    """Acceptance 2 (PLAN P3), at the scale the plan specifies: a burst of 21
+    `fs.delete` calls. The 21st is BUDGET_EXCEEDED, `details.exceeded` names
+    the rule, and the over-limit delete is *not executed*."""
+    eng = writable_toolkit.engine
+    ws = writable_toolkit.workspace
+    for i in range(21):
+        r = call(eng, "fs.write", path=f"burst/{i}.txt", content=f"i={i}\n")
+        assert r.ok, r.error
+    for i in range(20):
+        r = call(eng, "fs.delete", path=f"burst/{i}.txt")
+        assert r.ok, r.error
+        assert r.data["deleted"] is True and r.data["undo_token"]
+    last = call(eng, "fs.delete", path="burst/20.txt")
+    assert last.error.code == "BUDGET_EXCEEDED", "the 21st delete in 60s crosses the default 20/min"
+    assert any("rate_limit fs.delete" in x and "policy.rate_limits['fs.delete']" in x
+               for x in last.error.details["exceeded"]), last.error.details["exceeded"]
+    assert last.error.details["retry_after_s"] > 0
+    assert (ws / "burst" / "20.txt").exists(), "the over-limit call must not have run"
+    assert last.next_actions and last.next_actions[0]["action"] == "summarize_and_stop"
+
+
 # ------------------------------------------------------------------ skills tools
 def test_skills_tools_discover_and_load(writable_toolkit):
     eng = writable_toolkit.engine

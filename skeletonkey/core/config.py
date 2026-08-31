@@ -26,7 +26,14 @@ CONFIG_FILENAMES = ("skeletonkey.toml", ".skeletonkey.toml")
 
 @dataclass
 class PolicyConfig:
-    """Risk gating. `auto_approve` is the autopilot dial; deny still wins."""
+    """Risk gating. `auto_approve` is the autopilot dial; deny still wins.
+
+    Rules as data (P3): `rule` is the structured form - deny/allow/escalate/
+    rate_limit with path-glob, argv-prefix and env-name matchers, compiled by
+    `core/policy.py`. The legacy spellings (`deny` strings, `escalate` list,
+    `rate_limits` map) compile to the same rule objects, so one matcher serves
+    all three.
+    """
 
     read_only: bool = False
     # risk classes the agent may perform without a human turn
@@ -35,17 +42,29 @@ class PolicyConfig:
     # never allowed, regardless of flags. Grammar: `tool-id-or-glob(arg-glob)`; the
     # pattern is tested against every string argument (and, for path-ish keys, against
     # the basename too). Argv/script *content* matching is deliberately absent here -
-    # P3 adds an argv-prefix matcher, because `shell.run(**/*token*)` would deny every
-    # script that merely mentions the word.
+    # a script that merely mentions a word is not the same fact as a call that passes
+    # it as an argument; use a structured `rule` with `argv_prefix` for that.
     deny: list[str] = field(default_factory=lambda: [
         "fs.delete(**/.ssh/**)", "fs.delete(**/cookies*)",
     ])
+    # structured rules: [[policy.rule]] tables (action = deny|allow|escalate|rate_limit,
+    # tool, paths, argv_prefix, env, reason, rate, window_s). See core/policy.py for
+    # the full grammar and what each action may and may not override.
+    rule: list[dict] = field(default_factory=list)
     # tools whose risk we treat as higher than declared (paranoia dial)
     escalate: list[str] = field(default_factory=list)
     max_timeout_s: float = 900.0
     confirm_destructive: bool = True
     deny_outside_roots: bool = True
     follow_symlinks: str = "within-roots"        # never | within-roots | always
+    # per-tool rate limits: tool id (or glob) -> max calls per rate_window_s.
+    # The default keeps a bulk-delete loop from erasing a workspace before the
+    # budget governor's per-task cap has a chance to say anything.
+    rate_limits: dict[str, int] = field(default_factory=lambda: {"fs.delete": 20})
+    rate_window_s: float = 60.0
+    # mutations circuit breaker: at most this many *successful* mutating calls
+    # per rolling 60s on one engine, whatever the task caps say. 0 disables it.
+    max_mutations_per_minute: int = 120
 
 
 @dataclass
