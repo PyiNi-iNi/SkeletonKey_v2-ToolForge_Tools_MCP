@@ -90,6 +90,9 @@ boundary followed by:
 ...[truncated: read the file for the rest]
 ```
 
+(The three dots there are the marker itself, not this document abbreviating — it is a
+verbatim copy of `loader.py`'s truncation string, because agents key on it.)
+
 That marker is the whole point of progressive disclosure step 2: `skills.load {name,
 references: ["references/eol-and-encoding.md"]}` re-renders the same block with the named
 reference files appended (a missing file becomes `[missing]`, not a stack trace).
@@ -123,9 +126,10 @@ skill still loads — one bad file never hides a good skill, and never silently 
 tool.
 
 P2 replaces the stub with a compiler: `handler_script` + `input_schema` →
-`shells.run {dialect, argv/stdin mapping, returns}`. The three bindings that will be
+`shell.run {dialect, script|argv, expects}`. The three bindings that will be
 supported are exactly `--flag {name}`, `$ARG_json`, and stdin-JSON (PowerShell); anything
-else must stay a documented manual step, not an emergent `eval`. Note what P1 does *not*
+else must stay a documented manual step, not an emergent `eval`. The argv-vs-interpolation
+rule those bodies compile against is [ADR 0007](adr/0007-argv-over-interpolation.md). Note what P1 does *not*
 have: no install path at all (`skills.dirs` is operator input, and there is no
 `skills.install`), so a skill can only arrive by commit. When P2 adds installation, its
 `skills.allow_install` flag must default to `false` — a skill that can run arbitrary

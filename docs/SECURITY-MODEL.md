@@ -1,6 +1,6 @@
 # Security model
 
-Scope: `skeletonkey` as shipped in P0–P1 (31 tools, `shell.run` included). Written from
+Scope: `skeletonkey` as shipped in P0–P1 (32 tools, `shell.run` included). Written from
 the code, not ahead of it; each layer names the file that implements it and the test that
 pins it.
 
@@ -11,7 +11,7 @@ already compromised the process:
 
 | We protect | From |
 | --- | --- |
-| files outside `fs.roots` | an agent that "just tidies up" `~/.bashrc` |
+| files outside `roots` | an agent that "just tidies up" `~/.bashrc` |
 | secret-bearing paths (`.env`, keys) | an agent that reads them into the context window |
 | the context window | one `cat` of a 4 GB log (byte budget, spill artifact) |
 | the user's work-in-progress | an agent that edits 60 files wrong (journal + `undo_task`) |
@@ -34,9 +34,12 @@ separate user, or run it in a container. This is stated here rather than discove
 
 `Engine.call` → `_guard_gate` → `_authorize` → `_charge_budget` → handler.
 
-1. **Roots.** `fs.roots` (default: the workspace only). Every `fs.*` path is resolved and
-   required to fall under a root; outside → `SANDBOX_VIOLATION` with `details.roots`.
-   `deny_outside_roots = true` is not relaxable by a call argument.
+1. **Roots.** The top-level `roots` key — a root of the config, not an `[fs]` sub-key
+   (`[fs].roots` would silently do nothing, so the example config and `tests/test_docs.py`
+   both pin the real spelling). Every `fs.*` path is resolved and required to fall under a
+   root; outside →
+   `SANDBOX_VIOLATION` with `details.roots`. `policy.deny_outside_roots = true` is not
+   relaxable by a call argument.
    `fsx/sandbox.py` · `tests/test_sandbox.py`
 2. **Symlink policy.** `fs.follow_symlinks = "within-roots"` (default) resolves the final
    target and re-checks it against the roots, so `link → /etc/passwd` is refused while
@@ -81,7 +84,7 @@ separate user, or run it in a container. This is stated here rather than discove
    (not advertisement time, so `tools/list` stays stable across a mid-task config edit).
 10. **Budget.** `max_output_bytes` (spill, never truncation), `max_result_tokens`,
     `task_max_calls` / `task_max_mutations` / `task_max_wall_s` / `task_max_tokens_out`,
-    `fs.max_read_bytes` / `max_write_bytes`, `shell.timeout_s` (hard kill + tree kill,
+    `budget.max_read_bytes` / `budget.max_write_bytes`, `shell.timeout_s` (hard kill + tree kill,
     `+2 s` slack so the sentinel wins the race), `shell.max_output_bytes`.
     `BUDGET_EXCEEDED` names `details.exceeded[]`.
 11. **Reversibility.** `fs.journal = true`: before-images staged under
@@ -133,8 +136,11 @@ silent loss.
 No network egress from the toolkit (`transport.network` tools are `risk: "network"` and
 `require_approval` by default; the P1 surface has none), no plugin trust model beyond
 "`tools.dropin_dirs` is operator input, so drop-ins run as the agent's user", and no
-attempt at a Windows ACL model (`fs.chmod` reports `UNSUPPORTED_PLATFORM` and tells the
-agent to use `icacls` through `shell.run`).
+permissions tool: `fs.*` has no `chmod`/`chown` in P1 on purpose, because a half-model of
+Windows ACLs is worse than none - the agent sets `icacls` (or `chmod`) through `shell.run`,
+and `fs.move`/`fs.write` preserve the mode they found. A real `fs.chmod` is `PLAN.md` §10
+step 0c; it must answer `UNSUPPORTED_PLATFORM` with the `icacls` recipe rather than pretend
+on ACL-only hosts.
 
 ## Known gaps (P3 closes these)
 
@@ -142,9 +148,9 @@ agent to use `icacls` through `shell.run`).
 | --- | --- | --- |
 | `shell.run` script content | deny on `script` glob only (over-matches, so not shipped as a default) | argv-prefix + secret-path matcher, deny stays non-overridable |
 | Rate limits | per-task caps only | per-tool (`fs.delete` ≤ 20/min) + mutation circuit breaker |
-| Undo safety | warns on divergence | `expect_sha` hard `CONFLICT`, `fs.redo` |
+| Undo safety | warns on divergence | `expect_sha` hard `CONFLICT`, `fs.redo` (P3) |
 | Deletion | journal copy | recycle-bin tier (`fs.trash = "os-trash"`) |
-| Grant audit | `metrics.approval_grant` | explicit `policy.grant` + ledger `receipt` |
+| Grant audit | `metrics.approval_grant` | explicit `policy.grant` (P3) + ledger `receipt` |
 
 ## Test map
 

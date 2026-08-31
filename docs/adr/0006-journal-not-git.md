@@ -65,7 +65,7 @@ agents to `git diff` **before** trusting an undo summary.
 
 - (+) `undo_token` exists for every `fs.*` mutation on every host, with or without `git`,
   and survives a process restart (it is on disk, indexed).
-- (+) Disk growth is bounded and observable: `fs.journal_summary` reports `shadow_bytes`,
+- (+) Disk growth is bounded and observable: `fs.journal_list` reports `shadow_bytes`,
   `by_action`, `index`, `root`; `PLAN.md`'s metrics track undo usage.
 - (−) Shadow copies hold pre-edit bytes, including files the deny list would not let us read
   again. They live in `<state>/journal/shadow/` — treat it like a browser profile

@@ -127,7 +127,8 @@ never retried blind), and a token mismatch means something else wrote to our std
 The point of `capture_state` is not the env dump: **each session re-sets `cwd` and the
 captured environment at the start of every call**, which is exactly what a real shell does
 and what makes `cd ../..` persist. `env_mode` is `inherit` (default), `clean` (only `env` survives) or `login` (profile
-sourced, slower and less reproducible); there is no allow-list mode. `shell.run` returns env
+sourced, slower and less reproducible); there is no allow-list mode — the third value is
+`login`, not `include`. `shell.run` returns env
 values only when you pass `capture_env: true`; `shell.sessions` returns names only.
 
 ## Arguments and quoting
@@ -137,6 +138,7 @@ bash sees `$1..$n` (and `"$@"`), PowerShell sees `$args`, python sees `sys.argv[
 shell parser ever touches those bytes — we hand the list to `execve`/`CreateProcess` — so
 `$HOME` stays `$HOME`, `*glob*` stays a literal, and `it's` needs no surgery. That is why
 `argv` is the default answer to "how do I get this value into the script".
+The decision and the rejected alternatives are [ADR 0007](adr/0007-argv-over-interpolation.md).
 
 Rules the runner enforces, because a mistake here is silent corruption: every entry must be
 a string (numbers are accepted and stringified; a `bool` and anything else is `BAD_ARGS`,

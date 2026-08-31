@@ -38,9 +38,12 @@ things the library does not do for us:
 1. **apply defaults during validation**, so handlers see complete args and the schema is
    the single source of truth for defaults (mirrored to MCP hosts, which apply defaults
    themselves);
-2. **structured, path-addressed errors**: `{"at": "edits[1].old_text", "expected":
-   "string", "found": "null", "why": "required"}`, plus `minimal_example` synthesised from
-   the schema when the caller sent nothing usable;
+2. **structured, path-addressed errors**: each entry is
+   `{"path": "edits[0].old_text", "message": "required property 'old_text' is missing",
+   "keyword": "required", "missing": "old_text"}` (the engine drops `keyword` before the host
+   sees it, and `MISSING_ARG` re-raises the single-entry case as
+   `details.at`/`details.missing` because that is the branch an agent acts on), plus
+   `minimal_example` synthesised from the schema when the caller sent nothing usable;
 3. **a refusal to guess about the schema itself**: `format` is advisory in JSON Schema,
    and deliberately *not* here for the seven we implement (`date-time`, `date`, `uuid`,
    `ipv4`, `ipv6`, `uri`, `regex`) — a malformed regex or timestamp is caught before a

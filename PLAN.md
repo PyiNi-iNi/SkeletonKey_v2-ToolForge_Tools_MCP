@@ -9,15 +9,16 @@ committed as a workflow file yet.
 ```bash
 pip install -e ".[dev,mcp]"
 ruff check .                      # All checks passed!
-pytest -q -m "not slow"           # 363 passed, 2 skipped, 1 xfailed  (~18 s)
+pytest -q -m "not slow"           # 377 passed, 2 skipped, 1 xfailed  (~18 s)
 sk describe                       # what this host advertises, with probe receipts
-python -m skeletonkey.mcp         # stdio server: 29 tools, prompts, resources
+python -m skeletonkey.mcp         # stdio server: 30 tools, prompts, resources
 ```
 
-Measured on this box: 31 tools registered / 29 advertised / **1 829 tokens** of
-advertisement (`digest db550d337473335a`), 10 probed capabilities, 2 skills discovered,
-0 load errors. Code: 9 932 lines in `skeletonkey/`, 15 files in `tests/`, 1 769 lines of
-docs (this plan, four contract docs, six ADRs, README). No workflow file is committed on
+Measured on this box: 32 tools registered / 30 advertised / **1 909 tokens** of
+advertisement (`digest d5de0fcc7cb61eb5`), 10 probed capabilities, 2 skills discovered,
+0 load errors. Code: 10 102 lines in `skeletonkey/`, 16 files in `tests/` (377 passing,
+2 skipped, 1 xfailed), 1 859 lines of docs (this plan, four contract docs, six ADRs,
+README). No workflow file is committed on
 this branch — the pushing token cannot write to `.github/workflows/`, and the pipeline is
 specified in §6 for whoever lands it (one command reproduces it locally:
 `ruff check . && pytest -q -m "not slow"`).
@@ -107,8 +108,8 @@ skeletonkey/
 skills/        fs-safe-refactor/  shell-crossplatform/   (SKILL.md + references/ + tool.toml)
 schemas/       tool-manifest.schema.json  tool-result.schema.json  skill-frontmatter.schema.json
 config/        skeletonkey.example.toml
-tests/         15 files, 363 tests, incl. a raw-JSON-RPC MCP stdio client
-docs/          TOOL-CONTRACT, SHELL-DIALECTS, SKILLS-SPEC, SECURITY-MODEL, adr/0001-0006
+tests/         16 files, 377 tests, incl. a raw-JSON-RPC MCP stdio client
+docs/          TOOL-CONTRACT, SHELL-DIALECTS, SKILLS-SPEC, SECURITY-MODEL, adr/0001-0007
 ```
 
 Call lifecycle (`Engine.call`): resolve → gate (disable/read_only/profile) → validate
@@ -187,7 +188,9 @@ of a fixed tool list.
   flow with `once/task/session` grants, profile-refresh + `tools/list_changed`
   plumbing, per-tool reliability stats recorded once per call from the `finally`
   (successes included — providers are ranked on this).
-- **Shells**: `ShellRunner` + `dialect.render` for bash/sh, pwsh/powershell, python;
+- **Shells**: `ShellRunner` + `dialect.render` for bash/sh, pwsh/powershell, python; `argv`
+  pass-through (no shell parser in the path) and `shell.quote` for values that must be
+  embedded in the program text;
   sentinel protocol (random per-call token, EXIT-trap so a `set -e` abort is still
   read), cwd/env capture for `session` persistence, background jobs with
   `job_wait`/`job_kill`, CLIXML stderr decoding on Windows, `strict_*` preambles,
@@ -207,7 +210,7 @@ of a fixed tool list.
   files), `tools/listChanged` advertised, `initialize` untouched.
 - **CLI**: `sk profile|tools|shell|jobs|fs|skills|describe|call|mcp` for humans and CI.
 
-**Acceptance (all green).** 363 tests including a raw JSON-RPC stdio client that proves:
+**Acceptance (all green).** 377 tests including a raw JSON-RPC stdio client that proves:
 stdout carries only protocol frames; `fs.read` of `../../../etc/passwd` is a *tool*
 error (`isError: true`, `SANDBOX_VIOLATION`) and the session survives; `registry.stats`
 counts successes; a spill artifact's `fetch_rest` is a legal `fs.read`; a denied dialect
@@ -371,7 +374,7 @@ easy to over-promise: anything that reads wall time or host state must declare
 
 ### P5 — Scale and discovery
 
-**Goal.** 31 tools become 200 without the host drowning: routing, ranking, and a tool
+**Goal.** 32 tools become 200 without the host drowning: routing, ranking, and a tool
 list that changes underneath it safely.
 
 **Deliverables.**
@@ -501,6 +504,7 @@ before-image latency exceeds the task's budget, ship read-only remote targets fi
 | Skills | `test_skills.py` | frontmatter edge cases, one bad skill cannot hide the rest, bodies never promise missing tools |
 | Tools | `test_tools_builtin.py` | the whole surface through the engine, as a host drives it |
 | Wire | `test_mcp_stdio.py` | raw JSON-RPC subprocess: handshake, list, call, error paths, prompts, resources, clean exit |
+| Docs | `test_docs.py` | every documented call shape, tool/knob name and error code resolves against the live registry |
 
 ### Pipeline spec (not committed as a workflow yet)
 
@@ -573,6 +577,7 @@ silent-ish failure).
 | 0004 | Hand-rolled JSON-Schema subset instead of `jsonschema` | accepted, monitored |
 | 0005 | Never fabricate a default: report what is unknown (`sniff`, empty search, gates) | accepted |
 | 0006 | Journal-and-undo in the toolkit, not delegated to git | accepted |
+| 0007 | Values are `argv`, never interpolated text; quoting is a separate explicit tool | accepted |
 
 `docs/adr/` holds the full text of each, with the options rejected and the observable
 consequence (usually a test id).
@@ -581,27 +586,37 @@ consequence (usually a test id).
 
 ## 10. Order of work from here
 
-**Step 0 (before P2, small):** `shell.run {argv: [...]}` and a `shell.quote {dialect,
-args[]}` tool. Quoting is currently the one place where an agent is told "be careful"
-instead of given a tool: `shell.run` accepts a single `script` string, so every command
-built by concatenation inherits the model's quoting habits, and `fs.deny` cannot see inside
-a script (SECURITY-MODEL §Gaps). ~1 day: pure functions in `shells/dialect.py`
-(`shlex` for posix, single-quote doubling for PowerShell), a `shell.argv` pass-through, and
-a test that the rendered command survives spaces, quotes, `$`, backticks and CJK on both a
-live bash run and a rendered pwsh payload.
+**Step 0 — shipped:** `shell.run {argv: [...]}` and `shell.quote {args[], dialect, shape}`.
+`argv` goes straight to `execve`/`CreateProcess`, so values in it never meet a shell parser
+(`$HOME` stays `$HOME`, `*glob*` stays literal, `it's` needs no surgery); `shell.quote`
+covers the residual case of a value that must live *inside* the program text. Validation
+refuses non-strings (a `True` in a path is silent corruption), more than 128 entries, and
+NUL bytes. `docs/SHELL-DIALECTS.md` §"Arguments and quoting" is the norm, and embedding a
+token in a real script is a test, not a claim.
 
-**Step 0b (same PR):** a docs-lint test. Two claims in `docs/SHELL-DIALECTS.md` drifted from
-the code while this branch was being written (a `shell.quote` tool that does not exist, and
-an `env_mode: include` that is actually `login`); a test in `tests/test_docs.py` that
-extracts every `` `tool.id {prop: …}` `` and ``enum`` mention from `docs/*.md` and asserts
-the tool is registered and the property is in its `input_schema` turns "docs written from
-code" from a promise into a check. Same for skill prose, which already has the tool-id half
-of this rule (`test_skills.py`).
+**Step 0b — shipped:** a docs-lint test, because a roadmap that describes code it has not
+read is a claim. `tests/test_docs.py` resolves every documented `tool.id {prop: …}` call
+against the live registry, checks every bare `` `fs.x` ``-style name against tools / probed
+capabilities / config keys, checks every ``| `CODE` |`` table row against `E`, and requires an
+inline phase citation for any tool the roadmap still owes. It found **ten** real drifts in
+its first run: `shell.wait`, `shell.kill`, `shell.job_status` and `shell.job_kill {signal}`
+(in SKILLS-SPEC) never existed; `shells.run` and `fs.chmod` were cited as tools; `fs.roots`
+and `fs.max_read_bytes` were config keys that are actually `roots` and `budget.max_read_bytes`;
+`fs.journal_summary` is `fs.journal_list`; and README's tool counts were stale. A second run
+found more (see its own docstring). Unreferenced citations fail too, so the register below
+cannot quietly rot.
 
-P2 (skill synthesis) → P3 (policy, before install is on by default) → P4 (autopilot
-integration; this is where the loop stops hand-coding retries) → P5 (discovery at
-scale) → P6 (distribution; Windows CI *before* P7, or remote Windows work will burn
-the budget) → P7 (frontier spike).
+**Step 0c — next free day:** expose `fs.chmod` as a tool. `fsx/ops.py` already preserves
+modes through `fs.move`/`fs.write`, but agents have no first-class way to set permissions, so
+they shell out — and on ACL-only Windows hosts the honest answer is an envelope with the
+`icacls` recipe rather than prose.
+
+**Then the phases, in order:** P2 (skill synthesis, whose handler-body rule already exists in
+`docs/SKILLS-SPEC.md` §Constraints and depends on step 0) → P3 (policy, rate limits, trash,
+`fs.redo` — before an install path is enabled by default) → P4 (autopilot integration:
+`plan()`, receipts, replay, evals; this is where the loop stops hand-coding retries) → P5
+(discovery at scale) → P6 (distribution; Windows CI *before* P7, or remote Windows work will
+burn the budget) → P7 (frontier spike: one remote Windows host through one transport).
 
 Two standing rules for every phase: each new tool ships with a manifest section in
 `docs/TOOL-CONTRACT.md`, an entry in the skill guidance that agents will read, and a
