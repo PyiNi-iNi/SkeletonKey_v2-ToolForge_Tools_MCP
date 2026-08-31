@@ -176,7 +176,10 @@ skipped, never guessed at.
   (id or glob), a path glob (`paths`, tested against path-ish args and their
   basenames), an argv prefix (`argv_prefix`, tested against the `argv` array arg -
   content that merely *mentions* a word is not a match), or env-var *names* (`env`
-  globs over the keys of the `env` arg). Every denial carries `details.rule` (the rule
+  globs over the keys of the `env` arg). On a `script`/`command` argument, `paths`
+  globs additionally match the path-like tokens *inside* the text (`cat .env` is
+  caught by `paths = ["**/.env*"]`) — but for deny/escalate rules only; allow rules
+  never scan free-form content. Every denial carries `details.rule` (the rule
   text including its `reason`), `details.matched` (which argument, which pattern) and
   an advice string: a refusal without the rule and a fix is a bug.
 - **Allow** removes only the approval requirement for the matched call shape; it never

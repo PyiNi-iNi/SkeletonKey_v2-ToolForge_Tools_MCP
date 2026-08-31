@@ -33,6 +33,13 @@ constraints matches every call of the tool. The legacy `policy.deny` strings
 (`tool(glob)`) and `policy.escalate` list compile to the same rule objects, as
 does the `policy.rate_limits` map - one matcher, three spellings.
 
+`paths` on a `script`/`command` argument (the `shell.run` case) matches both
+the value as a whole and, for **deny and escalate rules only**, the path-like
+tokens *inside* the text - `paths = ["**/.env*"]` blocks `shell.run
+{script: "cat .env"}`. The content scan never runs for `allow` rules: granting
+approval relief on free-form text is granting on whatever string happens to
+mention a path.
+
 Matcher coverage, stated honestly: `host:port` matching for future network
 tools is reserved, not implemented - there is no network tool to match yet,
 and a matcher nobody exercises is how a rule ends up meaning something other
@@ -51,8 +58,37 @@ from .util import compact_json
 from .util import glob_hit as _glob_hit
 
 _PATH_KEYS = ("path", "src", "dst", "dest", "target", "cwd", "script", "command")
+_SCRIPT_KEYS = ("script", "command")
 _ACTIONS = ("deny", "allow", "escalate", "rate_limit")
 _DENY_RE = re.compile(r"^([a-z0-9._*-]+)(?:\((.*)\))?$", re.I)
+
+
+def _script_path_tokens(value: str) -> list[str]:
+    """Path-like tokens inside a script string: whitespace-split, quoted segments
+    kept whole, surrounding quotes stripped. A token is path-like when it carries
+    a dot or a slash ("cat" is a word, "cat .env" names a file)."""
+    tokens: list[str] = []
+    buf: list[str] = []
+    quote = ""
+    for ch in value:
+        if quote:
+            if ch == quote:
+                quote = ""
+            else:
+                buf.append(ch)
+            continue
+        if ch in "'\"":
+            quote = ch
+            continue
+        if ch.isspace():
+            if buf:
+                tokens.append("".join(buf))
+                buf = []
+            continue
+        buf.append(ch)
+    if buf:
+        tokens.append("".join(buf))
+    return [t for t in tokens if "." in t or "/" in t]
 
 
 @dataclass
@@ -91,10 +127,25 @@ class PolicyRule:
             cand = value.replace("\\", "/")
             low = cand.lower()
             base = os.path.basename(low)
+            # candidates = (full value, its basename) plus, for script text that
+            # names a path it does not itself are one ("cat .env"), the path-like
+            # tokens of the text
+            candidates: list[tuple[str, str, str | None]] = [(low, base, None)]
+            if key in _SCRIPT_KEYS and self.action in ("deny", "escalate"):
+                # free-form content is scanned only for rules that restrict. An
+                # allow rule matching script text would remove the approval
+                # requirement from whatever string happens to mention a path -
+                # policy that grants on free text is policy that grants on luck
+                for tok in _script_path_tokens(cand):
+                    candidates.append((tok, os.path.basename(tok), tok))
             for glob in self.paths:
-                if _glob_hit(glob, low) or _glob_hit(glob, base) \
-                        or _glob_hit(glob.replace("**/", ""), low):
-                    return {"arg": key, "value": value[:200], "glob": glob}
+                for full, b, tok in candidates:
+                    if _glob_hit(glob, full) or _glob_hit(glob, b) \
+                            or _glob_hit(glob.replace("**/", ""), full):
+                        ev: dict[str, Any] = {"arg": key, "value": value[:200], "glob": glob}
+                        if tok is not None:
+                            ev["token"] = tok
+                        return ev
         argv = args.get("argv")
         if isinstance(argv, (list, tuple)) and argv and all(isinstance(a, str) for a in argv):
             for prefix in self.argv_prefixes:

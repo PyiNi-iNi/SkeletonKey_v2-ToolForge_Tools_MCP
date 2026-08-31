@@ -21,15 +21,18 @@ already compromised the process:
 
 | We do **not** protect | Because | Test |
 | --- | --- | --- |
-| containment of `shell.run` payloads | running arbitrary commands **is** the tool; script-content rules are the open gap below | `test_policy_property.py` (the walls that *do* exist hold `shell.run` too) |
+| containment of `shell.run` payloads | running arbitrary commands **is** the tool; script-content rules match path *tokens* in the text, not arbitrary command grammar | `test_policy_property.py` (the walls that *do* exist hold `shell.run` too), `test_engine_policy.py::test_deny_script_content_secret_path_blocks_shell_run` |
 | a hostile process/user with our config | `policy.deny` is non-overridable *per call*, not per file | `test_engine_policy.py::test_deny_rule_cannot_be_negotiated` (per-call) |
 | multi-tenant isolation | single-user, local (Non-goals) | — (non-goal, no test) |
 | OS-level sandboxing | no seccomp/nsjail/Job Objects (Non-goals, ADR) | — (non-goal, no test) |
 
 `fs.deny` is a **policy on `fs.*`**, not a wall around the machine: `shell.run {script:
-"cat ~/.ssh/id_rsa"}` will read it, because the shell opens the file itself. Anyone who
-needs that blocked must add a policy rule on script content (weak), run the agent as a
-separate user, or run it in a container. This is stated here rather than discovered later.
+"cat ~/.ssh/id_rsa"}` will read it, because the shell opens the file itself. A policy
+rule on script content closes the common case - `paths` globs are also matched against
+the path-like tokens *inside* the text, so `paths = ["**/id_rsa*"]` (deny or escalate)
+blocks that exact call and nothing else; arbitrary command grammar is out of reach, so
+the full answers remain: run the agent as a separate user, or run it in a container.
+This is stated here rather than discovered later.
 
 ## The layers, in evaluation order
 
@@ -239,7 +242,7 @@ does not mean "nobody else can read this".
 | Undo safety | warns on divergence | `expect_sha` hard `CONFLICT`, file untouched (warn-and-proceed unchanged without it); `fs.redo` journaled, drift-refusing, restart-safe |
 | Deletion | journal copy only | `fs.trash` tiers: `journal` \| `os-trash` (recycle bin + journal) \| `delete`; a no-trash host refuses and deletes nothing |
 | Grant audit | `metrics.approval_grant` | `policy.grant` returns a `receipt` + ledger row; a self-grant for a gated tool is itself approval-gated |
-| **`shell.run` script content** | deny on `script` glob only (over-matches, so not shipped as a default) | **still open** — argv-prefix + secret-path matcher; deny stays non-overridable |
+| **`shell.run` script content** | argv-prefix rules + secret-path matcher: `paths` globs match path tokens in script text (deny/escalate only — allow never scans free-form content); deny stays non-overridable | `test_engine_policy.py::test_deny_argv_prefix_blocks_shell_run_even_with_an_approval_token`, `::test_deny_script_content_secret_path_blocks_shell_run`, `::test_escalate_rule_scans_script_content`, `::test_allow_rules_do_not_match_script_content` |
 
 ## Test map
 

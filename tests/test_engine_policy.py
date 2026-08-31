@@ -306,6 +306,61 @@ def test_escalate_rule_reevaluates_risk_only_for_matched_calls():
         "the same tool without sudo stays auto-approved"
 
 
+def test_deny_script_content_secret_path_blocks_shell_run():
+    """The secret-path matcher: a `paths` glob is tested against the path-like
+    tokens *inside* script text - `cat .env` names `.env` even though the whole
+    string is not a path. Deny stays non-overridable, and the refusal names the
+    token that fired."""
+    ran = []
+    eng, _ = mkengine(handlers=[
+        (tool("shell.run", risk="privileged", props=_SHELL_PROPS, required=["script"]),
+         lambda **kw: ran.append(1) or {"ran": True})],
+        overrides={"policy": {"rule": [
+            {"action": "deny", "tool": "shell.run", "paths": ["**/.env*", "**/*.pem"],
+             "reason": "secret material never goes through the shell"}]}})
+    ctx = CallContext.from_config(eng.config)
+    res = eng.call("shell.run", {"script": "cat .env"}, ctx=ctx,
+                   approval_token="grant:shell.run")
+    assert res.error.code == "DENY_RULE", "deny outranks any token"
+    assert ran == [], "the handler must not run"
+    assert res.error.details["matched"] == \
+        {"arg": "script", "value": "cat .env", "glob": "**/.env*", "token": ".env"}
+    res2 = eng.call("shell.run", {"script": 'cp "certs/server.pem" /tmp/p'})
+    assert res2.error.code == "DENY_RULE", "quoted segments are scanned too"
+    assert res2.error.details["matched"]["token"] == "certs/server.pem"
+    assert eng.call("shell.run", {"script": "echo hello world"}, ctx=ctx,
+                    approval_token="grant:shell.run").ok, \
+        "the rule must not poison scripts that name no such path"
+
+
+def test_allow_rules_do_not_match_script_content():
+    """allow removes the approval requirement - but never on the strength of a
+    path mentioned inside free-form script text. Granting approval relief on
+    whatever string happens to name a path is policy granting on luck."""
+    eng, _ = mkengine(handlers=[
+        (tool("shell.run", risk="privileged", props=_SHELL_PROPS, required=["script"]),
+         lambda **kw: {"ran": True})],
+        overrides={"policy": {"rule": [
+            {"action": "allow", "tool": "shell.run", "paths": ["**/.env*"]}]}
+    })
+    res = eng.call("shell.run", {"script": "cat .env"})
+    assert res.error.code == "APPROVAL_REQUIRED", \
+        "an allow rule must not grant relief from script text that merely names the path"
+
+
+def test_escalate_rule_scans_script_content():
+    eng, _ = mkengine(handlers=[
+        (tool("shell.run", risk="write", props=_SHELL_PROPS, required=["script"]),
+         lambda **kw: {"ran": True})],
+        overrides={"policy": {"rule": [
+            {"action": "escalate", "tool": "shell.run", "paths": ["**/*.pem"]}]}
+    })
+    res = eng.call("shell.run", {"script": "cp certs/server.pem /tmp/p"})
+    assert res.error.code == "APPROVAL_REQUIRED", "naming a .pem escalates write to approval"
+    assert eng.call("shell.run", {"script": "echo hi"}).ok, \
+        "the same tool without the path stays auto-approved"
+
+
 def test_env_name_matcher_denies_by_name_not_value():
     eng, _ = mkengine(handlers=[
         (tool("shell.run", risk="write", props=_SHELL_PROPS, required=["script"]),
