@@ -349,6 +349,72 @@ def test_undo_task_rewinds_a_whole_turn(writable_toolkit):
 
 
 # ------------------------------------------------------------------ shell tools
+def test_fs_chmod_tool_returns_the_pasteable_block(writable_toolkit, workspace):
+    eng = writable_toolkit.engine
+    target = workspace / "bin" / "run.sh"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("#!/bin/sh\n", encoding="utf-8")
+    target.chmod(0o644)
+
+    r = call(eng, "fs.chmod", path="bin/run.sh", mode="u+x")
+    assert r.ok, r.error
+    assert (r.data["mode"], r.data["mode_before"]) == ("0o744", "0o644")
+    assert r.data["changed"] is True
+    assert r.data["undo"]["tool"] == "fs.undo" and r.data["undo_token"]
+
+    back = call(eng, "fs.undo", token=r.data["undo"]["args"]["token"])
+    assert back.ok and target.stat().st_mode & 0o777 == 0o644
+
+
+def test_fs_chmod_accepts_octal_as_string_or_int(writable_toolkit, workspace):
+    eng = writable_toolkit.engine
+    (workspace / "a.txt").write_text("x", encoding="utf-8")
+    (workspace / "b.txt").write_text("x", encoding="utf-8")
+    assert call(eng, "fs.chmod", path="a.txt", mode="600").data["mode"] == "0o600"
+    assert call(eng, "fs.chmod", path="b.txt", mode=0o444).data["mode"] == "0o444"
+    assert workspace.joinpath("b.txt").stat().st_mode & 0o777 == 0o444
+
+
+def test_fs_chmod_refuses_a_mode_it_cannot_read(writable_toolkit, workspace):
+    eng = writable_toolkit.engine
+    (workspace / "c.txt").write_text("x", encoding="utf-8")
+    before = (workspace / "c.txt").stat().st_mode
+    r = call(eng, "fs.chmod", path="c.txt", mode="755x")
+    assert not r.ok and r.error.code == "BAD_ARGS"
+    assert r.error.details["accepted"], "the refusal lists the forms that do work"
+    assert (workspace / "c.txt").stat().st_mode == before, "a rejected call changes nothing"
+
+
+def test_fs_chmod_through_the_sandbox_and_deny_rules(writable_toolkit, workspace):
+    eng = writable_toolkit.engine
+    outside = call(eng, "fs.chmod", path="/etc/hosts", mode="600")
+    assert not outside.ok and outside.error.code == "SANDBOX_VIOLATION"
+    denied = call(eng, "fs.chmod", path=".env", mode="600")
+    assert not denied.ok and denied.error.code == "DENY_RULE", "the deny list covers metadata writes too"
+
+
+def test_fs_chmod_manifest_promises_what_the_host_uses(writable_toolkit):
+    man = writable_toolkit.engine.registry.get("fs.chmod")
+    assert man.risk == "write" and man.reversible is True and man.idempotent is True
+    assert man.input_schema["required"] == ["path", "mode"]
+    assert "recursive" in man.input_schema["properties"]
+    assert any("chmod" in p or "permission" in p for p in man.tags)
+
+
+def test_fs_chmod_under_read_only_stays_available_as_a_preview(writable_toolkit, workspace):
+    """A tool that declares `dry_run` is the documented exception to read_only (§3)."""
+    (workspace / "d.txt").write_text("x", encoding="utf-8")
+    eng = writable_toolkit.engine
+    eng.config.policy.read_only = True
+    try:
+        refused = call(eng, "fs.chmod", path="d.txt", mode="600")
+        assert not refused.ok and refused.error.code == "READ_ONLY_MODE"
+        assert "dry_run" in refused.error.details["advice"]
+        preview = call(eng, "fs.chmod", path="d.txt", mode="600", dry_run=True)
+        assert preview.ok and preview.data["dry_run"] is True
+        assert workspace.joinpath("d.txt").stat().st_mode & 0o777 != 0o600
+    finally:
+        eng.config.policy.read_only = False
 def test_shell_quote_renders_literal_tokens_per_dialect(writable_toolkit):
     eng = writable_toolkit.engine
     r = call(eng, "shell.quote", args=["a b", "it's", "$HOME", "`id`"], dialect="bash")

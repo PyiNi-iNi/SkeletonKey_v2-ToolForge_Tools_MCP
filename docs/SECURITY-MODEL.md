@@ -136,11 +136,15 @@ silent loss.
 No network egress from the toolkit (`transport.network` tools are `risk: "network"` and
 `require_approval` by default; the P1 surface has none), no plugin trust model beyond
 "`tools.dropin_dirs` is operator input, so drop-ins run as the agent's user", and no
-permissions tool: `fs.*` has no `chmod`/`chown` in P1 on purpose, because a half-model of
-Windows ACLs is worse than none - the agent sets `icacls` (or `chmod`) through `shell.run`,
-and `fs.move`/`fs.write` preserve the mode they found. A real `fs.chmod` is `PLAN.md` §10
-step 0c; it must answer `UNSUPPORTED_PLATFORM` with the `icacls` recipe rather than pretend
-on ACL-only hosts.
+ownership tool: `fs.chmod` exists (mode bits, journalled, `recursive` re-checking every
+path it walks), `chown` is not a verb here at all (it needs the Windows
+runner before it is worth writing: P6), and neither half pretends about Windows. The rule was
+"do not ship a half-model of ACLs", and the shipped shape keeps it: on NT a chmod sets the
+read-only attribute and *nothing else*, so the call re-stats the path after writing and
+returns `effective` plus `partial_apply` when the bits you asked for did not stick - the
+`icacls` recipe is offered as an unverified template, not as a claim. Refusing to report
+success for a permission the OS ignored is the security-relevant part: `0600` on Windows
+does not mean "nobody else can read this".
 
 ## Known gaps (P3 closes these)
 

@@ -10,7 +10,7 @@ version: "1"
 tags: [filesystem, refactor, safety, undo]
 priority: 65
 requires: [fs]
-allowed-tools: [fs.read, fs.write, fs.patch, fs.search, fs.glob, fs.list, fs.stat, fs.move, fs.delete, fs.mkdir, fs.undo, fs.undo_task, fs.journal_list]
+allowed-tools: [fs.read, fs.write, fs.patch, fs.search, fs.glob, fs.list, fs.stat, fs.move, fs.delete, fs.mkdir, fs.chmod, fs.undo, fs.undo_task, fs.journal_list]
 ---
 
 # Safe filesystem changes
@@ -103,6 +103,12 @@ metadata for writes/patches/deletes/moves; directories are snapshotted as a tar.
 Inline snapshots cover files ≤96 KB; larger files keep a shadow copy. If
 `fs.undo` says the shadow copy is gone (a `prune` happened), rebuild from VCS
 instead of improvising - and say which you did.
+
+A permission change is a mutation too. `fs.chmod {path, mode}` journals the previous
+*bits* rather than a copy of the file, so the same `undo_token` puts them back, and an
+unparseable mode is refused instead of falling back to something plausible. `chown` is not
+a tool here: ownership is out of scope, so a script that needs it is a policy question, not
+a file edit.
 
 ## 7. Deletion and moves
 

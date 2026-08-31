@@ -33,7 +33,7 @@ class JournalEntry:
     token: str
     seq: int
     ts: float
-    action: str                 # write | create | delete | move
+    action: str                 # write | create | delete | move | chmod
     path: str                   # display path
     abs_path: str
     task_id: str = ""
@@ -100,6 +100,29 @@ class FsJournal:
         entry.existed_before = False
         entry.shadow = None
         entry.inline = None
+        return self._commit(entry)
+
+    def record_meta(self, res, *, action: str = "chmod", task_id: str = "") -> str:
+        """Journal a metadata-only change: no content moved, so there is no before-image to
+        keep - the previous mode *is* the before-image.
+
+        `entry.mode` alone is not enough. The index serialiser drops falsy values and `0o000`
+        is a perfectly legitimate mode to undo back to, so the number is mirrored in `meta`,
+        where a zero survives.
+        """
+        entry = self._new_entry(action, res, task_id)
+        entry.existed_before = True
+        try:
+            bits = _stat_mode(res.real)
+        except OSError as exc:
+            # Never invent a mode to restore: an undo that chmods 0o644 because the stat
+            # failed would hand read+write to something that was deliberately locked.
+            entry.meta["capture_error"] = str(exc)
+            entry.meta["undo_reliable"] = False
+        else:
+            entry.mode = bits
+            entry.mtime = _mtime(res.real)
+            entry.meta["mode_before"] = bits
         return self._commit(entry)
 
     def record_delete(self, res: Any, *, recursive: bool = False, task_id: str = "") -> str:
@@ -214,6 +237,17 @@ class FsJournal:
             plan["from"] = entry.shadow or "inline"
             plan["mkdirs"] = True
             return plan
+        if entry.action == "chmod":
+            plan["op"] = "chmod"
+            # `entry.mode` is 0o644 by default, and "the previous mode is unknown" is not the
+            # same fact as "the previous mode was 0o644" - so an unreliable capture yields no
+            # mode at all rather than a plausible-looking one that silently opens a locked file.
+            captured = entry.meta.get("mode_before") if entry.meta.get("undo_reliable", True) else None
+            plan["mode"] = captured
+            if captured is None:
+                plan["warning"] = ("the previous mode could not be read when this was recorded, so "
+                                   "undo cannot restore it - set it explicitly with fs.chmod")
+            return plan
         if entry.action == "move":
             plan["op"] = "move-back"
             plan["from"] = entry.moved_to
@@ -269,6 +303,24 @@ class FsJournal:
             else:
                 done.append("nothing to remove")
             return done
+        if op == "chmod":
+            mode = plan.get("mode")
+            if mode is None:
+                raise SkeletonKeyError(
+                    E.CONFLICT, "this entry records no mode to restore",
+                    details={"path": plan["display"], "token": getattr(plan.get("entry"), "token", ""),
+                             "advice": "set the mode explicitly with fs.chmod instead of undoing"},
+                )
+            if not os.path.exists(target):
+                return [f"mode not restored: {plan['display']} no longer exists"]
+            try:
+                os.chmod(target, mode)
+            except OSError as exc:
+                raise SkeletonKeyError(
+                    E.UNSUPPORTED_PLATFORM, f"could not restore the mode on {plan['display']}: {exc}",
+                    details={"path": plan["display"], "mode": oct(mode)}) from exc
+            return [f"restored mode {oct(mode)} on {plan['display']}"]
+
         if op == "move-back":
             src = plan["from"]
             # moving it back also takes it away, so the current location must be in scope too

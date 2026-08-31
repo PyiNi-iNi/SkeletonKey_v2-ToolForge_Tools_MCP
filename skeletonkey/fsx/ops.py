@@ -688,20 +688,125 @@ class Fs:
                 out["undo"] = {"tool": "fs.undo", "args": {"token": token}}
         return out
 
-    def chmod(self, path: str, mode: str | int, *, dry_run: bool = False) -> dict[str, Any]:
+    def chmod(self, path: str, mode: str | int, *, recursive: bool = False,
+              dry_run: bool = False, task_id: str = "") -> dict[str, Any]:
+        """Set mode bits, journalled so `fs.undo` puts the old mode back.
+
+        Every target is resolved through the sandbox *before* anything is written, so a
+        denied path inside a recursive walk refuses the whole call rather than half-applying.
+        A mode that already matches records nothing: idempotency should be visible in the
+        journal, not disguised as a restore point.
+        """
         res = self.sb.resolve(path, intent="write")
-        bits = mode if isinstance(mode, int) else _parse_mode(mode)
+        targets, truncated = self._chmod_targets(res, recursive=recursive)
+        plans: list[tuple[Resolved, int, int]] = []
+        for t in targets:
+            if not t.exists:
+                raise SkeletonKeyError(
+                    E.ENOENT, f"{t.display} does not exist",
+                    details={"path": t.display, "suggested": self._suggest(t),
+                             "advice": "chmod needs a real inode; a missing path is not the same "
+                                       "as an empty one"},
+                )
+            try:
+                current = stat.S_IMODE(os.stat(t.real).st_mode)
+            except OSError as exc:
+                raise SkeletonKeyError(E.IO, f"could not read the mode of {t.display}: {exc}",
+                                       details={"path": t.display}) from exc
+            plans.append((t, current, _parse_mode(mode, current)))
         if dry_run:
-            return {"path": res.display, "would_chmod": oct(bits)}
-        try:
-            os.chmod(res.real, bits)
-        except (OSError, NotImplementedError) as exc:
+            would = [{"path": t.display, "from": oct(cur), "to": oct(want),
+                      "changed": cur != want} for t, cur, want in plans]
+            return {"path": res.display, "dry_run": True, "targets": would,
+                    "would_chmod": oct(plans[0][2]), "changed_count": sum(1 for p in would if p["changed"])}
+        applied, skipped, failures = [], [], []
+        for t, current, want in plans:
+            if current == want:
+                skipped.append(t.display)
+                continue
+            token = self.journal.record_meta(t, task_id=task_id) if self.journal else ""
+            try:
+                os.chmod(t.real, want)
+            except (OSError, NotImplementedError) as exc:
+                if self.journal and token:
+                    self.journal.discard(token)
+                raise SkeletonKeyError(
+                    E.UNSUPPORTED_PLATFORM, f"chmod failed on {t.display}: {exc}",
+                    details={"path": t.display, "os": os.name, "requested": oct(want),
+                             "advice": "on Windows, mode bits collapse to the read-only "
+                                       "attribute; use ACLs (icacls) for real permissions"},
+                ) from exc
+            try:
+                actual = stat.S_IMODE(os.stat(t.real).st_mode)
+            except OSError:
+                actual = want
+            row = {"path": t.display, "from": oct(current), "mode": oct(want)}
+            if actual != want:
+                # Windows reports success for bits it does not store. Say so instead of
+                # letting the agent believe 0o600 means "nobody else can read this".
+                row["effective"] = oct(actual)
+                row["note"] = ("the filesystem did not keep every bit; this is expected on "
+                               "Windows, where chmod sets the read-only attribute and ACLs "
+                               "do the real work")
+                failures.append(row)
+            if token:
+                row["undo_token"] = token
+            applied.append(row)
+        out: dict[str, Any] = {
+            "path": res.display, "mode": oct(plans[0][2]),
+            "mode_before": oct(plans[0][1]), "changed": bool(applied),
+            "targets": applied, "count": len(applied), "unchanged": len(skipped),
+        }
+        if truncated:
+            out["truncated"] = True
+            out["hint"] = f"recursive chmod stopped at {MAX_CHMOD_TARGETS} paths"
+        if failures:
+            out["partial_apply"] = failures
+            out["next_actions"] = [{
+                "tool": "shell.run",
+                "note": "template, not a verified recipe - confirm the principal and rights "
+                        "before running it on a machine you care about",
+                "args": {"dialect": "pwsh",
+                         "script": "icacls $args[0] /inheritance:r /grant:r $args[1]",
+                         "argv": [res.real, 'BUILTIN\\Users:(OI)(CI)R']}}]
+        # `undo_token` at the top level is the convention every other mutating fs tool
+        # follows, so an agent that only reads one key still gets a way back. A recursive
+        # chmod has one token per changed path, and `fs.undo_task` is the honest way to
+        # reverse all of them.
+        tokens = [row["undo_token"] for row in applied if row.get("undo_token")]
+        if tokens:
+            out["undo_token"] = tokens[0]
+            out["undo_tokens"] = tokens
+            out["undo"] = {"tool": "fs.undo", "args": {"token": tokens[0]}}
+            if len(tokens) > 1:
+                out["undo"]["note"] = (f"this reverts only {out['targets'][0]['path']}; the other "
+                                       f"{len(tokens) - 1} changed paths are in undo_tokens, or "
+                                       f"undo them together with fs.undo_task {out.get('task_id')!r}")
+        return out
+
+    def _chmod_targets(self, res: Resolved, *, recursive: bool) -> tuple[list[Resolved], bool]:
+        if not recursive:
+            return [res], False
+        if not res.is_dir:
             raise SkeletonKeyError(
-                E.UNSUPPORTED_PLATFORM, f"chmod unsupported/failed here: {exc}",
-                details={"path": res.display, "os": os.name,
-                         "note": "on Windows use ACLs (icacls) via shell.run instead"},
-            ) from exc
-        return {"path": res.display, "mode": oct(bits)}
+                E.BAD_ARGS, f"{res.display} is not a directory, so recursive=true has nothing to walk",
+                details={"path": res.display, "advice": "drop recursive=true for a single file"},
+            )
+        out = [res]
+        truncated = False
+        for root, dirs, files in os.walk(res.real):
+            # Symlinks are not descended into: `chmod -R` through a link is how a
+            # workspace-internal directory ends up changing /etc.
+            dirs[:] = sorted(d for d in dirs if not os.path.islink(os.path.join(root, d)))
+            for name in sorted(dirs) + sorted(files):
+                full = os.path.join(root, name)
+                if os.path.islink(full):
+                    continue
+                out.append(self.sb.resolve(full, intent="write"))
+                if len(out) >= MAX_CHMOD_TARGETS:
+                    return out, True
+        return out, truncated
+
 
     def stat(self, path: str) -> dict[str, Any]:
         return self.sb.resolve(path, intent="read").to_dict()
@@ -747,23 +852,120 @@ def _display(path: str, sb: PathSandbox) -> str:
         return path
 
 
-def _parse_mode(spec: str) -> int:
-    if re.fullmatch(r"[0-7]{3,4}", spec):
-        return int(spec, 8)
-    base = 0
-    for chunk in spec.split(","):
-        who, _, what = chunk.partition("=")
-        bits = 0
-        for b in what.split("+") if "+" in what else [what]:
-            bits |= {"r": 4, "w": 2, "x": 1}.get(b.strip(), 0) << (
-                6 if "u" in who else 3 if "g" in who else 0)
-        if "u" in who or "a" in who:
-            base |= bits << 6
-        if "g" in who or "a" in who:
-            base |= bits << 3
-        if "o" in who or "a" in who:
-            base |= bits
-    return base or 0o644
+_OCTAL_MODE = re.compile(r"0?[oO]?([0-7]{3,4})")
+_CLAUSE = re.compile(r"([ugoa]*)((?:[+\-=][rwxst]*)+)")
+_PAIR = re.compile(r"([+\-=])([rwxst]*)")
+_BITS = {"r": 4, "w": 2, "x": 1}
+_WHO_SHIFT = {"u": 6, "g": 3, "o": 0}
+# Which bit each class owns. `s` means setuid for u and setgid for g; the sticky bit belongs
+# to `o` and is spelled `t`. GNU chmod accepts sloppier mixtures by ignoring them, which is
+# the opposite of what an agent needs - here they are refused (see _SPECIAL_BIT).
+_CLASS_SPECIAL = {"u": 0o4000, "g": 0o2000, "o": 0o1000}
+_SPECIAL_BIT = {("u", "s"): 0o4000, ("g", "s"): 0o2000, ("o", "t"): 0o1000}
+MAX_CHMOD_TARGETS = 512
+
+
+def _special_or_plain(who: str, char: str, *, lenient: bool = False) -> int | None:
+    """The bit a `(who, char)` pair means, or `None` when `a` pulled in a class that lacks it."""
+    if char in "st":
+        bit = _SPECIAL_BIT.get((who, char))
+        if bit is None:
+            if lenient:
+                return None          # `a-s` means "every class that has an s bit"
+            raise _mode_error(
+                char, who=who, char=char,
+                why=f"`{who}{char}` is not a bit this toolkit models - the special bits are "
+                    f"`u+s` (setuid), `g+s` (setgid) and `o+t` (sticky); `a+s`/`a-t` are accepted "
+                    f"as shorthand, and octal covers anything else")
+        return bit
+    return _BITS[char] << _WHO_SHIFT[who]
+
+
+def _apply_pair(out: int, who: str, op: str, perms: str, spec: Any, clause: str,
+                *, lenient: bool = False) -> int:
+    """One `who op perms` element, applied to the running mode."""
+    if op == "+" and not perms:
+        raise _mode_error(spec, clause=clause,
+                          why="`+` needs at least one bit - use `-` or `=` to clear")
+    mask = bits = 0
+    for w in dict.fromkeys(who):
+        shift = _WHO_SHIFT[w]
+        # An empty rhs means "every rwx bit of that class" (`o-`, `go=`); a special bit is
+        # only named explicitly in the perms, so `a-` cannot invent a sticky bit - while `=`
+        # takes the class's own special with it, below.
+
+        for c in (perms or "rwx"):
+            bit = _special_or_plain(w, c, lenient=lenient)
+            if bit is not None:
+                mask |= bit
+        if op == "=":
+            # `=` replaces the whole triple, and the triple includes that class's special
+            # bit: `a=r` is 0o444, and `o=` on a sticky dir is 0o770 with the sticky gone.
+            # Cross-checked against /bin/chmod rather than against this comment.
+            mask |= (0o7 << shift) | _CLASS_SPECIAL[w]
+        if op != "-":
+            for c in perms:
+                bit = _special_or_plain(w, c, lenient=lenient)
+                if bit is not None:
+                    bits |= bit
+    if op == "+":
+        return (out | bits) & 0o7777
+    if op == "-":
+        return out & ~mask & 0o7777
+    return (out & ~mask | bits) & 0o7777
+
+
+def _parse_mode(spec: str | int, current: int = 0) -> int:
+    """Turn an octal or symbolic mode into bits, applied to `current`.
+
+    Accepted: `644`, `0644`, `0o755`, plain ints, and comma-separated symbolic clauses -
+    `u+x`, `go-w`, `a=r`, `u=rw,go=r`, `a=rwx,o+t`, `u=rws`. An empty who means all three,
+    per POSIX.
+
+    Anything else raises rather than guessing. Two things this deliberately does *not* do:
+    fall back to `0o644` for a spec it cannot read (the parser it replaced did, so one typo
+    stripped a script's execute bit silently), and accept GNU's silently-ignored mixtures
+    such as `u+t` - see `_SPECIAL_BIT`.
+    """
+    if isinstance(spec, bool):                       # bool is an int subclass; True is not a mode
+        raise _mode_error(spec)
+    if isinstance(spec, int):
+        if not 0 <= spec <= 0o7777:
+            raise _mode_error(spec)
+        return spec
+    if not isinstance(spec, str):
+        raise _mode_error(spec)
+    text = spec.strip()
+    if not text:
+        raise _mode_error(spec)
+    octal = _OCTAL_MODE.fullmatch(text)
+    if octal:
+        return int(octal.group(1), 8) & 0o7777
+    out = current & 0o7777
+    who = "ugo"
+    for clause in text.split(","):
+        piece = clause.strip()
+        cm = _CLAUSE.fullmatch(piece)
+        if not cm:
+            raise _mode_error(spec, clause=piece)
+        who_raw, body = cm.groups()
+        if who_raw:
+            who = "ugo" if "a" in who_raw else who_raw
+        # `a` is the one place a class may legitimately have no such bit: `a-s` clears
+        # setuid and setgid and says nothing about sticky, which is what GNU does too.
+        lenient = "a" in who_raw
+        for op, perms in _PAIR.findall(body):
+            out = _apply_pair(out, who, op, perms, spec, piece, lenient=lenient)
+    return out
+
+
+def _mode_error(spec: Any, **ctx: Any) -> SkeletonKeyError:
+    details = {"mode": spec if isinstance(spec, (int, str)) else repr(spec),
+               "accepted": ["644", "0o755", "u+x", "go-w", "a=r", "u=rw,go=r"],
+               "advice": "an unparseable mode is refused, never guessed - a silent 0o644 "
+                         "fallback would strip the execute bit off whatever you named"}
+    details.update(ctx)
+    return SkeletonKeyError(E.BAD_ARGS, f"unrecognised mode {spec!r}", details=details)
 
 
 def _copy_mode(src: str, dst: str) -> None:

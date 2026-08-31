@@ -175,7 +175,7 @@ def test_tools_list_is_mcp_shaped_and_carries_our_metadata(client):
     listing = client.request("tools/list", {})
     tools = listing["tools"]
     names = {t["name"] for t in tools}
-    assert {"fs.read", "fs.write", "fs.patch", "shell.run", "registry.search"} <= names
+    assert {"fs.read", "fs.write", "fs.patch", "fs.chmod", "shell.run", "registry.search"} <= names
     assert len(names) >= 29
     for t in tools:
         assert t["description"], "an agent selects tools from this string"

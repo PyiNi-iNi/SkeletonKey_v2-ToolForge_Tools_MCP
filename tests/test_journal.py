@@ -161,6 +161,45 @@ def test_undo_task_walks_newest_first_and_stops_on_failure(tree, tmp_path):
     assert warned and "changed since" in warned[0]["warnings"][0]
 
 
+
+# ------------------------------------------------------------- metadata-only entries
+def test_chmod_entry_restores_only_the_mode(tmp_path, tree):
+    j = FsJournal(str(tmp_path / "j"))
+    target = tree / "src" / "a.py"
+    os.chmod(target, 0o600)
+    token = j.record_meta(res_for(target))
+    os.chmod(target, 0o644)
+    out = j.undo(token)
+    assert out["undone"] is True and out["action"] == "chmod"
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600
+    assert target.read_text(encoding="utf-8").strip() == "print('a')", "undo must not touch content"
+
+
+def test_a_zero_mode_survives_the_index_round_trip(tmp_path, tree):
+    """`to_dict` drops falsy values, and 0o000 is a mode somebody will genuinely want back."""
+    j = FsJournal(str(tmp_path / "j"))
+    target = tree / "dir" / "one.txt"
+    os.chmod(target, 0o000)
+    token = j.record_meta(res_for(target))
+    reopened = FsJournal(str(tmp_path / "j"))
+    os.chmod(target, 0o644)
+    reopened.undo(token)
+    assert stat.S_IMODE(target.stat().st_mode) == 0o000
+
+
+def test_undo_refuses_to_invent_a_mode_when_the_capture_failed(tmp_path, tree):
+    j = FsJournal(str(tmp_path / "j"))
+    gone = tree / "dir" / "vanished.txt"
+    token = j.record_meta(res_for(gone))          # the path is unreadable: nothing captured
+    row = next(e for e in j.list() if e["token"] == token)
+    assert row["meta"]["undo_reliable"] is False
+    os.chmod(tree / "src" / "a.py", 0o600)
+    plan = j._plan(j._entries[token])
+    assert plan["mode"] is None and "cannot restore" in plan["warning"]
+    # 0o644 is the dataclass default, and treating "unknown" as that number is how a
+    # locked file gets opened by an undo.
+    assert stat.S_IMODE((tree / "src" / "a.py").stat().st_mode) == 0o600
+
 def test_undo_unknown_token_reports_known_ones(tree, tmp_path):
     from skeletonkey.core.errors import SkeletonKeyError
 

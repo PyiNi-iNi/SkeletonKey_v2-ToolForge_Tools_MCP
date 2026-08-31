@@ -119,3 +119,4 @@ state and an autopilot may reuse them.
 | `Get-Content file -Raw` then string-replace | `fs.read` + `fs.patch` (undoable) |
 | assuming `/tmp` exists on Windows | `shell.run {script: '$env:TEMP'}` or config tempdir |
 | piping secrets as argv | `stdin_text` or a file under a sandbox root |
+| `chmod`/`icacls` in a script for a file you could just name | `fs.chmod {path, mode}` - journalled, identical on both platforms, and it reports the bits Windows dropped |

@@ -22,6 +22,9 @@ roots = ["."]
 
 [fs]
 follow_symlinks = "within-roots"  # never | within-roots | always
+# `fs.chmod {recursive: true}` walks at most 512 paths (a code constant today, not a knob),
+# never follows a symlink out of the roots, and refuses the whole call if any path in the
+# walk is denied - so a deny rule below is not something a recursive chmod routes around.
 atomic_write = true               # write temp + os.replace: a crash cannot half-write
 newline = "preserve"              # preserve | lf | crlf | native (native = per-OS)
 encoding = "utf-8"

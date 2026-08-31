@@ -37,13 +37,15 @@ list of `str` (ints/floats stringified, `bool` refused), ≤ 128 entries, no NUL
 after the script path, so bash gets `$1..$n`/`"$@"`, PowerShell gets `$args`, Python gets
 `sys.argv[1:]`. Quoting is factored into `shells/dialect.py` (`quote_arg`, `quote_args`,
 `command_line`, `DIALECT_FAMILY`), which `shell.quote` wraps for agents; handler code and the
-tool share one implementation, so they cannot drift. the result records the effective list in `data` under `argv`, so a replay
-has the whole invocation, and the argv file is cleaned up with the script.
+tool share one implementation, so they cannot drift. The result records the effective list under
+`data` as `argv`, so a replay has the whole invocation, and the argv file is cleaned up
+with the script.
 
 ## Consequences
 
 Two quoting tests run real bash (argv round-trip; embed-and-run), so PowerShell and bash
-literal forms differ by construction, not by memory. `fs.chmod` remains the one gap where an
-agent must still shell out for a file operation — the roadmap's step 0c. The renderer contract
+literal forms differ by construction, not by memory. The same standard was applied to the gap
+it exposed (`fs.chmod`, step 0c): its mode parser is verified against `/bin/chmod` on this box
+rather than against the man page. The renderer contract
 in `docs/SHELL-DIALECTS.md` now states both halves: the preamble is ours, the body is verbatim,
 and values that must live in the body are quoted per family.

@@ -42,13 +42,13 @@ tk.engine.call("shell.run", {"script": 'printf "[%s]" "$@"', "dialect": "bash",
 
 | Group | Tools | Notes |
 | --- | --- | --- |
-| `fs.*` | 14 | read/write/patch/search/list/glob/stat/sniff/move/delete/mkdir + journal, undo, undo_task |
+| `fs.*` | 15 | read/write/patch/search/list/glob/stat/sniff/move/delete/mkdir/chmod + journal, undo, undo_task |
 | `shell.*` | 10 | run (with `argv`)/quote/available/jobs/job_wait/job_kill/sessions; bash, sh, zsh, fish, pwsh, powershell 5.1+7, python |
 | `registry.*` | 4 | describe/list/search/stats — the agent's view of its own capabilities |
 | `skills.*` | 3 | list/load/match (progressive disclosure) |
 | `profile.probe` | 1 | host capability detection with receipts |
 
-32 registered, 30 advertised, ~1.9 k tokens of advertisement. Every call returns the same
+33 registered, 31 advertised, ~2.2 k tokens of advertisement. Every call returns the same
 envelope and the same error taxonomy: see
 [`docs/TOOL-CONTRACT.md`](docs/TOOL-CONTRACT.md).
 

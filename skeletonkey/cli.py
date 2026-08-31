@@ -82,13 +82,15 @@ def main(argv: list[str] | None = None) -> int:
     j.add_argument("action", choices=["list", "wait", "kill"], nargs="?", default="list")
     j.add_argument("job_id", nargs="?", default="")
 
-    f = sub.add_parser("fs", help="ls/cat/write/patch/search/glob/stat/rm/mv/mkdir")
+    f = sub.add_parser("fs", help="ls/cat/write/patch/search/glob/stat/rm/mv/mkdir/chmod")
     f.add_argument("action", choices=["ls", "cat", "write", "patch", "search", "glob", "stat",
-                                      "rm", "mv", "mkdir", "undo", "undo-task", "journal"])
+                                      "rm", "mv", "mkdir", "chmod", "undo", "undo-task", "journal"])
     f.add_argument("args", nargs="*")
     f.add_argument("--pattern", default=None)
     f.add_argument("--regex", action="store_true")
     f.add_argument("--edits-file", default=None, help="JSON file with fs.patch edits")
+    f.add_argument("-R", "--recursive", action="store_true",
+                   help="with chmod: walk a directory (symlinks are never followed)")
 
     sk = sub.add_parser("skills", help="list/load/match skills")
     sk.add_argument("action", choices=["list", "load", "match"], nargs="?", default="list")
@@ -239,6 +241,12 @@ def _dispatch(args: argparse.Namespace, tk: Any, call: Any, cfg: Config) -> int:
         return _emit(call("fs.move", {"src": rest[0], "dst": rest[1]}), json_out=args.json)
     if act == "mkdir":
         return _emit(call("fs.mkdir", {"path": rest[0]}), json_out=args.json)
+    if act == "chmod":
+        # a real flag, not a token in the positional list: a stray "-R" silently treated as
+        # a path name would be the one thing this tool refuses to do on its own
+        return _emit(call("fs.chmod", {"path": rest[0], "mode": rest[1],
+                                       "recursive": bool(getattr(args, "recursive", False))}),
+                     json_out=args.json)
     if act == "undo":
         return _emit(call("fs.undo", {"token": rest[0]}), json_out=args.json)
     if act == "undo-task":

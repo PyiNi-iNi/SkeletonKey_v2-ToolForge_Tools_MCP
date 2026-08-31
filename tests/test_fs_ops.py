@@ -4,12 +4,15 @@ preservation, patch semantics, and the undo journal."""
 from __future__ import annotations
 
 import os
+import shutil
+import stat
+import subprocess
 
 import pytest
 
 from skeletonkey.core.errors import SkeletonKeyError
 from skeletonkey.fsx.journal import FsJournal
-from skeletonkey.fsx.ops import Fs, sniff
+from skeletonkey.fsx.ops import MAX_CHMOD_TARGETS, Fs, _parse_mode, sniff
 from skeletonkey.fsx.sandbox import PathSandbox, SandboxPolicy
 
 
@@ -289,3 +292,181 @@ def test_journal_persists_index_and_survives_reopen(workspace, rawfs):
     listed = again.list()
     assert any(e["token"] == token for e in listed)
     assert again.summary()["entries"] >= 1
+
+
+# --------------------------------------------------------------------------- mode bits
+# (spec, mode-before, expected). Symbolic modes are applied *to the current bits*, which is
+# why `u+x` on 0o644 is 0o744 and not 0o100.
+MODE_CASES = [
+    ("u+x", 0o644, 0o744),
+    ("go-w", 0o777, 0o755),
+    ("a=r", 0o777, 0o444),           # `=` replaces the triple; it does not "add r"
+    ("u=rw,go=r", 0o000, 0o644),
+    ("+x", 0o600, 0o711),            # empty who means a, per POSIX
+    ("a-x", 0o755, 0o644),
+    ("u=rwx,g=rx,o=", 0o777, 0o750),
+    ("go=", 0o777, 0o700),           # empty rhs = every bit that class has
+    ("o-rwx", 0o755, 0o750),
+    ("a=", 0o777, 0o000),
+    ("u-s", 0o7755, 0o3755),         # only u's setuid goes
+    ("go=r", 0o700, 0o744),
+    ("o=", 0o1777, 0o770),           # `=` takes the class's own special bit with it
+    ("u=rws", 0o000, 0o4600),         # `s` in place of x: setuid without execute
+    ("a+rwx,u+s", 0o000, 0o4777),
+    ("644", 0o777, 0o644),
+    ("0644", 0o000, 0o644),
+    ("0o755", 0o000, 0o755),         # our extension: GNU chmod rejects the 0o prefix
+    (0o700, 0o777, 0o700),
+]
+
+
+@pytest.mark.parametrize("spec,base,want", MODE_CASES)
+def test_mode_parser_applies_the_spec_to_the_current_bits(spec, base, want):
+    assert _parse_mode(spec, base) == want
+
+
+@pytest.mark.parametrize("spec", ["", "  ", "78", "banana", "u+", "u?x", "u=rw;go=r", "0o9999",
+                                  "u=rwv", ",u+x", "u+t", "go+t", "x+u", True, 0o10000, None, ["644"]])
+def test_an_unparseable_mode_is_refused_instead_of_defaulting(spec):
+    """The parser this replaced returned 0o644 for anything it could not read.
+
+    That is the worst possible failure here: `chmod("deploy.sh", "755x")` would have stripped
+    the execute bit and reported success.
+    """
+    with pytest.raises(SkeletonKeyError) as exc:
+        _parse_mode(spec, 0o644)
+    assert exc.value.code == "BAD_ARGS"
+    assert exc.value.details.get("accepted"), "a refusal must say what is accepted"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits")
+@pytest.mark.parametrize("spec", [c[0] for c in MODE_CASES
+                                   if isinstance(c[0], str) and not c[0].startswith("0o")])
+def test_mode_parser_agrees_with_the_chmod_on_this_box(tmp_path, spec):
+    """Verified against /bin/chmod, not against my reading of a man page.
+
+    Where GNU silently ignores a bit (`u+t` on a file) we refuse it, which is why the
+    accepted list here is a subset of what GNU accepts.
+    """
+    chmod = shutil.which("chmod")
+    if chmod is None:
+        pytest.skip("no chmod on PATH")
+    for base in (0o000, 0o644, 0o777, 0o1777, 0o4755):
+        f = tmp_path / f"probe-{base:o}"
+        f.write_text("", encoding="utf-8")
+        os.chmod(f, base)
+        done = subprocess.run([chmod, spec, str(f)], capture_output=True, text=True)
+        assert done.returncode == 0, f"chmod {spec} refused on this box: {done.stderr.strip()}"
+        got = stat.S_IMODE(os.stat(f).st_mode)
+        assert _parse_mode(spec, base) == got, f"{spec} on {oct(base)}: GNU {oct(got)}, us {oct(_parse_mode(spec, base))}"
+
+
+def test_chmod_sets_bits_and_returns_what_to_undo(rawfs, workspace):
+    fs, _ = rawfs
+    target = workspace / MOD
+    target.chmod(0o600)
+    r = fs.chmod(MOD, "u+x")
+    assert r["mode"] == "0o700" and r["mode_before"] == "0o600", "u+x on 0600 is 0700"
+    assert r["changed"] is True and r["count"] == 1
+    assert stat.S_IMODE(target.stat().st_mode) == 0o700
+    assert r["undo"]["args"]["token"] == r["undo_token"], "the block a host pastes back must be real"
+    r2 = fs.chmod(MOD, "u+x")
+    assert r2["changed"] is False, "a second identical call is a no-op, not a second restore point"
+
+
+
+def test_a_chmod_that_would_change_nothing_records_nothing(rawfs, workspace):
+    fs, jr = rawfs
+    (workspace / MOD).chmod(0o644)
+    r = fs.chmod(MOD, "u+rw,g+r,o+r")
+    assert r["changed"] is False and r["unchanged"] == 1 and "undo_token" not in r
+    assert jr.list(paths="mod.py") == [], "an idempotent no-op must not become a fake restore point"
+
+
+def test_chmod_dry_run_reports_without_touching_the_disk(rawfs, workspace):
+    fs, _ = rawfs
+    (workspace / MOD).chmod(0o644)
+    r = fs.chmod(MOD, "700", dry_run=True)
+    assert r["dry_run"] is True and r["would_chmod"] == "0o700" and r["changed_count"] == 1
+    assert r["targets"][0] == {"path": MOD, "from": "0o644", "to": "0o700", "changed": True}
+    assert stat.S_IMODE((workspace / MOD).stat().st_mode) == 0o644
+
+
+def test_recursive_chmod_walks_a_directory(rawfs, workspace):
+    fs, _ = rawfs
+    d = workspace / "scripts"
+    d.mkdir()
+    (d / "nested").mkdir()
+    # tmp dirs arrive as 0700, which already differs from the files; normalise the base so
+    # "count" means "the three files", not "the three files plus whatever the umask did".
+    os.chmod(d, 0o755)
+    names = []
+    for i in range(3):
+        (d / f"s{i}.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+        names.append(f"s{i}.sh")
+    os.chmod(d / "nested", 0o755)
+    (d / "nested" / "deep.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+    for rel in names:
+        os.chmod(d / rel, 0o644)
+    r = fs.chmod("scripts", "a+x", recursive=True)
+    assert r["count"] == 4, "the three scripts plus the one nested below; both dirs already had +x"
+    for rel in names:
+        assert stat.S_IMODE((d / rel).stat().st_mode) & 0o111 == 0o111
+    assert stat.S_IMODE((d / "nested" / "deep.sh").stat().st_mode) & 0o111 == 0o111
+
+
+def test_recursive_chmod_does_not_follow_a_symlink_out_of_the_root(rawfs, workspace, tmp_path):
+    fs, _ = rawfs
+    outside = tmp_path / "outside-target.txt"
+    outside.write_text("not yours", encoding="utf-8")
+    os.chmod(outside, 0o600)
+    d = workspace / "links"
+    d.mkdir()
+    (d / "escape").symlink_to(outside)
+    (d / "own.txt").write_text("mine", encoding="utf-8")
+    os.chmod(d / "own.txt", 0o600)
+    fs.chmod("links", "a+r", recursive=True)
+    assert stat.S_IMODE(outside.stat().st_mode) == 0o600, "chmod -R through a link is how /etc gets touched"
+    assert stat.S_IMODE((d / "own.txt").stat().st_mode) & 0o044 == 0o044
+
+
+def test_recursive_chmod_refuses_the_whole_call_when_one_path_is_denied(workspace):
+    d = workspace / "mixed"
+    d.mkdir()
+    (d / "ok.txt").write_text("x", encoding="utf-8")
+    os.chmod(d / "ok.txt", 0o644)
+    (d / "secret.key").write_text("x", encoding="utf-8")
+    os.chmod(d / "secret.key", 0o600)
+    sb = PathSandbox([str(workspace)], SandboxPolicy(deny=["**/secret*"]))
+    fs = Fs(sb, journal=None)
+    with pytest.raises(SkeletonKeyError) as exc:
+        fs.chmod("mixed", "a+r", recursive=True)
+    assert exc.value.code == "DENY_RULE"
+    assert stat.S_IMODE((d / "ok.txt").stat().st_mode) == 0o644, "a refusal must happen before any write"
+
+
+def test_recursive_chmod_stops_at_the_cap_and_says_so(rawfs, workspace, monkeypatch):
+    fs, _ = rawfs
+    d = workspace / "many"
+    d.mkdir()
+    for i in range(6):
+        (d / f"f{i}.txt").write_text("x", encoding="utf-8")
+    monkeypatch.setattr("skeletonkey.fsx.ops.MAX_CHMOD_TARGETS", 3)
+    r = fs.chmod("many", "a+r", recursive=True)
+    assert r["truncated"] is True and r["count"] + r["unchanged"] <= MAX_CHMOD_TARGETS
+    assert "cap" in r["hint"] or "stopped" in r["hint"]
+
+
+def test_recursive_chmod_on_a_file_is_an_error_not_a_no_op(rawfs, workspace):
+    fs, _ = rawfs
+    with pytest.raises(SkeletonKeyError) as exc:
+        fs.chmod(MOD, "644", recursive=True)
+    assert exc.value.code == "BAD_ARGS" and "not a directory" in exc.value.err.message
+
+
+def test_chmod_on_a_missing_path_says_so_with_nearby_names(rawfs, workspace):
+    fs, _ = rawfs
+    with pytest.raises(SkeletonKeyError) as exc:
+        fs.chmod("src/pkg/mod.pyi", "644")
+    assert exc.value.code == "ENOENT"
+    assert "src/pkg/mod.py" in str(exc.value.details["suggested"])

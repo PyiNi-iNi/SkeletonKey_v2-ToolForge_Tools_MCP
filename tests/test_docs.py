@@ -43,7 +43,6 @@ ENGINE_KWARGS = {"ctx", "dry_run", "max_output_bytes", "idempotency_key", "appro
 # quietly become a graveyard. (Checked by `test_pending_names_are_annotated`.)
 PENDING = {
     "fs.redo": "P3",
-    "fs.chmod": "step 0c",
     "policy.grant": "P3",
     "skills.install": "P2",
     "skills.allow_install": "P2",

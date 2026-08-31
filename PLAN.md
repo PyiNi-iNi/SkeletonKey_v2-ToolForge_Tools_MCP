@@ -9,15 +9,15 @@ committed as a workflow file yet.
 ```bash
 pip install -e ".[dev,mcp]"
 ruff check .                      # All checks passed!
-pytest -q -m "not slow"           # 377 passed, 2 skipped, 1 xfailed  (~18 s)
+pytest -q -m "not slow"           # 448 passed, 2 skipped, 1 xfailed  (~18 s)
 sk describe                       # what this host advertises, with probe receipts
-python -m skeletonkey.mcp         # stdio server: 30 tools, prompts, resources
+python -m skeletonkey.mcp         # stdio server: 31 tools, prompts, resources
 ```
 
-Measured on this box: 32 tools registered / 30 advertised / **1 909 tokens** of
-advertisement (`digest d5de0fcc7cb61eb5`), 10 probed capabilities, 2 skills discovered,
-0 load errors. Code: 10 102 lines in `skeletonkey/`, 16 files in `tests/` (377 passing,
-2 skipped, 1 xfailed), 1,919 lines of docs (this plan, four contract docs,
+Measured on this box: 33 tools registered / 31 advertised / **2 178 tokens** of
+advertisement (`digest 37174690ee154168`), 10 probed capabilities, 2 skills discovered,
+0 load errors. Code: 10 394 lines in `skeletonkey/`, 16 files in `tests/` (448 passing,
+2 skipped, 1 xfailed), 1941 lines of docs (this plan, four contract docs,
 README; seven ADRs). No workflow file is committed on this branch — the pushing token
 cannot write to `.github/workflows/` — and the pipeline is specified in §6 for whoever
 lands it (one command reproduces it locally: `ruff check . && pytest -q -m "not slow"`).
@@ -107,7 +107,7 @@ skeletonkey/
 skills/        fs-safe-refactor/  shell-crossplatform/   (SKILL.md + references/ + tool.toml)
 schemas/       tool-manifest.schema.json  tool-result.schema.json  skill-frontmatter.schema.json
 config/        skeletonkey.example.toml
-tests/         16 files, 377 tests, incl. a raw-JSON-RPC MCP stdio client
+tests/         16 files, 448 tests, incl. a raw-JSON-RPC MCP stdio client
 docs/          TOOL-CONTRACT, SHELL-DIALECTS, SKILLS-SPEC, SECURITY-MODEL, adr/0001-0007
 ```
 
@@ -209,7 +209,7 @@ of a fixed tool list.
   files), `tools/listChanged` advertised, `initialize` untouched.
 - **CLI**: `sk profile|tools|shell|jobs|fs|skills|describe|call|mcp` for humans and CI.
 
-**Acceptance (all green).** 377 tests including a raw JSON-RPC stdio client that proves:
+**Acceptance (all green).** 448 tests including a raw JSON-RPC stdio client that proves:
 stdout carries only protocol frames; `fs.read` of `../../../etc/passwd` is a *tool*
 error (`isError: true`, `SANDBOX_VIOLATION`) and the session survives; `registry.stats`
 counts successes; a spill artifact's `fetch_rest` is a legal `fs.read`; a denied dialect
@@ -373,7 +373,7 @@ easy to over-promise: anything that reads wall time or host state must declare
 
 ### P5 — Scale and discovery
 
-**Goal.** 32 tools become 200 without the host drowning: routing, ranking, and a tool
+**Goal.** 33 tools become 200 without the host drowning: routing, ranking, and a tool
 list that changes underneath it safely.
 
 **Deliverables.**
@@ -521,7 +521,8 @@ that quietly excluded them from CI would be a worse gate. The
 editing the pipeline spec.
 
 | `test` | ubuntu-latest + windows-latest × py3.11 + py3.13 | `pip install -e ".[dev,mcp]"` → `ruff check .` → `pytest -q -m "not slow" --tb=short` → `sk describe` (prints what that host advertises, so a gating regression shows up as a diff in a log line) |
-| `smoke` | ubuntu + windows, py3.11, **`.[mcp]` only** (no dev extra) | `sk --version`, `sk profile`, `sk tools list`, `sk skills list`; then a real turn through the CLI — `fs search`, `fs patch` with an edits file, `grep` the patched file, `fs write` from stdin, `sk shell "echo sentineled" --dialect bash`; then pipe `initialize` + `notifications/initialized` + `tools/list` (protocol `2025-06-18`) into `python -m skeletonkey.mcp --cwd <tmp>` and assert `fs.patch`/`shell.run` came back. All four commands were run locally on Linux before this branch was pushed. |
+| `smoke` | ubuntu + windows, py3.11, **`.[mcp]` only** (no dev extra) | `sk --version`, `sk profile`, `sk tools list`, `sk skills list`; then a real turn through the CLI — `fs search`, `fs patch` with an edits file, `grep` the patched file, `fs write` from stdin, `sk fs chmod <path> u+x` (plus `-R` on a directory and one bad mode for
+the error path), `sk shell "echo sentineled" --dialect bash`; then pipe `initialize` + `notifications/initialized` + `tools/list` (protocol `2025-06-18`) into `python -m skeletonkey.mcp --cwd <tmp>` and assert `fs.patch`/`shell.run` came back. Every step was run locally on Linux before this branch was pushed — including the chmod steps, whose `metrics` show `undo_available: true` because the manifest promises reversibility. |
 | `audit` | ubuntu-latest, `continue-on-error` | `pip-audit` after `pip install -e ".[all]"`; the core declares nothing to audit, so this is advisories in the extras only, and it must not block a docs PR until the floor is pinned in a lockfile |
 
 `windows-latest` starts as `continue-on-error: true` and becomes a gate in P6. That is not
@@ -606,16 +607,25 @@ against the live registry, checks every bare `` `fs.x` ``-style name against too
 capabilities / config keys, checks every ``| `CODE` |`` table row against `E`, and requires an
 inline phase citation for any tool the roadmap still owes. It found **ten** real drifts in
 its first run: `shell.wait`, `shell.kill`, `shell.job_status` and `shell.job_kill {signal}`
-(in SKILLS-SPEC) never existed; `shells.run` and `fs.chmod` were cited as tools; `fs.roots`
+(in SKILLS-SPEC) never existed; `shells.run` and `fs.chmod` were cited as tools (`fs.chmod` is one now — step 0c); `fs.roots`
 and `fs.max_read_bytes` were config keys that are actually `roots` and `budget.max_read_bytes`;
 `fs.journal_summary` is `fs.journal_list`; and README's tool counts were stale. A second run
 found more (see its own docstring). Unreferenced citations fail too, so the register below
 cannot quietly rot.
 
-**Step 0c — next free day:** expose `fs.chmod` as a tool. `fsx/ops.py` already preserves
-modes through `fs.move`/`fs.write`, but agents have no first-class way to set permissions, so
-they shell out — and on ACL-only Windows hosts the honest answer is an envelope with the
-`icacls` recipe rather than prose.
+**Step 0c — shipped:** `fs.chmod {path, mode, recursive?, dry_run?}`. Agents had no
+first-class way to set permissions, so they shelled out and got an unverifiable string back.
+Four decisions inside it: a mode is parsed by a **verified** parser (18 hand-written cases plus
+every spec run against `/bin/chmod` on this box — `a=r` replaces the whole triple, `o=` takes
+that class's own special bit with it, `u=rws` means setuid *without* execute); an unparseable
+mode is `BAD_ARGS` naming the accepted forms, never the `0o644` fallback the internal helper
+used to make; `recursive` resolves and checks *every* path through the sandbox before writing
+any, skips symlinks, and stops at 512 targets with `truncated: true`; and it is journalled (the
+journal's metadata entry stores the previous bits, not a content copy), so `fs.undo` puts the
+mode back — refusing when the capture failed instead of restoring a default. On Windows the bits
+collapse to the read-only attribute, so the call re-stats the path and reports `effective` plus
+`partial_apply` rather than claiming success. Still open here: `chown` (P6, with the Windows
+runner that can prove it).
 
 **Then the phases, in order:** P2 (skill synthesis, whose handler-body rule already exists in
 `docs/SKILLS-SPEC.md` §Constraints and depends on step 0) → P3 (policy, rate limits, trash,

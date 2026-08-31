@@ -326,6 +326,38 @@ _spec(
 )
 
 _spec(
+    id="fs.chmod", title="Set the mode bits on a path",
+    description="Set permissions inside the sandbox from an octal mode (`644`, `0o755`) or "
+        "symbolic clauses (`u+x`, `go-w`, `a=r`, `a=rwx,o+t`). Symbolic modes are applied to the "
+        "current bits, so `u+x` cannot wipe what you did not name. Journaled: `fs.undo` puts the "
+        "previous mode back. A mode that already matches changes and records nothing. On Windows "
+        "the mode bits collapse to the read-only attribute - the result says so when the bits you "
+        "asked for did not stick, because '0600' there does not mean 'nobody else can read this'.",
+    capability="fs.chmod", risk="write", idempotent=True, reversible=True,
+    parallel_safe=False, typical_latency_ms=8,
+    tags=["permissions", "chmod", "mode", "executable", "read-only", "icacls", "windows", "unix"],
+    anti_patterns=["not a way to change ownership, and not an ACL editor on Windows",
+                   "don't chmod +x and expect a runnable file if the shebang or the interpreter "
+                   "is missing - check with fs.sniff/fs.stat first"],
+    see_also=["fs.stat", "fs.undo", "shell.run"],
+    examples=[{"args": {"path": "scripts/deploy.sh", "mode": "u+x"}},
+              {"args": {"path": "tools", "mode": "755", "recursive": True}}],
+    input_schema={"type": "object", "properties": {
+        "path": _PATH,
+        "mode": {"anyOf": [{"type": "string", "minLength": 1},
+                           {"type": "integer", "minimum": 0, "maximum": 4095}],
+                 "description": "Octal (`644`, `0o755`, or the integer 0o644) or symbolic "
+                                "(`u+x`, `go-w`, `a=r`, `u=rw,go=r`). An unparseable mode is an "
+                                "error, never a fallback to 0o644."},
+        "recursive": {"type": "boolean", "default": False,
+                      "description": "Walk a directory. Symlinks are not followed and every path "
+                                     "is re-checked against roots and deny rules before anything "
+                                     "is written, so one denied entry refuses the whole call."},
+        "dry_run": {"type": "boolean", "default": False}},
+        "required": ["path", "mode"], "additionalProperties": False},
+)
+
+_spec(
     id="fs.undo", title="Undo one journaled change",
     description="Restore the before-image of one fs.write/fs.patch/fs.delete/fs.move using its undo token. "
                 "Pass the `undo_token` value the mutating call returned (either argument name works).",
@@ -734,13 +766,18 @@ def register(reg: Any, *, engine: Any, shells: Any, fs: Any, journal: Any, skill
         return fs.mkdir(path, parents=parents, dry_run=dry_run,
                         task_id=ctx.task_id if ctx else "")
 
+    def fs_chmod(path: str, mode: str | int, recursive: bool = False, dry_run: bool = False,
+                 ctx: Any = None) -> dict[str, Any]:
+        return fs.chmod(path, mode, recursive=recursive, dry_run=dry_run,
+                        task_id=ctx.task_id if ctx else "")
+
     def fs_undo(token: str | None = None, undo_token: str | None = None,
                  dry_run: bool = False) -> dict[str, Any]:
         picked = token or undo_token
         if not picked:
             raise SkeletonKeyError(
                 E.BAD_ARGS, "fs.undo needs the token a mutating call returned",
-                details={"hint": "fs.write/fs.patch/fs.delete/fs.move/fs.mkdir return undo_token",
+                details={"hint": "fs.write/fs.patch/fs.delete/fs.move/fs.mkdir/fs.chmod return undo_token",
                          "recent": [e.get("token") for e in journal.list(limit=5)]},
             )
         return journal.undo(picked, dry_run=dry_run)
@@ -809,7 +846,8 @@ def register(reg: Any, *, engine: Any, shells: Any, fs: Any, journal: Any, skill
                      ("fs.search", fs_search), ("fs.list", fs_list), ("fs.glob", fs_glob),
                      ("fs.stat", fs_stat), ("fs.sniff", fs_sniff),
                      ("fs.delete", fs_delete), ("fs.move", fs_move),
-                     ("fs.mkdir", fs_mkdir), ("fs.undo", fs_undo), ("fs.undo_task", fs_undo_task),
+                     ("fs.mkdir", fs_mkdir), ("fs.chmod", fs_chmod), ("fs.undo", fs_undo),
+                     ("fs.undo_task", fs_undo_task),
                      ("fs.journal_list", fs_journal_list), ("profile.probe", profile_probe),
                      ("registry.list", registry_list), ("registry.search", registry_search),
                      ("registry.describe", registry_describe), ("registry.stats", registry_stats)]:

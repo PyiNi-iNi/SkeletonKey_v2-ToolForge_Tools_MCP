@@ -152,6 +152,12 @@ data["undo"] = {"tool": "fs.undo", "args": {"token": token}}
 tools do the same. `reversible: true` in the manifest makes `metrics.undo_available`
 appear, which is how a host offers "undo" without parsing `data`.
 
+A metadata-only change journals the previous *bits* instead of a content copy
+(the journal's `record_meta`), and undo restores exactly those and nothing else. If the mode
+could not be read while recording, the entry carries `meta.undo_reliable: false` and undo
+refuses with `CONFLICT` rather than restoring the dataclass default: "unknown" and `0o644`
+are different facts, and confusing them opens a file somebody locked.
+
 ## 7. Composition and caching
 
 - Tools may call other tools through `engine.call` (that is how `registry.search` and the
