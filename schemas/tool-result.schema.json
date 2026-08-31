@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://skeletonkey.dev/schemas/tool-result.schema.json",
+  "title": "SkeletonKey ToolResult envelope",
+  "description": "The single return shape for every tool, in-process and on the MCP wire (as result.structuredContent, and mirrored into content[0].text for hosts that ignore structuredContent). Success and failure are the same shape, so one parser and one retry policy covers both. Serialization is bounded: over budget, `data` becomes an inlined prefix plus a spill artifact, never a truncated JSON string.",
+  "type": "object",
+  "required": ["ok"],
+  "additionalProperties": false,
+  "properties": {
+    "ok": {
+      "type": "boolean",
+      "description": "false means: do not read `data` as an answer. It does NOT mean 'retry blindly' - read error.retryable."
+    },
+    "tool": { "type": "string", "description": "Resolved tool id, which after de-duplication may differ from the name the caller used." },
+    "run_id": { "type": "string", "description": "Correlates the envelope with one line of the ledger. Quote this when reporting a bug." },
+    "data": {
+      "type": ["object", "array", "string", "number", "boolean", "null"],
+      "description": "The answer. On failure the engine may still attach partial data (e.g. a shell's stdout) as evidence - that is deliberate, and it is why `data` is not omitted when ok=false."
+    },
+    "error": {
+      "type": ["object", "null"],
+      "properties": {
+        "code": { "type": "string", "description": "Stable machine token: SANDBOX_VIOLATION, APPROVAL_REQUIRED, MISSING_ARG, BAD_ARGS, UNKNOWN_TOOL, TIMEOUT, NONZERO_EXIT, PATCH_CONFLICT, AMBIGUOUS_MATCH, CONFLICT, EEXIST, ENOENT, READ_ONLY_MODE, DENY_RULE, BUDGET_EXCEEDED, MISSING_BINARY, MISSING_SHELL, TOOL_NOT_ADVERTISED, UNSUPPORTED_PLATFORM, NOT_IMPLEMENTED, IO, INTERNAL." },
+        "error_class": { "type": "string", "enum": ["usage", "policy", "execution", "environment", "internal"] },
+        "message": { "type": "string", "description": "One sentence, in the imperative: what to do next." },
+        "retryable": { "type": "boolean", "description": "Safe to retry unchanged. Anything with side effects is false, even when transient." },
+        "hint": { "type": "string", "description": "The single most useful follow-up action, spelled out for a model that will not read details." },
+        "details": { "type": "object", "description": "Structured recovery: missing argument name, schema, minimal_example, gate.unmet + probe receipts, approval prompt, plan for a refused mutation." }
+      },
+      "required": ["code", "error_class", "message"],
+      "additionalProperties": false
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "kind": { "type": "string", "enum": ["text", "json", "diff", "binary", "tar"] },
+          "path": { "type": ["string", "null"], "description": "Spill file holding the COMPLETE payload, inside the state dir." },
+          "bytes": { "type": "integer", "minimum": 0 },
+          "sha256": { "type": "string" },
+          "lines": { "type": ["integer", "null"] },
+          "preview": { "type": "string" },
+          "truncated": { "type": "boolean" },
+          "fetch_rest": {
+            "type": "object",
+            "description": "A callable fs.read that pages through this artifact. Arguments are legal values, not placeholders."
+          },
+          "meta": { "type": "object" }
+        },
+        "required": ["id", "kind", "bytes"],
+        "additionalProperties": false
+      }
+    },
+    "hints": { "type": "array", "items": { "type": "string" } },
+    "next_actions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["tool"],
+        "properties": {
+          "tool": { "type": "string" },
+          "args": { "type": "object" },
+          "note": { "type": "string" },
+          "action": { "type": "string", "description": "Non-call guidance, e.g. summarize_and_stop when the budget is exhausted." }
+        }
+      },
+      "description": "The tail of the turn, precomputed: paging continuation, the undo call, the approval grant to replay, the narrower search to run. A model that follows these needs no re-planning."
+    },
+    "metrics": {
+      "type": "object",
+      "properties": {
+        "duration_ms": { "type": "integer", "minimum": 0 },
+        "bytes_out": { "type": "integer", "minimum": 0 },
+        "est_tokens": { "type": "integer", "minimum": 0, "description": "Charged against budget.task_max_tokens_out before the host sees the result." },
+        "est_tokens_saved": { "type": "integer", "minimum": 0 },
+        "exit_code": { "type": ["integer", "null"] },
+        "shell": { "type": ["string", "null"] },
+        "provider": { "type": ["string", "null"], "description": "Which implementation answered (ripgrep vs built-in walker) - honest about what ran." },
+        "attempts": { "type": "integer", "minimum": 1 },
+        "cached": { "type": "boolean", "description": "Served from the idempotency cache; visible so a poll loop cannot mistake a cached answer for fresh state." },
+        "spill_count": { "type": "integer", "minimum": 0 },
+        "undo_available": { "type": "boolean", "description": "Set when the tool is reversible, so 'undo' can be offered without parsing data." }
+      },
+      "additionalProperties": true
+    },
+    "context": { "type": "object", "description": "Echo of what the call needed to know: cwd, task_id, and `schema` on a usage error." },
+    "warnings": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Non-fatal truth: partial results, budget truncation notes, 'content had changed since this entry wrote it'. Warnings never fail a call, and never should be."
+    }
+  }
+}

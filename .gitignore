@@ -216,3 +216,8 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# SkeletonKey runtime state: hash-chained ledger, journal shadow copies (raw
+# pre-edit bytes), spill artifacts and rendered shell payloads. Never commit it.
+.sk/
+*.sk/

@@ -1,0 +1,314 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://skeletonkey.dev/schemas/tool-manifest.schema.json",
+  "title": "SkeletonKey ToolManifest",
+  "description": "What a tool must declare to join the registry. Written by hand for built-ins, by an author for a skill/drop-in, and read by the advertisement step that decides what a host is offered on this host, for this task. Field names here are the on-disk names in tool.toml / SKILL.md tool blocks and the keys of `registry.describe`.",
+  "type": "object",
+  "required": [
+    "id"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$",
+      "description": "group.name, lowercase, dot-separated. The registry is flat, so the group prefix is what keeps 100 tools navigable."
+    },
+    "version": {
+      "type": "string",
+      "default": "1",
+      "description": "Bumped when the schema or semantics change; part of the idempotency key."
+    },
+    "title": {
+      "type": "string",
+      "maxLength": 80
+    },
+    "description": {
+      "type": "string",
+      "description": "Written for a model under time pressure: what it does, when NOT to use it, and the one gotcha. This is the highest-leverage text in the system."
+    },
+    "group": {
+      "type": "string",
+      "description": "Defaults to the id prefix. A skill-authored tool gets 'skill.<name>'."
+    },
+    "capability": {
+      "type": "string",
+      "description": "What has to be true for this tool to run here (fs.patch.gnu, shell.powershell, search.ripgrep...). Gating and routing both work off this, not off the name."
+    },
+    "provides": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Capabilities this tool contributes (a provider can satisfy one for others)."
+    },
+    "provider": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Backing implementation, when the tool is one of several for a capability (rg vs the built-in walker)."
+    },
+    "priority": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 100,
+      "default": 50,
+      "description": "Higher wins when two tools advertise the same capability."
+    },
+    "input_schema": {
+      "type": "object",
+      "description": "JSON Schema for the arguments. Enforced by the engine before the handler runs, and forwarded verbatim to MCP hosts.",
+      "properties": {
+        "type": {
+          "const": "object"
+        },
+        "properties": {
+          "type": "object"
+        },
+        "required": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": {
+          "type": [
+            "boolean",
+            "object"
+          ],
+          "default": false
+        }
+      },
+      "additionalProperties": true
+    },
+    "output_schema": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "Optional. Documented data keys of the envelope's `data` field."
+    },
+    "requirements": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/requirement"
+      },
+      "description": "All must hold (AND) for the tool to be advertised here."
+    },
+    "require_any": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/requirement"
+      },
+      "description": "At least one must hold (OR). Used by shell.run: any usable dialect is enough."
+    },
+    "platforms": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "windows",
+          "linux",
+          "darwin",
+          "posix"
+        ]
+      },
+      "description": "Empty = every platform the host runs on."
+    },
+    "tags": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Routing vocabulary: natural-language synonyms the agent is likely to type ('rm', 'unlink', 'clean')."
+    },
+    "risk": {
+      "type": "string",
+      "enum": [
+        "none",
+        "read",
+        "write",
+        "privileged",
+        "destructive",
+        "network"
+      ],
+      "default": "read",
+      "description": "Drives auto-approval, read_only withholding, MCP annotations, and the ledger's audit level."
+    },
+    "idempotent": {
+      "type": "boolean",
+      "default": true,
+      "description": "Same args, no side effects. Enables the short-TTL result cache - never set it for something that polls state."
+    },
+    "open_world": {
+      "type": "boolean",
+      "default": false,
+      "description": "Touches things outside the sandbox (network, other processes). Sets MCP's openWorldHint."
+    },
+    "parallel_safe": {
+      "type": "boolean",
+      "default": true
+    },
+    "destructive": {
+      "type": "boolean",
+      "default": false,
+      "description": "Loses data the user did not create in this run. Never bypassable by approval alone unless confirm_destructive is off."
+    },
+    "reversible": {
+      "type": "boolean",
+      "default": false,
+      "description": "A journal entry makes undo possible; the host is told, so it can offer 'undo' as a first-class action."
+    },
+    "typical_latency_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 50,
+      "description": "Used to order parallel batches and to decide what gets backgrounded."
+    },
+    "typical_output_bytes": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 2000,
+      "description": "Budget planning input: 30 of these is a context-window decision, not a runtime one."
+    },
+    "timeout_s": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "default": 60,
+      "description": "Handler-level timeout, capped by policy.max_timeout_s."
+    },
+    "stateful": {
+      "type": "string",
+      "enum": [
+        "none",
+        "session",
+        "host"
+      ],
+      "default": "none",
+      "description": "'none' is what makes result caching legal. shell.sessions is a pure read and still must not be cached."
+    },
+    "session_scope": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "advertised": {
+      "type": "boolean",
+      "default": true,
+      "description": "false = callable but hidden (skill-declared stubs awaiting Phase 2 synthesis, internal tools)."
+    },
+    "hidden_reason": {
+      "type": "string",
+      "description": "Set by the registry when advertisement withheld the tool, so `registry.list {include_gated: true}` can explain why."
+    },
+    "approval": {
+      "type": "string",
+      "enum": [
+        "policy",
+        "never",
+        "always",
+        "on_write"
+      ],
+      "default": "policy",
+      "description": "'policy' defers to policy.auto_approve / require_approval."
+    },
+    "examples": {
+      "type": "array",
+      "maxItems": 6,
+      "items": {
+        "type": "object",
+        "required": [
+          "args"
+        ],
+        "properties": {
+          "args": {
+            "type": "object"
+          },
+          "note": {
+            "type": "string"
+          },
+          "returns": {
+            "type": "object"
+          }
+        }
+      },
+      "description": "Returned as `minimal_example` on a BAD_ARGS failure: the fastest possible recovery for an agent."
+    },
+    "anti_patterns": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "'do not use this when X' - cheaper than a failed call."
+    },
+    "see_also": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Tool ids that usually follow or replace this one; surfaced as next_actions."
+    },
+    "source": {
+      "type": "string",
+      "enum": [
+        "builtin",
+        "dropin",
+        "entry-point",
+        "skill",
+        "synthesized"
+      ],
+      "default": "builtin"
+    },
+    "source_path": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Where a non-built-in manifest came from. Doubles as the trust signal in the security model."
+    },
+    "meta": {
+      "type": "object",
+      "description": "Free-form. MCP hosts receive it under _meta.sk."
+    }
+  },
+  "$defs": {
+    "requirement": {
+      "type": "object",
+      "required": [
+        "kind",
+        "name"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "binary",
+            "python",
+            "env",
+            "shell",
+            "capability",
+            "os",
+            "not_os",
+            "filesystem"
+          ]
+        },
+        "name": {
+          "type": "string",
+          "description": "What to look for: an executable, an env var, a profile capability id, an OS."
+        },
+        "min_version": {
+          "type": "string",
+          "description": "Dotted, compared numerically; a probe that cannot answer fails the requirement."
+        },
+        "optional": {
+          "type": "boolean",
+          "default": false,
+          "description": "Recorded in the receipt, but does not withhold the tool."
+        }
+      }
+    }
+  }
+}

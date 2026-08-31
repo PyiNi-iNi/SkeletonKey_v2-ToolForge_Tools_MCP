@@ -1,0 +1,133 @@
+# SkeletonKey / ToolForge v2 — annotated example configuration.
+#
+# Copy to `skeletonkey.toml` at the workspace root (or `.skeletonkey.toml`, or
+# `$SKELETONKEY_CONFIG_DIR/config.toml`, or `~/.config/skeletonkey/config.toml`).
+#
+# Precedence, lowest first:
+#   built-in defaults < user config < ./config.toml < ./skeletonkey.toml
+#   < $SKELETONKEY_CONFIG < SKELETONKEY_* env vars < programmatic overrides
+#
+# Every key is optional. Env override shape: SKELETONKEY_<SECTION>__<FIELD>
+# (e.g. SKELETONKEY_POLICY__READ_ONLY=true); lists accept JSON or comma-separated.
+# A key that cannot be coerced does not fail the load: it is reported in
+# `Config.warnings` and by `sk doctor`, because an agent that cannot read its own
+# config is worse than one that runs with a documented default.
+
+# ---------------------------------------------------------------- filesystem
+# Roots are the only places fs.* and shell.* may touch. Absolute, or relative to
+# the process cwd. `workspace` is roots[0]; it is where the state dir and the
+# relative paths in every result are anchored.
+roots = ["."]
+# cwd = "."                     # sandbox-relative resolution root (default: process cwd)
+
+[fs]
+follow_symlinks = "within-roots"  # never | within-roots | always
+# `fs.chmod {recursive: true}` walks at most 512 paths (a code constant today, not a knob),
+# never follows a symlink out of the roots, and refuses the whole call if any path in the
+# walk is denied - so a deny rule below is not something a recursive chmod routes around.
+atomic_write = true               # write temp + os.replace: a crash cannot half-write
+newline = "preserve"              # preserve | lf | crlf | native (native = per-OS)
+encoding = "utf-8"
+reject_device_names = true        # CON/NUL/COM1 on Windows are files you can hang on
+long_path_prefix = true           # \\?\ past 259 chars on Windows
+trash = "journal"                 # journal (undoable) | delete | off
+# backup_suffix = ".bak"          # default: none
+allow_dotfiles = true
+# Defaults, written out so you can edit them rather than guess. Patterns are anchored
+# at the root of each walk (`node_modules/**` prunes a node_modules at any level).
+ignore = [".git/**", "node_modules/**", "__pycache__/**", ".venv/**", "venv/**",
+          ".mypy_cache/**", ".pytest_cache/**", "dist/**", "build/**", ".next/**",
+          "target/**", "*.pyc", ".DS_Store"]
+# Hard denials. These cannot be overridden per call, by any token, by any host.
+deny = ["**/.env", "**/.env.*", "**/id_rsa", "**/id_ed25519", "**/.ssh/**",
+        "**/*.pem", "**/*.key", "**/credentials", "**/.gitconfig",
+        "**/.aws/credentials", "**/.netrc", "**/secrets.*"]
+
+# ------------------------------------------------------------------ policy
+[policy]
+read_only = false                 # true = plan mode: mutating tools withheld
+auto_approve = ["none", "read", "write"]
+require_approval = ["destructive", "privileged", "network"]
+confirm_destructive = true        # false + "destructive" in auto_approve = unattended mode
+escalate = []                     # tool or group ids forced to risk=privileged
+max_timeout_s = 900               # caps a handler's own timeout_s
+deny_outside_roots = true
+
+# ------------------------------------------------------------------ budget
+# The envelope is bounded before it reaches the model, so an oversized `cat` can
+# never blow up the context window mid-task.
+[budget]
+max_output_bytes = 24000          # per result; larger spills to an artifact
+max_result_tokens = 6000
+task_max_wall_s = 1800
+task_max_calls = 400
+task_max_mutations = 150
+task_max_tokens_out = 400000
+max_read_bytes = 4000000
+max_write_bytes = 20000000
+# spill_dir = ".sk/spill"         # default: <state.dir>/spill (still inside the roots)
+# per_tool_max_bytes = { "fs.search" = 40000 }
+
+# ------------------------------------------------------------------- shells
+[shell]
+# default_dialect unset = whatever the capability probe prefers (pwsh on Windows,
+# bash where present). Pin it only when reproducing a host-specific bug.
+allow_dialects = ["bash", "pwsh", "python", "powershell", "sh", "zsh"]
+deny_dialects = []
+strict_bash = true                # set -euo pipefail preamble
+strict_pwsh = true                # $ErrorActionPreference + native error action
+strip_ansi = false
+timeout_s = 120
+kill_tree = true                  # kill the process group, not just the shell
+sessions_enabled = true             # `session = "name"` keeps cwd + env across calls
+persist_env = true
+max_output_bytes = 200000
+allow_legacy_powershell = true     # powershell.exe 5.1 as well as pwsh 7
+# tempdir = ".sk/shell"            # where the rendered script files live
+
+# -------------------------------------------------------------------- tools
+[tools]
+dropin_dirs = ["tools"]            # *.py + tool.toml picked up at build()
+entry_points = true                # honour the `skeletonkey.tools` group
+hot_reload = false                 # requires the `watch` extra
+override_builtin = false           # a drop-in may not replace a built-in unless set
+enable = []                        # empty = everything the host can run
+disable = []                       # e.g. ["shell.run"] on a locked-down runner
+gate_by_profile = true             # withhold tools whose requirements this host fails
+
+# ------------------------------------------------------------------- skills
+[skills]
+dirs = ["skills"]                      # relative entries resolve against the workspace
+auto_load = true
+max_body_bytes = 32000
+max_inline_tokens = 1200
+respect_priority = true
+# A skill pack can carry a script that becomes a callable tool, so installation is a door an
+# operator opens, not a default. While this is false, skills.install is unadvertised and every
+# call to it answers DENY_RULE (dry_run still answers, so a plan can be reviewed first).
+# PLAN.md keeps the ceiling here until P3's policy engine can scope what a skill may run.
+allow_install = false
+install_root = ""                      # empty = the first entry of `dirs`
+[mcp]
+name = "skeletonkey"
+instructions = "Adaptive filesystem + multi-shell toolkit. Prefer capability lookups over guessing names."
+transport = "stdio"                # stdio | streamable-http
+host = "127.0.0.1"
+port = 8765
+advertise_max_tools = 48           # token-bounded advertisement, not "all tools ever"
+advertise_dialect_guides = true
+emit_list_changed = true
+structured_content = true          # our envelope in result.structuredContent
+log_to_stderr = false              # stdout is the protocol channel; keep it that way
+
+# -------------------------------------------------------------------- state
+[state]
+dir = ".sk"                        # journal, ledger, profile cache, spill, shell scratch
+journal = true                     # false => deletes are permanent and fs.undo refuses
+ledger = true                      # append-only, hash-chained call audit
+profile_cache = true
+profile_ttl_s = 3600
+keep_snapshots = 200
+redact = true                      # secrets masked in the ledger's previews
+
+log_level = "WARNING"              # DEBUG prints probe + dispatch traces to stderr
