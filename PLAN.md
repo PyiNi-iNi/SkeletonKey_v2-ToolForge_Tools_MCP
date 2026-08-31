@@ -19,7 +19,7 @@ Measured on this box: 35 tools registered / 33 advertised / **2 424 tokens** of
 advertisement (`digest fc1ca30868f2e469`), 10 probed capabilities, 4 skills discovered
 (one of them shipping two scripts that compile into callable tools), 0 load errors. Code:
 11 738 lines in `skeletonkey/`, 15 test modules (495 passing, 2 skipped,
-1 xfailed), 2 230 lines of docs (this plan, four contract docs, README; seven ADRs). No workflow file is committed on this branch — the pushing token
+1 xfailed), 2 235 lines of docs (this plan, four contract docs, README; seven ADRs). No workflow file is committed on this branch — the pushing token
 cannot write to `.github/workflows/` — and the pipeline is specified in §6 for whoever
 lands it (one command reproduces it locally: `ruff check . && pytest -q -m "not slow"`).
 
@@ -700,6 +700,11 @@ is P3's decision to make, and §P2 says so in the tool's own `hidden_reason`.
 `plan()`, receipts, replay, evals; this is where the loop stops hand-coding retries) → P5
 (discovery at scale) → P6 (distribution; Windows CI *before* P7, or remote Windows work will
 burn the budget) → P7 (frontier spike: one remote Windows host through one transport).
+
+The incoming session starts from `HANDOFF.md` at the repo root: it records the measured
+state, the decisions not to "simplify" away, the landmines (including the two bugs P2's
+acceptance tests found in the MCP name map and the journal extractor), and how to rebuild the
+local environment after a sandbox recycle.
 
 Two standing rules for every phase: each new tool ships with a manifest section in
 `docs/TOOL-CONTRACT.md`, an entry in the skill guidance that agents will read, and a
