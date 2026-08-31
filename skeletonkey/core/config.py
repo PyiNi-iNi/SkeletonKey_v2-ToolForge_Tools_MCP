@@ -175,6 +175,14 @@ class StateConfig:
 
 
 @dataclass
+class PublishConfig:
+    # Empty = <user config dir>/skeletonkey/publish/store.json. The store is
+    # deliberately OUTSIDE the workspace roots: the fs sandbox is the wall that
+    # keeps fs.* tools away from it (see ADR-0010). Override for tests/CI.
+    store_path: str = ""
+
+
+@dataclass
 class Config:
     roots: list[str] = field(default_factory=list)
     cwd: str = ""
@@ -187,6 +195,7 @@ class Config:
     tools: ToolConfig = field(default_factory=ToolConfig)
     mcp: McpConfig = field(default_factory=McpConfig)
     state: StateConfig = field(default_factory=StateConfig)
+    publish: PublishConfig = field(default_factory=PublishConfig)
     log_level: str = "WARNING"
     source_files: list[str] = field(default_factory=list)
     overrides_applied: list[str] = field(default_factory=list)

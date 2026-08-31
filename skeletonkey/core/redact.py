@@ -67,9 +67,16 @@ _PATTERNS: list[tuple[str, re.Pattern[str], str, int | None]] = [
         "[\\x22\\x27]?\\s*[:=]\\s*[\\x22\\x27]?([^\\s\\x22\\x27,;&}]{6,})"), "SECRET", 2),
 ]
 
-_KEY_ONLY = re.compile(r"(?i)^.*(password|secret|token|api[_-]?key|credential|private[_-]?key).*$")
+#: Keys whose scalar values are secrets even when the key itself is bland.
+#: `value` is included as a whole segment (the publish store's arg name) but
+#: NOT when extended with an underscore (e.g. `value_masked` is display data).
+_KEY_ONLY = re.compile(
+    r"(?i)^.*(password|secret|token|api[_-]?key|credential|private[_-]?key"
+    r"|(?<![a-z0-9])value(?![a-z0-9_])).*$")
 
 _REDACTED = "***REDACTED***"
+#: Public alias for engine-level secret-arg redaction (manifest `secret_args`).
+REDACTED = _REDACTED
 
 
 def tail(text: str, keep: int) -> str:

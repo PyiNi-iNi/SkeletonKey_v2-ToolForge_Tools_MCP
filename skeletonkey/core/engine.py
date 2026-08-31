@@ -31,7 +31,7 @@ from .errors import E, SkeletonKeyError, ToolError, classify_exception
 from .manifest import ToolManifest
 from .policy import CompiledPolicy, PolicyRule
 from .profile import CapabilityProfile
-from .redact import redact_obj
+from .redact import REDACTED, redact_obj
 from .registry import Registry
 from .util import compact_json, glob_hit, glob_to_re, new_run_id, short_hash
 from .validate import apply_defaults, validate
@@ -811,6 +811,12 @@ class Engine:
         if self.ledger is None:
             return
         try:
+            # Secret args (declared on the manifest) never reach the audit trail
+            # in clear text. The generic key-name redaction below still runs on
+            # the result preview as an independent backstop.
+            if man is not None and man.secret_args:
+                secret = set(man.secret_args)
+                args = {k: (REDACTED if k in secret else v) for k, v in args.items()}
             self.ledger.append(
                 tool=(man.id if man else tool_name), args=args, ok=res.ok,
                 duration_ms=int((time.monotonic() - t0) * 1000), run_id=res.run_id,
