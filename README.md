@@ -20,6 +20,7 @@ sk tools search "rename a symbol across the repo"
 sk call fs.patch '{"path":"src/app.py","edits":[{"old_text":"x = 1","new_text":"x = 2"}]}'
 sk shell "Get-Process | Select-Object -First 3" --dialect pwsh   # one protocol, any dialect
 sk fs undo-task turn-7          # retract everything one turn touched
+sk call shell.quote '{"args":["/tmp/a b","$HOME"],"dialect":"pwsh"}'   # literal tokens per dialect
 ```
 
 ```jsonc
@@ -33,19 +34,21 @@ tk = build()
 tk.engine.call("fs.search", {"pattern": "TODO", "path": "src"})
 tk.engine.advertise()          # the tool list a host is allowed to see, with a digest
 tk.skills.context_block("fix the flaky windows path test")
+tk.engine.call("shell.run", {"script": 'printf "[%s]" "$@"', "dialect": "bash",
+                             "argv": ["a b", "it's", "$HOME"]})   # argv never meets a shell
 ```
 
 ## What is here
 
 | Group | Tools | Notes |
 | --- | --- | --- |
-| `fs.*` | 14 | read/write/patch/search/glob/move/delete/chmod/sniff + journal, undo, undo_task |
-| `shell.*` | 9 | run/session/jobs/quote; bash, sh, zsh, fish, pwsh, powershell 5.1+7, python |
+| `fs.*` | 14 | read/write/patch/search/list/glob/stat/sniff/move/delete/mkdir + journal, undo, undo_task |
+| `shell.*` | 10 | run (with `argv`)/quote/available/jobs/job_wait/job_kill/sessions; bash, sh, zsh, fish, pwsh, powershell 5.1+7, python |
 | `registry.*` | 4 | describe/list/search/stats — the agent's view of its own capabilities |
 | `skills.*` | 3 | list/load/match (progressive disclosure) |
 | `profile.probe` | 1 | host capability detection with receipts |
 
-31 registered, 29 advertised, ~1.8 k tokens of advertisement. Every call returns the same
+32 registered, 30 advertised, ~1.9 k tokens of advertisement. Every call returns the same
 envelope and the same error taxonomy: see
 [`docs/TOOL-CONTRACT.md`](docs/TOOL-CONTRACT.md).
 

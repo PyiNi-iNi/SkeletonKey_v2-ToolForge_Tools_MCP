@@ -117,6 +117,27 @@ effects**. Consequences the engine relies on:
 
 Lying about this is a policy violation: deny the tool.
 
+## 5b. Untrusted text in arguments
+
+A tool that accepts free text and then *runs* something has to decide where that text goes.
+The rule in this toolkit: **values are arguments, not program text.**
+
+- `shell.run {argv: [...]}` appends to the process command line, so the values never reach a
+  shell parser: no `$` expansion, no backtick execution, no globbing, no quoting bugs.
+  Entries must be strings (numbers are stringified; `bool` and everything else is
+  `BAD_ARGS`), at most 128, and NUL-free — `fsx`/`shells` validate before spawning.
+- A value that must be *inside* the script body goes through `quote_arg` in
+  `skeletonkey/shells/dialect.py`
+  (exposed as `shell.quote`), which is correct only where one token is expected: not inside a
+  double-quoted PowerShell string, not inside a here-doc, not as half of a JSON document.
+- Large or structured input is a file (`fs.write`) or one `stdin_text`/`argv` element holding
+  `json.dumps(obj)` — the forms that survive newlines, quotes and a Windows console alike.
+
+Any new tool that shells out should follow the same shape: an argv list plus an explicit
+`script`/template, never a string the caller assembled. `deny` rules cannot see inside a
+script (`docs/SECURITY-MODEL.md` §Gaps), which is the security reason for a style rule that
+is otherwise only hygiene.
+
 ## 6. Reversibility
 
 Any mutation of the filesystem must journal first and return `undo_token` **at the top

@@ -8,6 +8,7 @@ Where a test looks picky about a key name, that is the point - a host pastes the
 
 from __future__ import annotations
 
+import ast
 import json
 import os
 import pathlib
@@ -348,6 +349,64 @@ def test_undo_task_rewinds_a_whole_turn(writable_toolkit):
 
 
 # ------------------------------------------------------------------ shell tools
+def test_shell_quote_renders_literal_tokens_per_dialect(writable_toolkit):
+    eng = writable_toolkit.engine
+    r = call(eng, "shell.quote", args=["a b", "it's", "$HOME", "`id`"], dialect="bash")
+    assert r.ok
+    assert r.data["family"] == "posix"
+    assert r.data["tokens"] == ["'a b'", "'it'\"'\"'s'", "'$HOME'", "'`id`'"]
+    assert r.data["command"].startswith("'a b' ")
+    assert r.data["argv"] == ["a b", "it's", "$HOME", "`id`"], "the unquoted form comes back too"
+
+    pw = call(eng, "shell.quote", args=["it's", "$env:SECRET"], dialect="pwsh")
+    assert pw.data["tokens"] == ["'it''s'", "'$env:SECRET'"], "doubled quotes, no expansion"
+
+    py = call(eng, "shell.quote", args=["a\nb", "tab\there"], dialect="python")
+    assert [ast.literal_eval(t) for t in py.data["tokens"]] == ["a\nb", "tab\there"]
+
+    only = call(eng, "shell.quote", args=["x"], dialect="bash", shape="tokens")
+    assert only.data["tokens"] == ["x"] and "command" not in only.data
+
+    bad = call(eng, "shell.quote", args=["x"], dialect="cmd")
+    assert not bad.ok and bad.error.code == "BAD_ARGS"
+    assert bad.error.details["errors"][0]["path"].endswith("dialect")
+
+
+def test_quoted_tokens_embed_cleanly_in_a_real_script(writable_toolkit, bash_available):
+    """Round trip through bash: quoting is correct if the value arrives unchanged."""
+    eng = writable_toolkit.engine
+    vals = ["it's", "$HOME", "a b", "`id`", "*"]
+    quoted = call(eng, "shell.quote", args=vals, dialect="bash").data["tokens"]
+    r = call(eng, "shell.run", script="printf '<%s>' " + " ".join(quoted), dialect="bash")
+    assert r.ok, r.error
+    assert r.data["stdout"] == "".join(f"<{v}>" for v in vals)
+
+
+def test_shell_run_argv_reaches_the_script(writable_toolkit, bash_available):
+    r = call(writable_toolkit.engine, "shell.run", script='printf "[%s]" "$@"', dialect="bash",
+             argv=["a b", "it's", "$X", ""])
+    assert r.ok, r.error
+    assert r.data["stdout"] == "[a b][it's][$X][]"
+    assert r.data["argv"] == ["a b", "it's", "$X", ""], "the envelope records what was passed"
+
+
+def test_shell_run_rejects_structured_argv(writable_toolkit):
+    r = call(writable_toolkit.engine, "shell.run", script="true", dialect="bash", argv=[{"a": 1}])
+    assert not r.ok and r.error.code == "BAD_ARGS"
+    assert not r.data, "a rejected call must not have run"
+
+
+def test_shell_run_argv_on_a_background_job(writable_toolkit, bash_available):
+    eng = writable_toolkit.engine
+    started = call(eng, "shell.run", script='printf "arg=<%s>" "$1"', dialect="bash",
+                   argv=["hello"], background=True)
+    assert started.ok
+    jid = started.data["job_id"]
+    waited = call(eng, "shell.job_wait", job_id=jid, timeout_s=20)
+    assert waited.ok, waited.error
+    assert "arg=<hello>" in str(waited.data), "the job saw its argv"
+
+
 def test_shell_run_keep_script_leaves_a_replayable_artifact(writable_toolkit, bash_available):
     r = call(writable_toolkit.engine, "shell.run", script="exit 7", dialect="bash", keep_script=True)
     path = r.data.get("script_path")

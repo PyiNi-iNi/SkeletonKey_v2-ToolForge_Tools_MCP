@@ -62,6 +62,7 @@ class ShellRequest:
     expects: str | None = None          # json | lines | None
     max_output_bytes: int | None = None    # None -> the runner's limit
     background: bool = False
+    argv: list[str] | None = None          # appended after the script: $1..$n / $args / sys.argv[1:]
     trace: bool = False
     cleanup_script: bool = True
     session: str | None = None          # session id for persistent cwd/env
@@ -106,6 +107,37 @@ class ShellOutcome:
         if self.stdout:
             out["stdout"] = self.stdout
         return out
+
+
+def _extra_argv(req: ShellRequest) -> list[str]:
+    """Validate and materialise `argv`.
+
+    Values are passed to the child as process arguments, never through a shell parser, so
+    there is nothing to quote and nothing to be clever about - which is the point. What we
+    *do* check is the things that break an execve: wrong types, NUL bytes, and absurd
+    counts (a model that loops `argv += argv` should fail here, not at the OS).
+    """
+    raw = req.argv or []
+    if not isinstance(raw, list):
+        raise SkeletonKeyError(E.BAD_ARGS, "shell.run argv must be a list of strings",
+                              details={"found": type(raw).__name__,
+                                       "advice": "pass [\"a b\", \"c\"]; a dict is not an argv"})
+    if len(raw) > 128:
+        raise SkeletonKeyError(E.BAD_ARGS, f"too many argv entries ({len(raw)} > 128)",
+                              details={"count": len(raw), "advice": "put bulk input in stdin_text or a file"})
+    out: list[str] = []
+    for i, item in enumerate(raw):
+        if isinstance(item, bool) or not isinstance(item, (str, int, float)):
+            raise SkeletonKeyError(
+                E.BAD_ARGS, f"argv[{i}] must be a string (numbers are accepted)",
+                details={"at": f"argv[{i}]", "found": type(item).__name__,
+                         "advice": "stringify structured values, e.g. json.dumps(obj)"})
+        text = str(item)
+        if "\x00" in text:
+            raise SkeletonKeyError(E.BAD_ARGS, f"argv[{i}] contains a NUL byte",
+                                  details={"at": f"argv[{i}]"})
+        out.append(text)
+    return out
 
 
 class ShellRunner:
@@ -192,6 +224,7 @@ class ShellRunner:
             script_path = self._write_script(rendered, keep=not req.cleanup_script)
             rendered.payload_path = script_path
         argv = [script_path if a == "{script}" else a for a in rendered.argv]
+        argv += _extra_argv(req)
         if req.background:
             job = self._spawn_background(argv, self._env(req, probe), req, rendered, script_path)
             outcome = ShellOutcome(dialect=probe.dialect, shell_path=probe.path,

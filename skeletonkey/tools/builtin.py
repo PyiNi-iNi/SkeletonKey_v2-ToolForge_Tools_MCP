@@ -46,13 +46,19 @@ _spec(
                   Requirement("shell", "python")],
     tags=["shell", "bash", "pwsh", "powershell", "python", "exec", "command", "run"],
     anti_patterns=["don't use shell.run to edit files - fs.patch gives you a diff and undo",
-                   "don't chain unrelated commands in one call; a failure mid-script loses the rest"],
-    see_also=["fs.patch", "shell.job_wait", "fs.search"],
+                   "don't chain unrelated commands in one call; a failure mid-script loses the rest",
+                   "don't interpolate user/model text into `script` - pass it in `argv` and read $1 / $args / sys.argv"],
+    see_also=["fs.patch", "shell.job_wait", "fs.search", "shell.quote"],
     examples=[{"args": {"script": "git status --short", "dialect": "bash"}}],
     input_schema={
         "type": "object",
         "properties": {
             "script": {"type": "string", "minLength": 1, "description": "Script body, verbatim."},
+            "argv": {"type": "array", "items": {"type": "string"}, "maxItems": 128,
+                     "description": "Arguments for the script ($1..$n, $args, or sys.argv[1:]). Passed "
+                                     "straight to the process, so they never meet a shell parser: prefer "
+                                     "this over interpolating values into `script`. Numbers are accepted "
+                                     "and stringified; pass structured data as one json.dumps() string."},
             "dialect": {"type": "string", "enum": ["bash", "pwsh", "powershell", "python", "sh", "zsh", "fish"],
                         "description": "Omit to use the host's preferred shell."},
             "cwd": {"type": "string", "description": "Working directory (inside a root)."},
@@ -420,6 +426,40 @@ _spec(
 )
 
 
+_spec(
+    id="shell.quote", title="Quote values for a dialect",
+    description="""Render values as literal tokens for one shell dialect, for embedding in a
+`shell.run {script}` body. If the value is an *argument* rather than part of the program text,
+do not quote it - pass `shell.run {argv: [...]}` and it never reaches a shell parser.
+Posix uses shlex single-quoting, PowerShell doubles embedded single quotes (its literal
+form: no $ or backtick expansion), python returns a source literal.""",
+    capability="shell.quote", risk="none", typical_latency_ms=1, typical_output_bytes=300,
+    idempotent=True, parallel_safe=True, stateful="none",
+    tags=["shell", "quote", "escaping", "argv", "injection", "bash", "pwsh"],
+    anti_patterns=["not a general escaping: do not embed the result inside a double-quoted "
+                   "PowerShell string or a heredoc body",
+                   "don't quote your way out of interpolation when argv would avoid the problem"],
+    see_also=["shell.run", "shell.available"],
+    examples=[{"args": {"args": ["a file.txt", "it's here", "$HOME"], "dialect": "bash"}}],
+    input_schema={
+        "type": "object",
+        "properties": {
+            "args": {"type": "array", "items": {"type": ["string", "integer", "number", "boolean"]},
+                     "minItems": 1, "maxItems": 256,
+                     "description": "Values to render as literal tokens."},
+            "dialect": {"type": "string", "enum": ["bash", "pwsh", "powershell", "python", "sh", "zsh", "fish"],
+                        "description": "Omit to use the host's preferred shell."},
+            "shape": {"type": "string", "enum": ["tokens", "command", "both"], "default": "both",
+                      "description": "tokens = the list only; command = one joined line; both = the two. "
+                                     "(`as` would be the nicer name but it is a Python keyword, and handler "
+                                     "parameters are injected by name.)"},
+        },
+        "required": ["args"],
+        "additionalProperties": False,
+    },
+)
+
+
 # ============================================================== handler wiring
 def register(reg: Any, *, engine: Any, shells: Any, fs: Any, journal: Any, skills: Any = None,
              load_skills: bool = True) -> dict[str, Any]:
@@ -437,11 +477,48 @@ def register(reg: Any, *, engine: Any, shells: Any, fs: Any, journal: Any, skill
         report["registered"] += 1
 
     # ---- shell
+    def shell_quote(args: list[Any], dialect: str | None = None,
+                    shape: str = "both") -> dict[str, Any]:
+        from ..shells.dialect import (
+            DIALECT_FAMILY,
+            UnsupportedDialect,
+            command_line,
+            dialect_family,
+            quote_args,
+        )
+
+        dl = dialect
+        if not dl:
+            prof = getattr(engine, "profile", None)
+            dl = (prof.preferred_dialect() if prof else None) or "bash"
+        try:
+            fam = dialect_family(dl)
+        except UnsupportedDialect as exc:
+            raise SkeletonKeyError(
+                E.BAD_ARGS, str(exc),
+                details={"dialect": dl, "supported": sorted(DIALECT_FAMILY)},
+                hint="choose a dialect the toolkit renders for",
+            ) from None
+        quoted = quote_args(args, dl)
+        data: dict[str, Any] = {"dialect": dl, "family": fam, "count": len(quoted)}
+        if shape in ("tokens", "both"):
+            data["tokens"] = quoted
+        if shape in ("command", "both"):
+            data["command"] = command_line(args, dl)
+        data["argv"] = [a if isinstance(a, str) else str(a) for a in args]
+        data["note"] = ("only needed to embed a value in a script body; for arguments, pass them "
+                        "in shell.run {argv: [...]} instead - those never reach a shell parser")
+        hints = ["the tokens are for a script body; shell.run {argv} needs no quoting"]
+        if fam == "powershell":
+            hints.append("PowerShell single quotes are literal: no $ expansion, no backtick escape")
+        return ToolResult.success(data=data, hints=hints)
+
     def shell_run(script: str, dialect: str | None = None, cwd: str | None = None, timeout_s: float = 120.0,
                   env: dict[str, str] | None = None, env_mode: str = "inherit", strict: bool = True,
                   expects: str | None = None, session: str | None = None, background: bool = False,
                   stdin_text: str | None = None, capture_env: bool = False,
-                  keep_script: bool = False, max_output_bytes: int | None = None,
+                  keep_script: bool = False, argv: list[Any] | None = None,
+                  max_output_bytes: int | None = None,
                   ctx: Any = None) -> Any:
         from ..shells.base import ShellRequest
 
@@ -457,10 +534,14 @@ def register(reg: Any, *, engine: Any, shells: Any, fs: Any, journal: Any, skill
         req = ShellRequest(script=script, dialect=dialect, cwd=resolved_cwd, env=env, env_mode=env_mode,
                            timeout_s=float(timeout_s), strict=strict, expects=expects, session=session,
                            background=background, stdin_text=stdin_text, capture_env=capture_env,
-                           cleanup_script=not keep_script,
+                           cleanup_script=not keep_script, argv=list(argv) if argv else None,
                            max_output_bytes=int(max_output_bytes or engine.config.shell.max_output_bytes))
         out = shells.run(req)
         data = _shell_payload(out, engine.config.shell.max_output_bytes)
+        if req.argv:
+            # echo what was passed: the envelope is the record of the call, and a
+            # reproduction needs the script *and* its arguments
+            data["argv"] = list(req.argv)
         if background:
             jid = out.session_state.get("job_id")
             return ToolResult.success(data=data, next_actions=[{"tool": "shell.job_wait",
@@ -717,6 +798,7 @@ def register(reg: Any, *, engine: Any, shells: Any, fs: Any, journal: Any, skill
         return {"stats": engine.registry.stats(tool), "overview": engine.registry.overview()}
 
     add("shell.run", shell_run)
+    add("shell.quote", shell_quote)
     add("shell.available", shell_available)
     add("shell.jobs", shell_jobs)
     add("shell.job_wait", shell_job_wait)

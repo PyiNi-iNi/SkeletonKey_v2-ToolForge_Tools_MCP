@@ -8,6 +8,13 @@ PowerShell here-strings, which is exactly what an autonomous agent needs to read
 Consequence: when a script dies early, no sentinel arrives, and that is
 information (`completed=False`, process return code used) rather than a lie.
 
+Quoting
+-------
+`quote_arg` / `quote_args` produce a token that is safe to *embed in a script body* for one
+dialect. Prefer `shell.run {argv: [...]}` whenever the value is an argument rather than part
+of the program text: argv goes straight to `execve`/`CreateProcess`, so no shell parser ever
+sees it and there is nothing to get wrong.
+
 Sentinel protocol
 -----------------
 `<<<SK1|<token>|rc=<n>|done=1>>>` on stdout, followed by NUL-delimited state.
@@ -18,6 +25,7 @@ pattern is rejected (we know the token, the script cannot guess it in advance).
 from __future__ import annotations
 
 import re
+import shlex
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from typing import Any
@@ -238,6 +246,53 @@ PYTHON_WRAPPER = (
 
 def make_token() -> str:
     return short_hash(new_run_id(), 10)
+
+
+DIALECT_FAMILY = {
+    "bash": "posix", "sh": "posix", "zsh": "posix", "fish": "posix",
+    "pwsh": "powershell", "powershell": "powershell",
+    "python": "python",
+}
+
+
+def dialect_family(dialect: str) -> str:
+    """`posix` | `powershell` | `python`, or raise. `fish` is treated as posix: our
+    single-quoted form is identical there, and we would rather state one rule than
+    pretend to a fish-specific one we never test."""
+    fam = DIALECT_FAMILY.get(dialect)
+    if fam is None:
+        raise UnsupportedDialect(f"no quoting rules for dialect {dialect!r}")
+    return fam
+
+
+def quote_arg(value: Any, dialect: str = "bash") -> str:
+    """Render one value as a literal token for a *script body*.
+
+    Not needed for `shell.run {argv}` (that never passes a shell parser), and not a
+    general escaping: the result is correct for embedding where a single token is
+    expected, not inside a double-quoted PowerShell string or a heredoc body.
+    """
+    text = value if isinstance(value, str) else str(value)
+    if "\x00" in text:
+        raise UnsupportedDialect("NUL is not representable in a script argument")
+    fam = dialect_family(dialect)
+    if fam == "posix":
+        return shlex.quote(text)
+    if fam == "powershell":
+        # Single quotes are PowerShell's literal form: no $ expansion, no backtick
+        # escape, and doubling is the only rule. A trailing backslash does not need
+        # the treatment it demands inside double quotes.
+        return "'" + text.replace("'", "''") + "'"
+    return repr(text)  # a python literal; round-trips through ast.literal_eval
+
+
+def quote_args(values: list[Any], dialect: str = "bash") -> list[str]:
+    return [quote_arg(v, dialect) for v in values]
+
+
+def command_line(argv: list[str], dialect: str = "bash") -> str:
+    """A copy-pasteable rendering of a command, quoting each token for `dialect`."""
+    return " ".join(quote_arg(a, dialect) for a in argv)
 
 
 def render(script: str, *, shell_path: str, shell_version: tuple[int, ...] = (0,),

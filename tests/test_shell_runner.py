@@ -71,6 +71,47 @@ def test_cleanup_script_false_keeps_the_rendered_payload(runner, tmp_path):
 
 
 @needs_bash
+def test_argv_reaches_the_script_without_touching_a_shell_parser(runner):
+    """The whole point of `argv`: these bytes never meet `$`, backtick, or glob expansion."""
+    vals = ["a b", "it's", "$HOME", "`id`", "*glob*", "tab\there", "", "\\backslash\\", "中文 名"]
+    script = 'for a in "$@"; do printf "<%s>\\000" "$a"; done'
+    out = run(runner, script, argv=vals)
+    assert out.exit_code == 0, out.stderr
+    got = out.stdout.split("\x00")[:-1]
+    assert got == [f"<{v}>" for v in vals], "each value must arrive whole, in order"
+    assert "$HOME" in out.stdout, "no expansion happened inside the argument"
+
+
+@needs_bash
+def test_argv_positions_match_the_dialect(runner):
+    assert run(runner, 'printf "[%s]" "$2"', argv=["one", "two"]).stdout.endswith("[two]")
+
+
+def test_argv_validation_is_strict_where_silence_would_corrupt(runner):
+    with pytest.raises(SkeletonKeyError) as exc:
+        run(runner, "true", argv=[{"a": 1}])
+    assert exc.value.code == "BAD_ARGS"
+    assert "json.dumps" in str(exc.value.details)
+
+    with pytest.raises(SkeletonKeyError):
+        run(runner, "true", argv="not-a-list")
+    with pytest.raises(SkeletonKeyError):
+        run(runner, "true", argv=[True])  # bool is not a string, and "True" in a path is a bug
+    with pytest.raises(SkeletonKeyError) as nul:
+        run(runner, "true", argv=["a\x00b"])
+    assert "NUL" in nul.value.err.message
+
+    # numbers are the one convenience we allow, because they are unambiguous
+    assert run(runner, 'printf "<%s>" "$1"', argv=[7]).stdout.endswith("<7>")
+
+
+def test_too_many_argv_entries_is_refused_before_the_os_says_so(runner):
+    with pytest.raises(SkeletonKeyError) as exc:
+        run(runner, "true", argv=[str(i) for i in range(200)])
+    assert exc.value.code == "BAD_ARGS" and "128" in exc.value.err.message
+
+
+@needs_bash
 def test_strict_mode_propagates_pipe_failure(runner):
     boom = run(runner, "false | cat", strict=True)
     ok = run(runner, "false | cat", strict=False)

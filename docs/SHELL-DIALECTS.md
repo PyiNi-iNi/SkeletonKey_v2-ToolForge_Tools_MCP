@@ -130,30 +130,47 @@ and what makes `cd ../..` persist. `env_mode` is `inherit` (default), `clean` (o
 sourced, slower and less reproducible); there is no allow-list mode. `shell.run` returns env
 values only when you pass `capture_env: true`; `shell.sessions` returns names only.
 
-## Quoting
+## Arguments and quoting
 
-**There is no quoting tool in P1** — `shell.run` takes one `script` string, so the quoting
-duty is on whoever builds it. Two recipes that are actually available today:
+`shell.run {script, argv}` appends `argv` to the process command line, after the script:
+bash sees `$1..$n` (and `"$@"`), PowerShell sees `$args`, python sees `sys.argv[1:]`. No
+shell parser ever touches those bytes — we hand the list to `execve`/`CreateProcess` — so
+`$HOME` stays `$HOME`, `*glob*` stays a literal, and `it's` needs no surgery. That is why
+`argv` is the default answer to "how do I get this value into the script".
 
-- run the `python` dialect and let it build the command: `shlex.quote` for posix, or pass
-  the values as `argv` and never interpolate (`args = json.loads(sys.argv[1])`);
-- or write the values to a file with `fs.write` and have the script read them, which is the
-  only form that survives multi-line values, embedded quotes and a Windows console alike.
+Rules the runner enforces, because a mistake here is silent corruption: every entry must be
+a string (numbers are accepted and stringified; a `bool` and anything else is `BAD_ARGS`,
+since `True` becoming `"True"` in a path is a bug nobody catches), at most 128 entries, and
+no NUL bytes (which would truncate the argument at the syscall boundary). Structured input
+goes in as one element: `argv: [json.dumps(obj)]`, read back with
+`json.loads(sys.argv[1])` in python or `"$1"` + `jq` elsewhere — or use `stdin_text`, which
+has none of these limits.
 
-What is *not* available: a `shell.quote` tool, and a `shell.run {argv: [...]}` form. Both
-are listed as the first follow-up in `PLAN.md` §10; the renderer will not save you from a
-`"` inside a here-doc, so until then treat "assemble a command by string concatenation in a
-model-written script" as the thing to avoid, not the thing to lint.
+`shell.quote {args[], dialect, shape}` exists for the remaining case — a value that has to
+be *inside* the program text (a `sed` expression, a here-doc line, a `printf` format). It
+renders each value with that dialect's literal rules: `shlex.quote` for posix, doubled
+single quotes for PowerShell (its literal form: no `$` expansion, no backtick escape), and a
+source literal for python. `shape: "tokens"` returns the list, `"command"` the joined line,
+`"both"` (default) the two plus the unquoted `argv` you should probably use instead.
+
+What quoting does **not** cover: a quoted token is correct where one token is expected, not
+inside a double-quoted PowerShell string, not inside a here-doc body, and not as part of a
+JSON document you are assembling by hand — for all three, pass a file (`fs.write`) or one
+`argv` element holding `json.dumps(...)`. The renderer will not save you from a `"` in a
+here-doc; nothing can, so the guidance is structural: build the payload out of `argv` and
+files, and keep `script` as the fixed program text.
 
 ## Background jobs
 
 `shell.run {background: true}` returns `{job_id, pid, status: "running", next_call:
-{tool: "shell.job_wait", args: {job_id}}}`. `shell.job_status` carries the output
+{tool: "shell.job_wait", args: {job_id}}}`. `shell.jobs` lists every job with the output
 *tail* (the ring buffer, not the whole log) and `stdout_bytes`; the full log is a spill
-artifact (`fetch_rest` is a legal `fs.read`). `shell.wait {job_id | task_id, timeout}`
-blocks and reports `timed_out`. `shell.job_kill {signal}` terminates the process *tree*.
-`shell.kill {job_id}` — the name the skills promise — accepts exactly `job_id`,
-`task_id`, or both, and says so when you give it neither.
+artifact, so `fetch_rest` is a legal `fs.read`. `shell.job_wait {job_id, timeout_s,
+tail_bytes}` blocks and reports `timed_out: true` without killing anything when the timeout
+loses the race. `shell.job_kill {job_id, tree}` terminates the process group (SIGTERM then
+SIGKILL on POSIX), which is the only way a `npm run watch` child does not outlive its
+parent. There are deliberately no shorter aliases for those two - the ids are
+`shell.job_wait` and `shell.job_kill`, and `shell.jobs` takes no arguments at all.
 
 ## Failure modes, honestly
 
