@@ -18,7 +18,7 @@ python -m skeletonkey.mcp         # stdio server: 33 tools, prompts, resources
 Measured on this box: 35 tools registered / 33 advertised / **2 424 tokens** of
 advertisement (`digest fc1ca30868f2e469`), 10 probed capabilities, 4 skills discovered
 (one of them shipping two scripts that compile into callable tools), 0 load errors. Code:
-11 738 lines in `skeletonkey/`, 15 files in `tests/` (495 passing, 2 skipped,
+11 738 lines in `skeletonkey/`, 15 test modules (495 passing, 2 skipped,
 1 xfailed), 2 230 lines of docs (this plan, four contract docs, README; seven ADRs). No workflow file is committed on this branch — the pushing token
 cannot write to `.github/workflows/` — and the pipeline is specified in §6 for whoever
 lands it (one command reproduces it locally: `ruff check . && pytest -q -m "not slow"`).
@@ -109,7 +109,7 @@ skills/        4 packs: fs-safe-refactor, shell-crossplatform (+ tool.toml, scri
                vcs-git-safely, python-env-bootstrap   (SKILL.md + references/)
 schemas/       tool-manifest.schema.json  tool-result.schema.json  skill-frontmatter.schema.json
 config/        skeletonkey.example.toml
-tests/         15 files, 495 tests, incl. a raw-JSON-RPC MCP stdio client
+tests/         15 test modules, 495 tests, incl. a raw-JSON-RPC MCP stdio client
 docs/          TOOL-CONTRACT, SHELL-DIALECTS, SKILLS-SPEC, SECURITY-MODEL, adr/0001-0007
 ```
 
