@@ -606,7 +606,9 @@ class Fs:
                         break
             if len(matches) >= limit or scanned > 200_000:
                 break
-        matches.sort(key=lambda m: -m["mtime"] if sort == "mtime" else m["path"])
+        # tie-break on path: files created in the same instant share an mtime,
+        # and a stable answer is the only one a replay can reproduce
+        matches.sort(key=lambda m: (-m["mtime"], m["path"]) if sort == "mtime" else m["path"])
         return {"pattern": pattern, "root": res.display, "matches": matches, "count": len(matches),
                 "truncated": len(matches) >= limit, "scanned": scanned, "via": res.via()}
 

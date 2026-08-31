@@ -592,6 +592,34 @@ def test_idempotent_reads_are_cached_and_mutations_are_not():
     assert calls.count("w") == 2, "mutations must never be served from cache"
 
 
+def test_a_mutation_retires_cached_reads():
+    """A read served from cache after the tree moved is a lie: the verify-then-
+    retry loop (search, patch, search-again) must see the new state, not the
+    pre-patch answer. A mutation bumps the cache generation, retiring every
+    cached answer."""
+    state = {"value": "OLD"}
+    calls = []
+
+    def reader():
+        calls.append("r")
+        return {"value": state["value"]}
+
+    def writer():
+        calls.append("w")
+        state["value"] = "NEW"
+        return {"value": state["value"]}
+
+    eng, _ = mkengine(handlers=[(tool("fs.read"), reader),
+        (tool("fs.write", risk="write", idempotent=False), writer)])
+    ctx = CallContext.from_config(eng.config)
+    first = eng.call("fs.read", {}, ctx=ctx)
+    assert first.data["value"] == "OLD"
+    eng.call("fs.write", {}, ctx=ctx)          # mutates the tree
+    second = eng.call("fs.read", {}, ctx=ctx)  # identical args, post-mutation
+    assert second.metrics.cached is False, "the mutation must have retired the cached read"
+    assert second.data["value"] == "NEW", "a verify-after-write must read the new state"
+
+
 def test_cache_key_includes_cwd_and_args():
     calls = []
     eng, _ = mkengine(handlers=[(tool("fs.read", props={"p": {"type": "string"}}), lambda p="x": calls.append(p) or {"p": p})])

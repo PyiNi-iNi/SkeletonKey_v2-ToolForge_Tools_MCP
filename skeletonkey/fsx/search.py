@@ -229,8 +229,10 @@ class SearchBackend:
         base = root.real
         for dirpath, dirnames, filenames in os.walk(base, followlinks=False):
             rel_dir = os.path.relpath(dirpath, base).replace(os.sep, "/")
-            dirnames[:] = [d for d in dirnames if not d.startswith(".")
-                           and not self.sb.should_ignore(_join(rel_dir, d))]
+            # sorted walk: an agent's search must return the same order on every
+            # host and in a replay, whatever the filesystem's directory order is
+            dirnames[:] = sorted(d for d in dirnames if not d.startswith(".")
+                                 and not self.sb.should_ignore(_join(rel_dir, d)))
             for fn in sorted(filenames):
                 rel = _join(rel_dir, fn)
                 if self.sb.should_ignore(rel) or (grx and not grx.search(rel.lower())):

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from typing import Any
 
@@ -78,9 +79,11 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--background", action="store_true")
     s.add_argument("--env", action="append", default=[])
 
-    j = sub.add_parser("jobs", help="list/wait/kill background jobs")
-    j.add_argument("action", choices=["list", "wait", "kill"], nargs="?", default="list")
+    j = sub.add_parser("jobs", help="list/wait/watch/kill background jobs")
+    j.add_argument("action", choices=["list", "wait", "watch", "kill"], nargs="?", default="list")
     j.add_argument("job_id", nargs="?", default="")
+    j.add_argument("--until", default="", help="regex to wait for on the job's stdout (watch)")
+    j.add_argument("--timeout-s", type=float, default=30.0, help="cap for wait/watch")
 
     f = sub.add_parser("fs", help="ls/cat/write/patch/search/glob/stat/rm/mv/mkdir/chmod")
     f.add_argument("action", choices=["ls", "cat", "write", "patch", "search", "glob", "stat",
@@ -110,6 +113,12 @@ def main(argv: list[str] | None = None) -> int:
 
     m = sub.add_parser("mcp", help="run the MCP server")
     m.add_argument("--transport", default="stdio", choices=["stdio", "streamable-http"])
+
+    rp = sub.add_parser("replay", help="re-execute a recorded run in a scratch copy and diff envelopes")
+    rp.add_argument("ref", help="path to a run recording, or a task id under <state>/runs/")
+    ev = sub.add_parser("eval", help="score a suite of scripted tasks")
+    ev.add_argument("--suite", action="append", required=True,
+                    help="suite file, repeatable (one task per JSON line)")
 
     args = ap.parse_args(argv)
     if args.cmd == "mcp":
@@ -178,6 +187,50 @@ def _dispatch(args: argparse.Namespace, tk: Any, call: Any, cfg: Config) -> int:
             print(f"invalid json args: {exc}", file=sys.stderr)
             return 2
         return _emit(call(args.tool, payload), json_out=True)
+    if cmd == "replay":
+        from .core import replay as replay_mod
+
+        ref = args.ref
+        path = ref if os.path.isfile(ref) else os.path.join(cfg.state.dir, "runs", ref + ".jsonl")
+        if not os.path.isfile(path):
+            print(f"no recording at {path}", file=sys.stderr)
+            return 2
+        report = replay_mod.replay(path)
+        if args.json:
+            print(compact_json(report))
+        else:
+            for row in report["steps"]:
+                mark = "ok  " if row["match"] else "DIFF"
+                flag = " [stateful]" if row["stateful"] else ""
+                print(f"  {mark} {row['seq']:>2}  {row['tool']}{flag}")
+                for d in row["diffs"]:
+                    print(f"        {d}")
+            if "error" in report:
+                print(f"error: {report['error']}", file=sys.stderr)
+            print(f"  {report.get('calls', 0)} calls, "
+                  f"{report.get('ledger_rows', 0)} ledger rows "
+                  f"({'one per call' if report.get('ledger_one_row_per_call') else 'MISMATCH'}), "
+                  f"verdict: {'REPRODUCED' if report['ok'] else 'DIVERGED'}")
+            print(f"  scratch copy kept at {report.get('scratch', '')}")
+        return 0 if report["ok"] else 1
+    if cmd == "eval":
+        from .core import replay as replay_mod
+
+        report = replay_mod.eval_suite(args.suite)
+        if args.json:
+            print(compact_json(report))
+        else:
+            for row in report["results"]:
+                mark = "ok  " if row["ok"] else "FAIL"
+                extra = f" (refused then recovered: {', '.join(row['refused'])})" if row["recovered"] else ""
+                print(f"  {mark} {row['id']}: {row['calls']} calls, {row['tokens']} tokens{extra}")
+                for f in row["fail"]:
+                    print(f"        failed assertion: {f}")
+            print(f"  {report['passed']}/{report['tasks']} tasks passed, "
+                  f"median {report['median_calls_per_task']} calls/task, "
+                  f"mean {report['mean_tokens_per_task']} tokens/task, "
+                  f"{report['refusal_then_recovery']} refusal-then-recovery of {report['refusals']} refusals")
+        return 0 if report["passed"] == report["tasks"] else 1
     if cmd == "skills":
         if args.action == "list":
             return _emit(call("skills.list", {}), json_out=args.json)
@@ -205,7 +258,11 @@ def _dispatch(args: argparse.Namespace, tk: Any, call: Any, cfg: Config) -> int:
             return _emit(call("shell.jobs", {}), json_out=args.json)
         if args.action == "kill":
             return _emit(call("shell.job_kill", {"job_id": args.job_id}), json_out=args.json)
-        return _emit(call("shell.job_wait", {"job_id": args.job_id}), json_out=args.json)
+        if args.action == "watch":
+            return _emit(call("shell.job_watch", {"job_id": args.job_id, "until": args.until,
+                                                  "timeout_s": args.timeout_s}), json_out=args.json)
+        return _emit(call("shell.job_wait", {"job_id": args.job_id,
+                                             "timeout_s": args.timeout_s}), json_out=args.json)
     if cmd == "shell":
         script = args.script
         if args.file:

@@ -55,6 +55,42 @@ class Toolkit:
 
         return pathlib.Path(self.config.workspace)
 
+    def plan(self, task: str, *, k: int = 5, skills_limit: int = 3) -> dict[str, Any]:
+        """The autopilot loop's integration surface (P4): everything it needs to plan a turn.
+
+        A ranked shortlist of tools (the deterministic lexical ranking - P5 adds the
+        optional semantic stage), the skills matched to the task, the exact budgets to
+        charge, and a replayable `sk call` invocation per shortlist row. The loop consumes
+        this; that is what ends the ad-hoc glue.
+        """
+        from .core.util import compact_json
+
+        short = self.registry.search(task, limit=max(1, int(k)))
+        rows: list[dict[str, Any]] = []
+        for s in short:
+            man = self.registry.get(s["id"])
+            args = dict(man.examples[0].get("args", {})) if man.examples else {}
+            rows.append({
+                **s,
+                "tokens_estimate": man.tokens_estimate(),
+                "typical_output_bytes": man.typical_output_bytes,
+                "replay": {"tool": man.id, "args": args,
+                           "sk_call": f"sk call {man.id} '{compact_json(args)}'"},
+            })
+        block = self.skills.context_block(task, limit=max(1, int(skills_limit)))
+        cfg = self.config
+        return {
+            "task": task,
+            "shortlist": rows,
+            "skills": block,
+            "budgets": {"task_max_calls": cfg.budget.task_max_calls,
+                        "task_max_mutations": cfg.budget.task_max_mutations,
+                        "task_max_tokens_out": cfg.budget.task_max_tokens_out,
+                        "task_max_wall_s": cfg.budget.task_max_wall_s,
+                        "max_output_bytes": cfg.budget.max_output_bytes,
+                        "per_tool_max_bytes": dict(cfg.budget.per_tool_max_bytes)},
+        }
+
     def describe(self) -> dict[str, Any]:
         snap = self.engine.advertise()
         return {

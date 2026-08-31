@@ -163,6 +163,11 @@ formatter, a codegen step) in the same batch: the second edit's `expect_sha` wil
 conflict, and by then you have partially reformatted code. Order: generate, then
 read, then patch.
 
+Plan and prove the turn: `toolkit.plan(task)` ranks tools, skills, and budgets;
+`RunRecorder` + `sk replay` re-runs the recording in a scratch copy and diffs the
+envelopes; `sk eval` scores scripted task sets (details:
+`references/undo-and-journal.md`). A mutation retires every cached read.
+
 ## Quick reference
 
 | Situation | Call |

@@ -127,3 +127,26 @@ at each verified checkpoint and use `fs.undo_task` only to retract the step you 
 standing on. If `shell.run {script: "git status --porcelain"}` shows unrelated dirty
 files, do not `git checkout .` to "get back to a known state": that destroys someone
 else's work-in-progress, including any file the journal has already pruned.
+
+## Replay and eval
+
+- `toolkit.plan(task)` is the loop's integration surface: a ranked shortlist of tools
+  (deterministic lexical ranking), the matched skills, the exact budgets to charge, and
+  a replayable `sk call` invocation per shortlist row.
+- `RunRecorder` appends full envelopes to a JSONL recording (one step per line) and
+  snapshots the workspace's *start* state to `<recording>.baseline` — a mutation run
+  changes the tree, so a replay starts where the run started.
+- `sk replay <recording|task>` re-executes the steps in a scratch copy (the original is
+  never touched) and diffs the envelopes. Normalization is explicit, not fuzzy: volatile
+  keys (`run_id`, `ts`, `elapsed_s`, `duration_ms`, `est_tokens`, `bytes_out`, `mtime`,
+  …) are dropped wherever they occur, the workspace/state roots are rewritten to
+  `<WS>`/`<STATE>`, and journal `und_<hash>` tokens (per-call identities) are rewritten.
+  A tool that declared itself `stateful` is held to `ok` + error code only; everything
+  else is diffed byte-for-byte.
+- `sk eval --suite tests/eval/*.jsonl` scores scripted tasks (one JSON object per line:
+  `id`, `setup`, `steps`, `expect`). A step's args may reference an earlier step's data
+  as `"$<step>.data.<path>"` — how a static script uses a `job_id` it only knows after
+  the fact. The report: task success, calls/task, tokens/task, refusal-then-recovery.
+- The ledger keeps exactly one row per call, and every row's `context_receipt` records
+  what the host could and could not call at that moment — an eval can read, after the
+  fact, *why* an agent never saw a tool.

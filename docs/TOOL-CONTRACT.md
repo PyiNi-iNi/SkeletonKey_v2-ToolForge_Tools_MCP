@@ -286,6 +286,9 @@ for the os-trash tier).
   — otherwise a polling agent is served its own last answer and calls it fresh.
 - `idempotency_key` (call-level) collapses retries of the same logical mutation; the key
   is part of the cache key and of `registry.stats` attribution, never a security control.
+- A successful **mutation retires every cached read** (the cache key carries a mutation
+  generation that bumps on each mutating call): the search → patch → search-again verify
+  loop must read the new state, never the pre-patch answer served from cache.
 
 ## 7b. Skill-authored tools
 
@@ -316,6 +319,37 @@ Two reservations worth knowing before you write a skill:
 * a tool that wants `dry_run` to be honoured must declare the property itself. That declaration
   is the author's promise that the script writes nothing; the engine stops guessing, which is
   also why `policy.read_only` refuses a skill tool that did not declare it.
+
+## 7c. Replay and eval (the autopilot integration surface)
+
+`toolkit.plan(task)` is the loop's entry point: a ranked shortlist of tools
+(deterministic lexical ranking - P5 adds the optional semantic stage), the skills
+matched to the task, the exact budgets to charge, and a replayable `sk call`
+invocation per shortlist row. The loop consumes `plan()` + the ledger's
+`context_receipt` and stops calling tools through ad-hoc glue.
+
+- **Recording.** `RunRecorder` appends full envelopes to a JSONL run recording,
+  one step per line, and snapshots the workspace's *start* state to
+  `<recording>.baseline` before the first step - a mutation run changes the tree,
+  so a replay must start where the run started, not where it ended.
+- **Replay.** `sk replay <recording|task>` re-executes the steps in a scratch copy
+  of the baseline (the original is never touched) and diffs the envelopes.
+  Normalization is **explicit, not fuzzy**: volatile keys (`run_id`, `trace_id`,
+  `ts`, `started`, `elapsed_s`, `wall_s`, `duration_ms`, `est_tokens`, `bytes_out`,
+  `mtime`, `atime`) are dropped wherever they occur; the workspace/state roots are
+  rewritten to `<WS>`/`<STATE>`; journal `und_<hash>` tokens - per-call identities -
+  are rewritten. A tool that declared itself `stateful` (session or host) is held
+  to `ok` + error code only: its data may reflect live state, which is exactly what
+  the declaration promised. Anything else is diffed byte-for-byte.
+- **Eval.** `sk eval --suite tests/eval/*.jsonl` scores scripted tasks (one JSON
+  object per line: `id`, `setup`, `steps`, `expect`). A step's args may reference
+  an earlier step's data as `"$<step>.data.<path>"` - the only way a static script
+  can use a `job_id` or token it can only know after the fact. The report scores
+  task success, calls/task, tokens/task, and the refusal-then-recovery rate.
+
+The ledger keeps exactly one row per call (asserted across the replay), and every
+row's `context_receipt` records what the host could and could not call at that
+moment - so after the fact, an eval can read *why* an agent never saw a tool.
 
 ## 8. Adding a tool
 

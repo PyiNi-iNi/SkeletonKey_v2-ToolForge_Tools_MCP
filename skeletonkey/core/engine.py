@@ -200,6 +200,10 @@ class Engine:
         self._last_profile_diff: dict[str, list[str]] = {}
         self._cache: dict[str, tuple[float, ToolResult]] = {}
         self._cache_ttl = 5.0
+        # Bumped on every successful mutation: a cached read is only valid while
+        # the tree it read is unchanged, so any mutation retires every cached
+        # answer (the key carries the generation; old entries just go unreachable)
+        self._cache_generation = 0
         self._pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="sk-tool")
         self._started = time.monotonic()
         self._negotiated = False
@@ -377,6 +381,9 @@ class Engine:
                     if res.ok and man is not None and man.is_mutating:
                         ctx.mutations += 1
                         self._record_mutation()
+                        # a successful mutation retires every cached read: a read
+                        # served from cache after the tree moved is a lie
+                        self._cache_generation += 1
                     # First-class budget position: computed AFTER this call's
                     # charge, then re-estimated so est_tokens/bytes_out describe
                     # the payload that actually ships (including this block).
@@ -821,11 +828,17 @@ class Engine:
         `idempotent` means "same args, no side effects", not "stable answer": a session
         or job listing is a pure read that still changes the moment another call runs, so
         caching `shell.sessions` would hide the very state the agent is polling for.
+
+        The key also carries the mutation generation: a read is only valid while the
+        tree it read is unchanged, so a mutation between two identical calls retires
+        the first answer (verify-then-retry loops must see the new state).
         """
         if not man.idempotent or man.is_mutating or man.stateful not in ("", "none"):
             return None
         fp = self.profile.fingerprint if self.profile else "-"
-        return f"{man.id}|{man.version}|{fp}|{ctx.cwd or ''}|{short_hash(compact_json(_shrink(args)), 16)}"
+        return (f"{man.id}|{man.version}|{fp}|{ctx.cwd or ''}"
+                f"|gen{self._cache_generation}"
+                f"|{short_hash(compact_json(_shrink(args)), 16)}")
 
     @staticmethod
     def _partial(exc: SkeletonKeyError) -> Any:
