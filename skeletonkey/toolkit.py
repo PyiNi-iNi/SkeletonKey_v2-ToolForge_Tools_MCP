@@ -15,10 +15,11 @@ import os
 from dataclasses import dataclass, field
 from typing import Any
 
-from .core.config import Config
+from .core.config import Config, _user_dir
 from .core.engine import Engine
 from .core.ledger import Ledger
 from .core.profile import CapabilityProfile, Prober
+from .core.publish import PublishStore
 from .core.registry import Registry
 from .fsx.journal import FsJournal
 from .fsx.ops import Fs
@@ -42,6 +43,7 @@ class Toolkit:
     engine: Engine
     skills: SkillLoader
     ledger: Ledger | None = None
+    publish: PublishStore | None = None
     build_report: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -193,8 +195,15 @@ def build(*, config: Config | None = None, overrides: dict[str, Any] | None = No
     # with the build-time snapshot forever (shell.run would ignore a re-detect).
     engine.attach(search_backends=SearchBackend(sandbox, profile), shells=shells)
 
+    # publish store: user-level by default (outside the workspace roots, so the
+    # fs sandbox cannot reach it). Override via [publish] store_path.
+    store_path = cfg.publish.store_path or os.path.join(_user_dir(), "publish", "store.json")
+    publish_store = PublishStore(store_path)
+    report["publish_store"] = str(publish_store.path)
+
     # 1. built-ins
-    rep = builtin.register(registry, engine=engine, shells=shells, fs=fs, journal=journal)
+    rep = builtin.register(registry, engine=engine, shells=shells, fs=fs, journal=journal,
+                           publish=publish_store)
     report["builtin"] = rep
     # 2. skills -> tool manifests (declarative), and the skills.* tools themselves
     skills = SkillLoader(cfg.skills.dirs, max_body_bytes=cfg.skills.max_body_bytes,
@@ -214,7 +223,8 @@ def build(*, config: Config | None = None, overrides: dict[str, Any] | None = No
             report["entry_points"] = registry.load_entry_points()
     report["registered_after_load"] = len(registry.all())
     return Toolkit(config=cfg, profile=profile, sandbox=sandbox, fs=fs, journal=journal, shells=shells,
-                   registry=registry, engine=engine, skills=skills, ledger=ledger, build_report=report)
+                   registry=registry, engine=engine, skills=skills, ledger=ledger,
+                   publish=publish_store, build_report=report)
 
 
 def _mk_overrides(overrides: dict[str, Any] | None, roots: list[str] | None,

@@ -41,6 +41,9 @@ BURST: dict[str, dict] = {
     "skills.install": {"dir": "burst/no-such-pack"},
     "skills.uninstall": {"name": "no-such-skill"},
     "policy.grant": {"tool": "fs.delete", "scope": "task"},
+    "pub.store_put": {"id": "burst.x", "kind": "token", "value": "burst"},
+    "pub.store_delete": {"id": "burst.x"},
+    "pub.inject": {"path": "burst"},
 }
 
 WALL_CODES = {

@@ -106,6 +106,20 @@ def main(argv: list[str] | None = None) -> int:
     sk.add_argument("--keep-files", action="store_true",
                     help="with uninstall: unregister the tools but leave the directory")
 
+    pb = sub.add_parser("pub", help="publishing: credential store, placeholder injection, platform knowledge")
+    pb.add_argument("action", choices=["list", "put", "delete", "placeholders", "inject",
+                                       "platforms", "payments", "packaging", "testers"])
+    pb.add_argument("arg", nargs="?", default="",
+                    help="id (put/delete), kind (list), name (platforms/payments/packaging) or path (placeholders/inject)")
+    pb.add_argument("--kind", default="token",
+                    help="with put: credential kind (token, api_key, oauth_token, password, ...)")
+    pb.add_argument("--value", default="", help="with put: the secret itself (never echoed back)")
+    pb.add_argument("--note", default="", help="with put: human note (what it is, where it came from)")
+    pb.add_argument("--dry-run", action="store_true", help="with inject: report the plan, change nothing")
+    pb.add_argument("--platform", default="", help="with testers: platform key (from pub.platforms)")
+    pb.add_argument("--packaging", default="", help="with testers: packaging key (from pub.packaging)")
+    pb.add_argument("--version", default="", help="with testers: version label for the plan")
+
     sub.add_parser("describe", help="full toolkit/assembly report")
     e = sub.add_parser("call", help="call any tool directly: sk call <tool> '<json args>'")
     e.add_argument("tool")
@@ -253,6 +267,42 @@ def _dispatch(args: argparse.Namespace, tk: Any, call: Any, cfg: Config) -> int:
                                                    "remove_files": not args.keep_files}),
                          json_out=args.json)
         return _emit(call("skills.load", {"name": args.arg or ""}), json_out=args.json, raw_key="injection")
+    if cmd == "pub":
+        a, arg = args.action, (args.arg or "")
+        if a == "list":
+            return _emit(call("pub.store_list", {"kind": arg} if arg else {}), json_out=args.json)
+        if a == "put":
+            if not arg or not args.value:
+                print("usage: sk pub put <id> --kind <kind> --value <secret> [--note ...]", file=sys.stderr)
+                return 2
+            return _emit(call("pub.store_put", {"id": arg, "kind": args.kind, "value": args.value,
+                                                "note": args.note}), json_out=args.json)
+        if a == "delete":
+            if not arg:
+                print("usage: sk pub delete <id>", file=sys.stderr)
+                return 2
+            return _emit(call("pub.store_delete", {"id": arg}), json_out=args.json)
+        if a == "placeholders":
+            return _emit(call("pub.placeholders", {"path": arg or "."}), json_out=args.json)
+        if a == "inject":
+            return _emit(call("pub.inject", {"path": arg or ".", "dry_run": bool(args.dry_run)}),
+                         json_out=args.json)
+        if a == "platforms":
+            return _emit(call("pub.platforms", {"name": arg} if arg else {}), json_out=args.json)
+        if a == "payments":
+            return _emit(call("pub.payments", {"provider": arg} if arg else {}), json_out=args.json)
+        if a == "packaging":
+            return _emit(call("pub.packaging", {"target": arg} if arg else {}), json_out=args.json)
+        if a == "testers":
+            payload: dict[str, Any] = {}
+            if args.platform:
+                payload["platform"] = args.platform
+            if args.packaging:
+                payload["packaging"] = args.packaging
+            if args.version:
+                payload["version"] = args.version
+            return _emit(call("pub.testers", payload), json_out=args.json)
+        return 2
     if cmd == "jobs":
         if args.action == "list":
             return _emit(call("shell.jobs", {}), json_out=args.json)

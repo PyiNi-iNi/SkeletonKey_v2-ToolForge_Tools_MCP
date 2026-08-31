@@ -792,3 +792,66 @@ def test_wire_progress_notifications_for_a_search(tmp_path):
             "no progressToken, no unsolicited progress"
     finally:
         c.close()
+
+
+# ---------------------------------------------------------------- publishing
+def test_publish_store_and_inject_over_the_wire(tmp_path):
+    """The publish flow through the real MCP endpoint: store a secret, scan for
+    markers with exact locations, inject, and confirm the secret never rode in a
+    tool result. A dedicated client (own env) so the store lands in a temp dir,
+    never the developer's real user store."""
+    ws = tmp_path / "ws"
+    (ws / "deploy").mkdir(parents=True)
+    (ws / "deploy" / "app.env").write_text(
+        "PYPY={{PUB.pypi.token}}\nGH={{PUB.github.token}}\n", encoding="utf-8")
+    xdg = tmp_path / "xdg"
+    c = spawn(str(ws), "--root", str(ws), env={"XDG_CONFIG_HOME": str(xdg)})
+    c.start()
+    try:
+        # 1. store a token - the value must not echo back over the wire
+        put = c.request("tools/call", {"name": "pub.store_put",
+                                       "arguments": {"id": "pypi.token", "kind": "token",
+                                                     "value": "pypi-pypi-WIRE-SECRET"}})
+        assert put["isError"] is False, put
+        assert "pypi-pypi-WIRE-SECRET" not in json.dumps(put), \
+            "the secret must not echo back in the store_put result"
+        # the store file must be outside the workspace root
+        store_files = list(xdg.rglob("store.json"))
+        assert store_files and not str(store_files[0]).startswith(str(ws)), \
+            "the store must live outside the sandboxed workspace"
+
+        # 2. scan: exact file/line/column, one bound and one missing
+        scan = c.request("tools/call", {"name": "pub.placeholders", "arguments": {}})
+        assert scan["isError"] is False, scan
+        d = _payload(scan)["data"]
+        marks = {(m["file"], m["line"], m["column"], m["id"]): m["status"] for m in d["markers"]}
+        assert marks[("deploy/app.env", 1, 6, "pypi.token")] == "bound"
+        assert marks[("deploy/app.env", 2, 4, "github.token")] == "missing"
+        assert d["missing_ids"] == ["github.token"] and d["ready_to_publish"] is False
+
+        # 3. inject while a marker is unbound -> refused, file untouched
+        fail = c.request("tools/call", {"name": "pub.inject", "arguments": {}})
+        assert fail["isError"] is True
+        assert (ws / "deploy" / "app.env").read_text(encoding="utf-8") == \
+            "PYPY={{PUB.pypi.token}}\nGH={{PUB.github.token}}\n"
+
+        # 4. bind the rest, then the real inject succeeds and is journaled
+        c.request("tools/call", {"name": "pub.store_put",
+                                 "arguments": {"id": "github.token", "kind": "token",
+                                               "value": "ghp-WIRE-SECRET-2"}})
+        inj = c.request("tools/call", {"name": "pub.inject", "arguments": {}})
+        assert inj["isError"] is False, inj
+        body = _payload(inj)
+        assert body["data"]["files_written"] == 1
+        assert body["data"]["written"][0]["undo_token"]
+        assert (ws / "deploy" / "app.env").read_text(encoding="utf-8") == \
+            "PYPY=pypi-pypi-WIRE-SECRET\nGH=ghp-WIRE-SECRET-2\n"
+        # ...but the injected file is a WORKSPACE file, so fs.read may show it;
+        # the point is no pub.* result carried a raw value
+        assert "WIRE-SECRET" not in json.dumps(inj) and "WIRE-SECRET" not in json.dumps(scan)
+        # 5. the knowledge tools answer over the wire too
+        kb = c.request("tools/call", {"name": "pub.packaging", "arguments": {"target": "msi"}})
+        assert kb["isError"] is False
+        assert "wixtoolset.org" in json.dumps(_payload(kb))
+    finally:
+        c.close()

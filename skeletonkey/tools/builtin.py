@@ -567,10 +567,185 @@ form: no $ or backtick expansion), python returns a source literal.""",
 )
 
 
+# ================================================================= publishing
+_PUB_ID = {"type": "string",
+           "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
+           "description": "Lowercase id, e.g. pypi.token, google_play.token"}
+_PUB_KINDS = ["token", "api_key", "client_id", "client_secret", "oauth_token",
+              "password", "email", "phone", "two_factor", "social_account",
+              "signing_key", "certificate", "webhook", "other"]
+
+_spec(
+    id="pub.store_put", title="Store a credential in the publish store",
+    description="Write a credential (token, key, password, account id, ...) into the write-only "
+                "publish store. The value is persisted to a user-level file OUTSIDE the workspace "
+                "and is NEVER returned by any tool - the only way out is pub.inject into files. "
+                "Use it for everything a publish needs: platform tokens, API keys, OAuth tokens, "
+                "2FA codes, social accounts, e-mail, phone, signing keys.",
+    capability="publish.store.write", group="publishing",
+    risk="write", idempotent=False, parallel_safe=False, stateful="host",
+    typical_latency_ms=15, secret_args=["value"],
+    tags=["publish", "store", "credential", "secret", "token", "key", "oauth", "2fa"],
+    anti_patterns=["don't paste credentials into workspace files instead - the store is the wall",
+                   "don't store the same secret in two ids; rotate (put again) and delete the old id"],
+    see_also=["pub.store_list", "pub.inject"],
+    input_schema={"type": "object",
+                  "properties": {
+                      "id": _PUB_ID,
+                      "kind": {"type": "string", "enum": _PUB_KINDS},
+                      "value": {"type": "string", "minLength": 1,
+                                "description": "The secret itself. Never echoed back."},
+                      "note": {"type": "string", "description": "Human note: what it is, where it came from, expiry."}},
+                  "required": ["id", "kind", "value"],
+                  "additionalProperties": False},
+)
+
+_spec(
+    id="pub.store_list", title="List publish store entries (metadata only)",
+    description="List what is in the publish store: id, kind, note, timestamps and a short value "
+                "mask. Raw values are not listed and can never be read back through a tool.",
+    capability="publish.store.list", group="publishing",
+    risk="read", stateful="host", typical_latency_ms=10,
+    tags=["publish", "store", "list", "credentials"],
+    see_also=["pub.store_put", "pub.store_delete"],
+    input_schema={"type": "object",
+                  "properties": {"kind": {"type": "string", "enum": _PUB_KINDS,
+                                          "description": "Filter by kind."}},
+                  "additionalProperties": False},
+)
+
+_spec(
+    id="pub.store_delete", title="Delete a publish store entry",
+    description="Remove one entry from the publish store. Destructive and IRREVERSIBLE - the store "
+                "lives outside the workspace journal, so there is no undo. Rotate instead of delete "
+                "when the old credential may still be in use somewhere.",
+    capability="publish.store.delete", group="publishing",
+    risk="write", idempotent=False, destructive=True, reversible=False, stateful="host",
+    typical_latency_ms=15, approval="policy",
+    tags=["publish", "store", "delete", "credential"],
+    see_also=["pub.store_put", "pub.store_list"],
+    input_schema={"type": "object", "properties": {"id": _PUB_ID},
+                  "required": ["id"], "additionalProperties": False},
+)
+
+_spec(
+    id="pub.placeholders", title="Find {{PUB.<id>}} placeholders with exact locations",
+    description="Scan a file or directory for {{PUB.<id>}} markers and report each occurrence with "
+                "the exact file, line and column, the store id it binds, and whether that id is "
+                "bound (present in the store) or missing. This is the pre-publish check: publish "
+                "only when every marker is bound.",
+    capability="publish.scan", group="publishing",
+    risk="read", stateful="host", typical_latency_ms=30,
+    tags=["publish", "placeholders", "scan", "markers", "template"],
+    anti_patterns=["don't hand-edit values into the markers - let pub.inject do it so it is journaled"],
+    see_also=["pub.inject", "pub.store_list"],
+    input_schema={"type": "object",
+                  "properties": {"path": {"type": "string", "default": ".",
+                                          "description": "A file or directory (workspace-relative). Default: the whole workspace."}},
+                  "additionalProperties": False},
+)
+
+_spec(
+    id="pub.inject", title="Inject stored values into {{PUB.<id>}} placeholders",
+    description="Replace {{PUB.<id>}} markers in files with values from the publish store, writing "
+                "through the journaled fs layer - every changed file is undoable. Refuses to touch "
+                "ANY file if a marker's store id is missing (no partial publishes). dry_run=true "
+                "reports the plan without writing. Values never appear in this tool's result.",
+    capability="publish.inject", group="publishing",
+    risk="write", idempotent=False, parallel_safe=False, reversible=True, stateful="host",
+    typical_latency_ms=80, approval="policy",
+    tags=["publish", "inject", "placeholders", "secrets", "template"],
+    anti_patterns=["never re-type a secret to 'fix' an unbound marker - store_put it, then re-inject"],
+    see_also=["pub.placeholders", "pub.store_put", "fs.undo"],
+    examples=[{"args": {"path": "deploy", "dry_run": True}},
+              {"args": {"path": "deploy", "bindings": {"pypi.token": "pypi.token.old"}}}],
+    input_schema={"type": "object",
+                  "properties": {
+                      "path": {"type": "string", "default": ".",
+                               "description": "File or directory to inject into. Default: the whole workspace."},
+                      "bindings": {"type": "object",
+                                   "additionalProperties": {"type": "string"},
+                                   "description": "Map a marker id to a different store id for the lookup."},
+                      "dry_run": {"type": "boolean", "default": False,
+                                  "description": "Report the plan (files, markers, missing ids) without writing."}},
+                  "additionalProperties": False},
+)
+
+_spec(
+    id="pub.platforms", title="Publishing platforms: consoles, docs, setup steps",
+    description="Knowledge base of publishing platforms - Google Play, Apple App Store, GitHub, "
+                "PyPI, npm, custom/self-hosted: console and docs URLs, account setup cost, the "
+                "steps to go live, which credentials to store (with suggested store ids) and a "
+                "placeholder example. Omit name to list all platforms briefly.",
+    capability="publish.knowledge.platforms", group="publishing",
+    risk="read", typical_latency_ms=5,
+    tags=["publish", "platforms", "google play", "app store", "github", "pypi", "npm", "links"],
+    see_also=["pub.payments", "pub.packaging"],
+    input_schema={"type": "object",
+                  "properties": {"name": {"type": "string",
+                                          "description": "A platform key (see the list result) for full detail."}},
+                  "additionalProperties": False},
+)
+
+_spec(
+    id="pub.payments", title="Payment providers: setup steps and links",
+    description="Knowledge base for setting up payments: Stripe, Paddle (merchant of record), "
+                "Google Play Billing, Apple In-App Purchase (with the honest note that Apple Pay "
+                "checkout is a PSP feature, not a direct API). Console/docs URLs, numbered setup "
+                "steps, and the credentials to store with suggested ids. Omit provider for the list.",
+    capability="publish.knowledge.payments", group="publishing",
+    risk="read", typical_latency_ms=5,
+    tags=["publish", "payments", "stripe", "paddle", "billing", "iap", "app store", "links"],
+    see_also=["pub.platforms"],
+    input_schema={"type": "object",
+                  "properties": {"provider": {"type": "string",
+                                               "description": "A provider key for full detail."}},
+                  "additionalProperties": False},
+)
+
+_spec(
+    id="pub.packaging", title="Packaging options: steps, commands, verification",
+    description="Knowledge base of packaging targets - PyPI, GitHub Release, Windows installer "
+                "(Inno Setup), MSI (WiX), Scoop, Chocolatey, Winget, Homebrew, self-hosted: "
+                "the tooling, numbered steps with the actual commands, how to verify on a clean "
+                "machine, and the gotchas. Omit target for the list.",
+    capability="publish.knowledge.packaging", group="publishing",
+    risk="read", typical_latency_ms=5,
+    tags=["publish", "packaging", "pypi", "msi", "scoop", "chocolatey", "winget", "homebrew", "installer"],
+    see_also=["pub.platforms", "pub.testers"],
+    input_schema={"type": "object",
+                  "properties": {"target": {"type": "string",
+                                             "description": "A packaging key for full detail."}},
+                  "additionalProperties": False},
+)
+
+_spec(
+    id="pub.testers", title="Generate an AI-executable release test plan",
+    description="Create a machine-executable release test plan: ordered steps (preflight, build, "
+                "publish, verify) where each step is a tool call or a command with acceptance "
+                "lines and on-fail behavior. Plans reference {{PUB.<id>}} placeholders, never raw "
+                "secrets - run pub.inject before any step that needs one.",
+    capability="publish.testplan", group="publishing",
+    risk="read", stateful="host", typical_latency_ms=5,
+    tags=["publish", "testers", "test plan", "release", "ai", "verify"],
+    see_also=["pub.inject", "pub.packaging", "pub.platforms"],
+    input_schema={"type": "object",
+                  "properties": {
+                      "platform": {"type": "string", "description": "Target platform key (from pub.platforms)."},
+                      "packaging": {"type": "string", "description": "Packaging key (from pub.packaging)."},
+                      "version": {"type": "string", "description": "Version being released, for the plan labels."}},
+                  "additionalProperties": False},
+)
+
+
 # ============================================================== handler wiring
 def register(reg: Any, *, engine: Any, shells: Any, fs: Any, journal: Any, skills: Any = None,
-             load_skills: bool = True) -> dict[str, Any]:
-    """Bind handlers to manifests on a registry. Returns a load report."""
+             load_skills: bool = True, publish: Any = None) -> dict[str, Any]:
+    """Bind handlers to manifests on a registry. Returns a load report.
+
+    ``publish`` is a ``core.publish.PublishStore`` (or None to disable the
+    ``pub.*`` tools entirely - the manifests stay listed, gated off).
+    """
     report = {"registered": 0, "skipped": []}
 
     def add(tool_id: str, handler: Any) -> None:
@@ -892,6 +1067,209 @@ def register(reg: Any, *, engine: Any, shells: Any, fs: Any, journal: Any, skill
                           "ts": round(time.time(), 3)}
         return out
 
+    # ---- publishing -------------------------------------------------------
+    from .. import publish_data as _pubdata
+    from ..core import publish as _pubmod
+
+    def _pub_store():
+        if publish is None:
+            raise SkeletonKeyError(E.DEPENDENCY_MISSING, "publish store not configured",
+                                   details={"hint": "toolkit.build(publish=PublishStore(...))"})
+        return publish
+
+    def _pub_files(path: str) -> list[str]:
+        """Workspace-relative file list for scan/inject: one file or a whole dir."""
+        st = fs.stat(path)
+        if st.get("is_file"):
+            return [st.get("display") or path]
+        if not st.get("is_dir"):
+            raise SkeletonKeyError(E.ENOENT, f"{path} does not exist",
+                                   details={"path": path})
+        base = (st.get("display") or path)
+        g = fs.glob("**/*", root=base, limit=10_000, sort="path")
+        prefix = "" if base in (".", "") else base.rstrip("/") + "/"
+        return [prefix + m["path"] for m in g["matches"]]
+
+    # Read errors that mean "this file is protected/absent - skip it honestly"
+    # rather than "the whole publish is broken". A deny-ruled file may still
+    # contain markers, but policy says we may not touch it, so we skip and say so.
+    # (compare code STRINGS: SkeletonKeyError.code is a str, not an ErrorCode)
+    _PUB_SKIP_CODES = {E.ENOENT.code, E.SANDBOX_VIOLATION.code, E.DENY_RULE.code,
+                       E.READ_ONLY_MODE.code, E.PATH_UNREADABLE.code}
+
+    def _pub_scan_file(fpath: str, store: Any) -> tuple[list[Any], list[str], str]:
+        """Read one file, return (markers, skipped_notes, display_path)."""
+        try:
+            rd = fs.read(fpath)
+        except SkeletonKeyError as exc:
+            if exc.code in _PUB_SKIP_CODES:
+                return [], [f"{fpath}: {exc.code.lower()}, skipped"], fpath
+            raise
+        if getattr(rd, "is_binary", False):
+            return [], [f"{fpath}: binary, skipped"], fpath
+        if getattr(rd, "truncated", False):
+            return [], [f"{fpath}: larger than the read cap, skipped"], fpath
+        return _pubmod.find_markers_in_text(rd.content, rd.path or fpath, store), [], fpath
+
+    def pub_store_put(id: str, kind: str, value: str, note: str = "",
+                      ctx: Any = None) -> dict[str, Any]:
+        meta = _pub_store().put(id, kind, value, note)
+        return {"stored": meta,
+                "value": "<never returned; the store is write-only - pub.inject is the only way out>"}
+
+    def pub_store_list(kind: str = "", ctx: Any = None) -> dict[str, Any]:
+        store = _pub_store()
+        if kind and kind not in _pubmod.KINDS:
+            raise SkeletonKeyError(E.BAD_ARGS, f"unknown kind {kind!r}",
+                                   details={"kinds": list(_pubmod.KINDS)})
+        metas = store.metas(kind)
+        return {"count": len(metas), "entries": metas,
+                "note": "metadata only - raw values are not returned by any tool"}
+
+    def pub_store_delete(id: str, ctx: Any = None) -> dict[str, Any]:
+        return _pub_store().delete(id)
+
+    def pub_placeholders(path: str = ".", ctx: Any = None) -> dict[str, Any]:
+        store = _pub_store()
+        files = _pub_files(path)
+        markers: list[Any] = []
+        skipped: list[str] = []
+        for fpath in files:
+            m, notes, _ = _pub_scan_file(fpath, store)
+            markers.extend(m)
+            skipped.extend(notes)
+        missing = sorted({m.id for m in markers if not m.bound})
+        bound = [m for m in markers if m.bound]
+        return {
+            "scanned_files": len(files),
+            "files_with_markers": len({m.file for m in markers}),
+            "marker_count": len(markers),
+            "bound": len(bound),
+            "missing": len(markers) - len(bound),
+            "markers": [m.to_dict() for m in markers],
+            "missing_ids": missing,
+            "skipped": skipped,
+            "ready_to_publish": not missing,
+            "note": "publish only when ready_to_publish is true; pub.inject refuses otherwise",
+        }
+
+    def pub_inject(path: str = ".", bindings: dict[str, str] | None = None,
+                   dry_run: bool = False, ctx: Any = None) -> dict[str, Any]:
+        store = _pub_store()
+        files = _pub_files(path)
+        # Pass 1: read every file, plan every replacement. NO writes yet.
+        plan: list[dict[str, Any]] = []
+        skipped: list[str] = []
+        all_missing: set[str] = set()
+        for fpath in files:
+            try:
+                rd = fs.read(fpath)
+            except SkeletonKeyError as exc:
+                if exc.code in _PUB_SKIP_CODES:
+                    skipped.append(f"{fpath}: {exc.code.lower()}, skipped")
+                    continue
+                raise
+            if getattr(rd, "is_binary", False):
+                skipped.append(f"{fpath}: binary, skipped")
+                continue
+            if getattr(rd, "truncated", False):
+                skipped.append(f"{fpath}: larger than the read cap, skipped")
+                continue
+            new_text, mk, missing = _pubmod.replace_markers(rd.content, store, bindings, file=fpath)
+            if missing:
+                all_missing.update(missing)
+            plan.append({"path": fpath, "sha": rd.sha256, "newline": rd.newline,
+                         "encoding": rd.encoding, "old": rd.content, "new": new_text,
+                         "markers": [m.to_dict() for m in mk],
+                         "changed": new_text != rd.content})
+        if all_missing and not dry_run:
+            raise SkeletonKeyError(
+                E.ENOENT, "refusing to publish with unbound placeholders",
+                details={"missing": sorted(all_missing),
+                         "hint": "pub.store_put each id (or map it via `bindings`), then re-run"})
+        if dry_run:
+            return {"dry_run": True, "files": [
+                        {"path": p["path"], "changed": p["changed"],
+                         "markers": p["markers"]} for p in plan],
+                    "skipped": skipped, "missing_ids": sorted(all_missing),
+                    "hint": "no bytes written; rerun without dry_run to apply"}
+        # Pass 2: write only the changed files, journaled, expect_sha-protected.
+        written: list[dict[str, Any]] = []
+        undo_tokens: list[str] = []
+        task_id = ctx.task_id if ctx else ""
+        for p in plan:
+            if not p["changed"]:
+                continue
+            w = fs.write(p["path"], p["new"], expect_sha=p["sha"], task_id=task_id)
+            d = w.to_dict()
+            token = d.get("undo_token")
+            if token:
+                undo_tokens.append(token)
+            written.append({"path": p["path"], "bytes_before": w.bytes_before,
+                            "bytes_after": w.bytes_after, "sha_after": w.sha_after,
+                            "undo_token": token})
+        out = {"files_written": len(written), "files_scanned": len(plan),
+               "written": written, "skipped": skipped, "missing_ids": sorted(all_missing)}
+        if undo_tokens:
+            out["undo_tokens"] = undo_tokens
+            if task_id:
+                # every engine call carries its own task id, so undo_task reverts
+                # exactly this call's writes - the right scope for "undo this publish"
+                out["undo"] = {"tool": "fs.undo_task", "args": {"task_id": task_id},
+                               "note": "reverts every file this injection wrote"}
+            elif len(undo_tokens) == 1:
+                out["undo"] = {"tool": "fs.undo", "args": {"token": undo_tokens[0]}}
+            else:
+                out["undo"] = {"tool": "fs.undo", "args": {"token": undo_tokens[0]},
+                               "note": "multiple files: call once per token in `undo_tokens`"}
+        return out
+
+    def pub_platforms(name: str = "", ctx: Any = None) -> dict[str, Any]:
+        if not name:
+            return {"count": len(_pubdata.PLATFORMS),
+                    "platforms": [{"key": k, "name": v["name"], "console": v["console"]}
+                                  for k, v in sorted(_pubdata.PLATFORMS.items())],
+                    "hint": "call again with name=<key> for the full entry"}
+        entry = _pubdata.PLATFORMS.get(name)
+        if entry is None:
+            raise SkeletonKeyError(E.BAD_ARGS, f"unknown platform {name!r}",
+                                   details={"known": sorted(_pubdata.PLATFORMS)})
+        return entry
+
+    def pub_payments(provider: str = "", ctx: Any = None) -> dict[str, Any]:
+        if not provider:
+            return {"count": len(_pubdata.PAYMENTS),
+                    "providers": [{"key": k, "name": v["name"], "console": v["console"]}
+                                  for k, v in sorted(_pubdata.PAYMENTS.items())],
+                    "hint": "call again with provider=<key> for the full entry"}
+        entry = _pubdata.PAYMENTS.get(provider)
+        if entry is None:
+            raise SkeletonKeyError(E.BAD_ARGS, f"unknown payment provider {provider!r}",
+                                   details={"known": sorted(_pubdata.PAYMENTS)})
+        return entry
+
+    def pub_packaging(target: str = "", ctx: Any = None) -> dict[str, Any]:
+        if not target:
+            return {"count": len(_pubdata.PACKAGING),
+                    "targets": [{"key": k, "name": v["name"], "tooling": v["tooling"]}
+                                for k, v in sorted(_pubdata.PACKAGING.items())],
+                    "hint": "call again with target=<key> for the full entry"}
+        entry = _pubdata.PACKAGING.get(target)
+        if entry is None:
+            raise SkeletonKeyError(E.BAD_ARGS, f"unknown packaging target {target!r}",
+                                   details={"known": sorted(_pubdata.PACKAGING)})
+        return entry
+
+    def pub_testers(platform: str = "", packaging: str = "", version: str = "",
+                    ctx: Any = None) -> dict[str, Any]:
+        if platform and platform not in _pubdata.PLATFORMS:
+            raise SkeletonKeyError(E.BAD_ARGS, f"unknown platform {platform!r}",
+                                   details={"known": sorted(_pubdata.PLATFORMS)})
+        if packaging and packaging not in _pubdata.PACKAGING:
+            raise SkeletonKeyError(E.BAD_ARGS, f"unknown packaging target {packaging!r}",
+                                   details={"known": sorted(_pubdata.PACKAGING)})
+        return _pubdata.test_plan(platform, packaging, version)
+
     add("shell.run", shell_run)
     add("shell.quote", shell_quote)
     add("shell.available", shell_available)
@@ -911,5 +1289,11 @@ def register(reg: Any, *, engine: Any, shells: Any, fs: Any, journal: Any, skill
                      ("registry.list", registry_list), ("registry.search", registry_search),
                      ("registry.describe", registry_describe), ("registry.stats", registry_stats),
                      ("policy.grant", policy_grant)]:
+        add(name, fn)
+    for name, fn in [("pub.store_put", pub_store_put), ("pub.store_list", pub_store_list),
+                     ("pub.store_delete", pub_store_delete), ("pub.placeholders", pub_placeholders),
+                     ("pub.inject", pub_inject), ("pub.platforms", pub_platforms),
+                     ("pub.payments", pub_payments), ("pub.packaging", pub_packaging),
+                     ("pub.testers", pub_testers)]:
         add(name, fn)
     return report
