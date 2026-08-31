@@ -146,6 +146,9 @@ a file edit.
   `details.retry_after_s`, or batch the work into fewer calls. The mutation
   breaker trips the same way across tools — when it does, summarize what you have
   done rather than retrying.
+- Every result carries `metrics.budget` — the task's position after the call.
+  `exhausted` flips on the very call that crosses a cap: that result is your last
+  real answer — fold it in and summarize.
 
 ## 8. Batch etiquette for autopilots
 

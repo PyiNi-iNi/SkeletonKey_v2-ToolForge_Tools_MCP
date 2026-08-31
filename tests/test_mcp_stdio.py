@@ -642,3 +642,32 @@ def test_server_exits_cleanly_when_stdin_closes(tmp_path):
     assert c.proc.poll() is not None, "closing the pipe must not leave a wedged server"
     assert "Traceback" not in c.stderr()
     c.proc.kill()
+
+
+# ------------------------------------------------- P4 budget governor (wire)
+
+def test_wire_metrics_carry_budget_position(tmp_path):
+    (tmp_path / "skeletonkey.toml").write_text(
+        "[budget]\ntask_max_tokens_out = 60\n", encoding="utf-8")
+    (tmp_path / "big.txt").write_text("x" * 4000, encoding="utf-8")
+    c = spawn(str(tmp_path), "--root", str(tmp_path))
+    c.start()
+    try:
+        res = c.request("tools/call", {"name": "fs.read", "arguments": {"path": "big.txt"}})
+        assert not res.get("isError"), _payload(res)
+        env = _payload(res)
+        b = env["metrics"]["budget"]
+        # spent is the charged (pre-block) estimate; est_tokens also covers the
+        # budget block itself, so it is larger by exactly that block's cost
+        assert 0 < env["metrics"]["est_tokens"] - b["spent"]["tokens_out"] <= 100
+        assert b["exhausted"] is True, \
+            "the read that crossed the cap flags it in the same envelope"
+        assert b["remaining"]["tokens_out"] == 0
+
+        res2 = c.request("tools/call", {"name": "fs.read", "arguments": {"path": "big.txt"}})
+        env2 = _payload(res2)
+        assert env2["ok"] is False and env2["error"]["code"] == "BUDGET_EXCEEDED"
+        assert env2["next_actions"][0]["action"] == "summarize_and_stop"
+        assert env2["metrics"]["budget"]["exhausted"] is True
+    finally:
+        c.close()

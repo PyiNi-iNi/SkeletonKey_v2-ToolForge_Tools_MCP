@@ -49,6 +49,16 @@ reported as `INTERNAL`, which is a bug report you wrote for yourself.
   partial stdout). Never rely on the absence of `data` to mean "nothing happened".
 - `metrics.est_tokens` is charged against `budget.task_max_tokens_out` before the host
   sees the result.
+- `metrics.budget` is the task's budget position *after* this call: `spent`, `limits`,
+  `remaining` (`null` = unlimited) and `exhausted`. The loop's "should I summarize
+  now?" branch is a lookup on `exhausted`, not a guess: the call that crosses a cap
+  reports `exhausted: true` in the same envelope, and the next call is refused with
+  `BUDGET_EXCEEDED` plus a `summarize_and_stop` next action. `est_tokens` is larger
+  than `budget.spent.tokens_out` by the budget block's own cost (it is estimated
+  again after the block is attached).
+- `CallContext.from_config(..., remaining_tokens=N)` lets a host carry its own token
+  budget (an LLM's remaining context): the effective task cap is the *tighter* of
+  config and `N`, so an over-optimistic config cannot spend the loop's money.
 - `warnings` is for truthful-but-non-fatal facts (truncation, provider fallback,
   "content had changed since this entry wrote it"). A warning never fails a call, and a
   failure never hides inside a warning.

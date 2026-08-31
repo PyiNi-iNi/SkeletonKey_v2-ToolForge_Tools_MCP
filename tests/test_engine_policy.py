@@ -458,6 +458,66 @@ def test_token_budget_stop_is_reported_in_the_result_metrics():
     assert eng.call("fs.read", {}, ctx=ctx).error.code == "BUDGET_EXCEEDED"
 
 
+# ------------------------------------------------------- P4 budget governor
+
+def test_budget_position_is_a_first_class_metrics_field():
+    """The loop's 'should I summarize now?' branch is a lookup, not a guess."""
+    eng, _ = mkengine(handlers=[(tool("fs.read"), lambda **kw: {"n": 1})])
+    ctx = CallContext.from_config(eng.config)
+    ctx.max_calls, ctx.max_mutations, ctx.max_tokens_out = 10, 0, 5000
+    res = eng.call("fs.read", {}, ctx=ctx)
+    assert res.ok
+    b = res.metrics.budget
+    assert b is not None, "every result carries its task's budget position"
+    assert b["spent"]["calls"] == 1
+    assert b["remaining"] == {"calls": 9, "mutations": None,
+                              "tokens_out": 5000 - ctx.tokens_out}
+    assert b["limits"] == {"calls": 10, "tokens_out": 5000}  # 0 (unlimited) is not a limit
+    assert b["exhausted"] is False
+    # and the estimate covers the block itself (re-estimated after the attach)
+    assert res.metrics.est_tokens > 0 and "budget" in res.metrics.to_dict()
+    # the ledger sees the same view
+    assert res.metrics.budget["spent"]["tokens_out"] == ctx.tokens_out
+
+
+def test_loop_remaining_tokens_tighten_the_task_cap():
+    eng, _ = mkengine(handlers=[(tool("fs.read"), lambda **kw: {"n": 1})])
+    cfg = eng.config
+    loop_budget = min(cfg.budget.task_max_tokens_out, 300) or 300
+    assert cfg.budget.task_max_tokens_out in (0, 400_000)
+    ctx = CallContext.from_config(cfg, remaining_tokens=300)
+    assert ctx.max_tokens_out == loop_budget
+    cfg.budget.task_max_tokens_out = 0  # config says unlimited; the loop still caps
+    ctx2 = CallContext.from_config(cfg, remaining_tokens=300)
+    assert ctx2.max_tokens_out == 300
+    assert CallContext.from_config(cfg).max_tokens_out == 0  # untouched default stands
+
+
+def test_exhausted_flag_flips_on_the_call_that_crosses_the_cap():
+    eng, _ = mkengine(handlers=[(tool("fs.read"), lambda **kw: {"r": "x" * 9000})])
+    ctx = CallContext.from_config(eng.config)
+    ctx.max_tokens_out = 50
+    res = eng.call("fs.read", {}, ctx=ctx)  # crosses the cap; still succeeds
+    assert res.ok
+    assert res.metrics.budget["exhausted"] is True, \
+        "the agent sees 'summarize now' on this very result, before being refused"
+    assert res.metrics.budget["remaining"]["tokens_out"] == 0
+    res2 = eng.call("fs.read", {}, ctx=ctx)
+    assert res2.error.code == "BUDGET_EXCEEDED"
+    assert res2.next_actions[0]["action"] == "summarize_and_stop"
+    assert res2.metrics.budget["exhausted"] is True
+    assert res2.metrics.budget["remaining"]["tokens_out"] == 0
+
+
+def test_budget_view_reaches_the_ledger_row():
+    eng, _ = mkengine(handlers=[(tool("fs.read"), lambda **kw: {"n": 1})])
+    ctx = CallContext.from_config(eng.config)
+    ctx.max_calls = 5
+    eng.call("fs.read", {}, ctx=ctx)
+    assert ctx.to_dict()["budget"]["exhausted"] is False
+    assert ctx.to_dict()["budget"]["remaining"]["calls"] == 4
+
+
 # ------------------------------------------------------------------ execution
 def test_handler_timeout_is_enforced():
     def sleeper():

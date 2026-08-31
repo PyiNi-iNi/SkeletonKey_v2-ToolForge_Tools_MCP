@@ -127,23 +127,50 @@ class CallContext:
     extras: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_config(cls, cfg: Config, *, task_id: str = "", session_id: str = "") -> CallContext:
+    def from_config(cls, cfg: Config, *, task_id: str = "", session_id: str = "",
+                    remaining_tokens: int | None = None) -> CallContext:
+        # The loop may carry its own token budget (an LLM's remaining context, for
+        # example): the effective cap is the *tighter* of the two, so an
+        # over-optimistic config can never spend the loop's money.
+        max_tokens = cfg.budget.task_max_tokens_out
+        if remaining_tokens:
+            max_tokens = min(max_tokens, remaining_tokens) if max_tokens else int(remaining_tokens)
         return cls(
             task_id=task_id or new_run_id(), session_id=session_id, cwd=cfg.workspace,
             max_calls=cfg.budget.task_max_calls, max_mutations=cfg.budget.task_max_mutations,
-            max_tokens_out=cfg.budget.task_max_tokens_out,
+            max_tokens_out=max_tokens,
             deadline=(time.monotonic() + cfg.budget.task_max_wall_s) if cfg.budget.task_max_wall_s else None,
         )
 
-    def to_dict(self) -> dict[str, Any]:
-        spent = {
-            "calls": self.calls, "mutations": self.mutations, "tokens_out": self.tokens_out,
-            "wall_s": round(time.monotonic() - self.started, 3),
+    def exhausted(self) -> bool:
+        """Any cap reached: the next call that counts is a BUDGET_EXCEEDED."""
+        return (
+            (self.max_calls and self.calls >= self.max_calls)
+            or (self.max_mutations and self.mutations >= self.max_mutations)
+            or (self.max_tokens_out and self.tokens_out >= self.max_tokens_out)
+            or (self.deadline is not None and time.monotonic() >= self.deadline)
+        )
+
+    def budget_view(self) -> dict[str, Any]:
+        def remaining(limit: int, used: int) -> int | None:
+            return None if not limit else max(0, int(limit - used))
+
+        return {
+            "spent": {"calls": self.calls, "mutations": self.mutations,
+                      "tokens_out": self.tokens_out,
+                      "wall_s": round(time.monotonic() - self.started, 3)},
+            "limits": {k: v for k, v in {"calls": self.max_calls,
+                                         "mutations": self.max_mutations,
+                                         "tokens_out": self.max_tokens_out}.items() if v},
+            "remaining": {"calls": remaining(self.max_calls, self.calls),
+                          "mutations": remaining(self.max_mutations, self.mutations),
+                          "tokens_out": remaining(self.max_tokens_out, self.tokens_out)},
+            "exhausted": self.exhausted(),
         }
-        limits = {"calls": self.max_calls, "mutations": self.max_mutations, "tokens_out": self.max_tokens_out}
+
+    def to_dict(self) -> dict[str, Any]:
         return {"task_id": self.task_id, "cwd": self.cwd, "trace_id": self.trace_id,
-                "budget": {"spent": spent, "limits": {k: v for k, v in limits.items() if v}},
-                "granted": sorted(self.granted)}
+                "budget": self.budget_view(), "granted": sorted(self.granted)}
 
 
 class Engine:
@@ -350,6 +377,11 @@ class Engine:
                     if res.ok and man is not None and man.is_mutating:
                         ctx.mutations += 1
                         self._record_mutation()
+                    # First-class budget position: computed AFTER this call's
+                    # charge, then re-estimated so est_tokens/bytes_out describe
+                    # the payload that actually ships (including this block).
+                    res.metrics.budget = ctx.budget_view()
+                    res.estimate()
             except Exception:
                 pass
             try:
