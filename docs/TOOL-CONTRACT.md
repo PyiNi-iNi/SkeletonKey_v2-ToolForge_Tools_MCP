@@ -100,6 +100,24 @@ ways to come back, answering different questions:
   A job that exits before printing the line returns `running: false` with its exit code,
   not a timeout. `until` must compile as a regular expression (`BAD_ARGS` if not).
 
+### Streaming on the MCP wire
+
+Two optional channels let a host that renders a live turn see what is happening *during*
+a call, without polling. Both are notifications on the same stdio channel; a host that
+does not render them simply never asked for them.
+
+- **Per-call log (`notifications/message`).** With the server started at
+  `--log-level debug`, every `tools/call` streams one log notification:
+  `level: "debug"`, `logger: "skeletonkey"`, `data: {tool, ok, ms, tokens, error_code}`.
+  The flag is the host's opt-in — below debug the channel stays quiet, and a logging
+  failure never turns a successful call into a failed one.
+- **Progress (`notifications/progress`).** A client that sends a `progressToken` in the
+  request's `_meta` and calls a tool that can scan a large tree (`fs.search`, `fs.glob`)
+  gets an immediate `progress: 0` acknowledgement, then pings of elapsed seconds while
+  the scan is alive. The value is indeterminate on purpose: a tree walk's total is
+  unknown until it finishes, and a made-up total would be a lie with a number on it.
+  No token, no pings — progress is never unsolicited.
+
 ## 3. Errors
 
 `error = {code, error_class, message, retryable, hint, details}`.

@@ -23,6 +23,8 @@ async def amain(args: argparse.Namespace) -> int:
         overrides["roots"] = list(args.root)
     if args.read_only:
         overrides.setdefault("policy", {})["read_only"] = True  # type: ignore[index]
+    if args.log_level:
+        overrides["log_level"] = args.log_level
     cfg = Config.load(cwd=args.cwd, overrides=overrides)
     if args.transport:
         cfg.mcp.transport = args.transport
@@ -58,6 +60,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--transport", default=None, choices=["stdio", "streamable-http"])
     ap.add_argument("--read-only", action="store_true", help="withhold every mutating tool")
     ap.add_argument("--probe", action="store_true", help="force a fresh capability probe")
+    ap.add_argument("--log-level", default=None, choices=["debug", "info", "warning", "error"],
+                    help="server log verbosity; at 'debug' every tool call also streams a "
+                         "notifications/message log line to the wire for hosts that render it")
     args = ap.parse_args(argv)
     try:
         return asyncio.run(amain(args))

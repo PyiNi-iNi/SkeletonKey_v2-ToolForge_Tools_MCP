@@ -729,3 +729,66 @@ def test_wire_ledger_rows_carry_context_receipt(tmp_path):
         assert rc["stop_reason"] == "ENOENT", "the call's own outcome is the stop reason"
     finally:
         c.close()
+
+
+# ------------------------------------------------- P4 streaming (wire)
+def test_wire_log_notifications_stream_per_call_at_debug(tmp_path):
+    """--log-level debug: every call streams a notifications/message log line."""
+    (tmp_path / "a.txt").write_text("hello\n", encoding="utf-8")
+    c = spawn(str(tmp_path), "--root", str(tmp_path), "--log-level", "debug")
+    c.start()
+    try:
+        collected = []
+        c.request("tools/call", {"name": "fs.read", "arguments": {"path": "a.txt"}},
+                  collect=collected)
+        logs = [n for n in collected if n.get("method") == "notifications/message"]
+        assert logs, "a debug-level call must stream a log line"
+        p = logs[0]["params"]
+        assert p["level"] == "debug" and p["logger"] == "skeletonkey"
+        assert p["data"]["tool"] == "fs.read" and p["data"]["ok"] is True
+        assert p["data"]["ms"] >= 0
+    finally:
+        c.close()
+
+
+def test_wire_no_log_notifications_below_debug(tmp_path):
+    (tmp_path / "a.txt").write_text("hello\n", encoding="utf-8")
+    c = spawn(str(tmp_path), "--root", str(tmp_path))
+    c.start()
+    try:
+        collected = []
+        c.request("tools/call", {"name": "fs.read", "arguments": {"path": "a.txt"}},
+                  collect=collected)
+        assert [n for n in collected if n.get("method") == "notifications/message"] == [], \
+            "log lines stream only when the host opted in with --log-level debug"
+    finally:
+        c.close()
+
+
+def test_wire_progress_notifications_for_a_search(tmp_path):
+    """A tools/call carrying a progressToken answers with notifications/progress -
+    an immediate 'started' ping, then pings while the scan is alive. No token, no pings."""
+    for i in range(40):
+        d = tmp_path / "tree" / f"d{i // 7}"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / f"f{i}.txt").write_text(f"needle {i}\n", encoding="utf-8")
+    c = spawn(str(tmp_path), "--root", str(tmp_path))
+    c.start()
+    try:
+        collected = []
+        res = c.request("tools/call", {"name": "fs.search",
+                                       "arguments": {"pattern": "needle"},
+                                       "_meta": {"progressToken": "tok-1"}},
+                        collect=collected)
+        assert res["isError"] is False
+        progs = [n for n in collected if n.get("method") == "notifications/progress"]
+        assert progs, "a progressToken must be answered with notifications/progress"
+        assert all(p["params"]["progressToken"] == "tok-1" for p in progs)
+        assert progs[0]["params"]["progress"] == 0, "the first ping acknowledges the start"
+        collected2 = []
+        c.request("tools/call", {"name": "fs.search", "arguments": {"pattern": "needle"}},
+                  collect=collected2)
+        assert [n for n in collected2 if n.get("method") == "notifications/progress"] == [], \
+            "no progressToken, no unsolicited progress"
+    finally:
+        c.close()
