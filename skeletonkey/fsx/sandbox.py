@@ -75,6 +75,20 @@ class Resolved:
     long_path: str | None = None
     notes: list[str] = field(default_factory=list)
 
+    def via(self) -> dict[str, Any]:
+        """Provenance of this resolution, echoed into `fs.*` results: which root the
+        path matched, any symlink hops between the requested path and the file
+        actually operated on, and the Windows long-path rewrite. Diagnostic only -
+        the security decision was already made against `real`."""
+        out: dict[str, Any] = {"root": self.root}
+        if self.resolved_via_link or self.is_link:
+            out["symlink"] = {"hops": _link_hops(self.abs, self.real), "final": self.real}
+        if self.long_path:
+            out["long_path"] = self.long_path
+        if self.notes:
+            out["notes"] = list(self.notes)
+        return out
+
     def to_dict(self) -> dict[str, Any]:
         return {"path": self.display, "abs": self.abs, "rel": self.rel, "root": self.root,
                 "exists": self.exists, "is_dir": self.is_dir, "is_file": self.is_file,
@@ -83,7 +97,7 @@ class Resolved:
                 **({"mtime": self.mtime} if self.mtime is not None else {}),
                 **({"mode": stat.filemode(self.mode)[1:] if self.mode is not None else {}}
                    if self.mode is not None else {}),
-                "writable": self.writable,
+                "writable": self.writable, "via": self.via(),
                 **({"notes": self.notes} if self.notes else {})}
 
 
@@ -457,6 +471,30 @@ def _stat(path: str) -> os.stat_result | None:
         return os.stat(path)
     except OSError:
         return None
+
+
+def _link_hops(start: str, real: str, limit: int = 8) -> list[str]:
+    """The symlink hops that take `start` to `real`, as each hop's resolved target.
+
+    A diagnostic re-trace of a path the sandbox *just* resolved: the security
+    decision was already made against `real`; this only tells the agent what it
+    walked through. Bounded, and it stops at the first non-link, so a broken or
+    cyclic chain degrades to "fewer hops shown", never a hang.
+    """
+    hops: list[str] = []
+    cur = start
+    for _ in range(limit):
+        if _same(cur, real) or not _islink(cur):
+            break
+        try:
+            target = os.readlink(cur)
+        except OSError:
+            break
+        if not os.path.isabs(target):
+            target = os.path.normpath(os.path.join(os.path.dirname(cur), target))
+        hops.append(target)
+        cur = os.path.normpath(target)
+    return hops
 
 
 def _islink(path: str) -> bool:

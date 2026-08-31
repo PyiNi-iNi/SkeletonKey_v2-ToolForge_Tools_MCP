@@ -47,6 +47,7 @@ class ReadResult:
     size: int = 0
     is_binary: bool = False
     notes: list[str] = field(default_factory=list)
+    via: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {"path": self.path, "content": self.content, "lines": self.lines,
@@ -58,6 +59,8 @@ class ReadResult:
             out["read_hint"] = f"call again with offset={self.next_offset}" if self.next_offset is not None else ""
         if self.is_binary:
             out["is_binary"] = True
+        if self.via:
+            out["via"] = self.via
         if self.notes:
             out["notes"] = self.notes
         return out
@@ -76,6 +79,7 @@ class WriteResult:
     newline: str = "lf"
     encoding: str = "utf-8"
     notes: list[str] = field(default_factory=list)
+    via: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {k: v for k, v in self.__dict__.items() if v not in (None, [], False, "")}
@@ -198,6 +202,7 @@ class Fs:
             return ReadResult(path=res.display, abs_path=res.abs,
                               content=clip_text(raw.decode(enc, "replace"), cap), bytes=len(raw),
                               lines=raw.count(b"\n"), sha256=self.checksum(res.display), encoding=enc,
+                              via=res.via(),
                               newline=nl, offset=offset, truncated=size > len(raw), is_binary=True,
                               size=size, notes=["binary content; decoded with replacement chars for display"])
 
@@ -244,7 +249,7 @@ class Fs:
             bytes=len(raw), lines=len(shown), sha256=sha, encoding=enc,
             newline="lf" if nl == "none" else nl, offset=offset,
             truncated=next_off is not None, next_offset=next_off, mtime=res.mtime, size=size,
-            notes=[n for n in notes if n],
+            notes=[n for n in notes if n], via=res.via(),
         )
 
     @staticmethod
@@ -308,7 +313,7 @@ class Fs:
         st = os.stat(res.real)
         first = raw.split(b"\n", 1)[0][:200].decode(encoding if not binary else "utf-8", "replace")
         out: dict[str, Any] = {
-            "path": path, "bytes": size, "encoding": encoding, "newline": newline,
+            "path": path, "bytes": size, "via": res.via(), "encoding": encoding, "newline": newline,
             "binary": binary, "has_bom": raw[:3] == b"\xef\xbb\xbf" or raw[:2] in (b"\xff\xfe", b"\xfe\xff"),
             "sampled_bytes": consumed, "sample_truncated": more,
             "lines_estimate": (raw.count(b"\n") + (1 if raw and not raw.endswith(b"\n") else 0))
@@ -389,7 +394,7 @@ class Fs:
                              bytes_after=len(raw), sha_before=sha_before,
                              sha_after=hashlib.sha256(raw).hexdigest(),
                              changed=(sha_before != hashlib.sha256(raw).hexdigest()),
-                             newline=effective_nl, encoding=target_enc)
+                             newline=effective_nl, encoding=target_enc, via=res.via())
         if dry_run:
             result.notes.append("dry_run: nothing written")
             return result
@@ -514,7 +519,7 @@ class Fs:
                         overwrite=True, dry_run=dry_run, expect_sha=expect_sha or full.sha256,
                         newline=full.newline, task_id=task_id)
         return {"path": full.path, "applied": len(applied), "failed": failed, "edits": applied,
-                "write": wr.to_dict(), "dry_run": dry_run,
+                "write": wr.to_dict(), "dry_run": dry_run, "via": full.via,
                 "unified_diff": unified_diff(original, text, full.path, max_lines=240)}
 
     # -------------------------------------------------------------- list/glob
@@ -523,7 +528,8 @@ class Fs:
              types: list[str] | None = None) -> dict[str, Any]:
         res = self.sb.resolve(path, intent="list")
         if res.is_file:
-            return {"path": res.display, "entries": [entry_info(res, self.sb)], "truncated": False}
+            return {"path": res.display, "entries": [entry_info(res, self.sb)], "truncated": False,
+                    "via": res.via()}
         out: list[dict[str, Any]] = []
         truncated = False
         hidden = include_hidden
@@ -569,6 +575,7 @@ class Fs:
         elif sort == "mtime":
             out.sort(key=lambda e: -e["mtime"])
         return {"path": res.display, "entries": out, "count": len(out), "truncated": truncated,
+                "via": res.via(),
                 **({"hint": "limit hit; raise limit or narrow path"} if truncated else {})}
 
     def glob(self, pattern: str, *, root: str = ".", limit: int = 500,
@@ -601,7 +608,7 @@ class Fs:
                 break
         matches.sort(key=lambda m: -m["mtime"] if sort == "mtime" else m["path"])
         return {"pattern": pattern, "root": res.display, "matches": matches, "count": len(matches),
-                "truncated": len(matches) >= limit, "scanned": scanned}
+                "truncated": len(matches) >= limit, "scanned": scanned, "via": res.via()}
 
     # ------------------------------------------------------------------ mutate
     def move(self, src: str, dst: str, *, overwrite: bool = False, dry_run: bool = False,
@@ -613,14 +620,15 @@ class Fs:
         if b.exists and not overwrite:
             raise SkeletonKeyError(E.EEXIST, f"{b.display} exists", details={"src": a.display, "dst": b.display})
         undo = self.journal.record_move(a, b, task_id=task_id) if self.journal else None
+        via = {"src": a.via(), "dst": b.via()}
         if dry_run:
-            return {"src": a.display, "dst": b.display, "dry_run": True, "undo_token": undo}
+            return {"src": a.display, "dst": b.display, "dry_run": True, "undo_token": undo, "via": via}
         os.makedirs(_dirname(b.real) or ".", exist_ok=True)
         try:
             shutil.move(a.real, b.real)
         except OSError as exc:
             raise SkeletonKeyError(E.IO, f"move failed: {exc}", details={"src": a.display, "dst": b.display}) from exc
-        return {"src": a.display, "dst": b.display, "undo_token": undo, "moved": True}
+        return {"src": a.display, "dst": b.display, "undo_token": undo, "moved": True, "via": via}
 
     def delete(self, path: str, *, recursive: bool = False, dry_run: bool = False,
                task_id: str = "") -> dict[str, Any]:
@@ -660,7 +668,7 @@ class Fs:
             snapshot = self.journal.record_delete(res, recursive=recursive, task_id=task_id)
         if dry_run:
             return {"path": res.display, "dry_run": True, "would_delete": True, "undo_token": snapshot,
-                    "mode": mode}
+                    "mode": mode, "via": res.via()}
         try:
             if mode == "os-trash":
                 self._os_trash(res)
@@ -674,6 +682,7 @@ class Fs:
             raise SkeletonKeyError(E.IO, f"delete failed: {exc}", details={"path": res.display}) from exc
         return {"path": res.display, "deleted": True, "kind": "dir" if res.is_dir else "file",
                 "undo_token": snapshot, "recoverable": bool(snapshot), "mode": mode,
+                "via": res.via(),
                 **({"trash": "recycle bin"} if mode == "os-trash" else {})}
 
     # ------------------------------------------------------------- deletion tiers
@@ -735,10 +744,10 @@ class Fs:
               task_id: str = "") -> dict[str, Any]:
         res = self.sb.resolve(path, intent="write")
         if res.exists:
-            return {"path": res.display, "created": False, "already": True}
+            return {"path": res.display, "created": False, "already": True, "via": res.via()}
         if dry_run:
             return {"path": res.display, "created": False, "dry_run": True,
-                    "would_create": True}
+                    "would_create": True, "via": res.via()}
         if not parents and os.path.dirname(res.real) and not os.path.isdir(os.path.dirname(res.real)):
             raise SkeletonKeyError(
                 E.BAD_ARGS, f"parent of {res.display} does not exist and parents=false",
@@ -755,7 +764,7 @@ class Fs:
                 break
             probe = nxt
         os.makedirs(res.real, exist_ok=True)
-        out: dict[str, Any] = {"path": res.display, "created": True,
+        out: dict[str, Any] = {"path": res.display, "created": True, "via": res.via(),
                                "created_dirs": [self.sb.display(p) for p in reversed(missing)]
                                if hasattr(self.sb, "display") else list(reversed(missing))}
         if self.journal is not None:
@@ -794,7 +803,7 @@ class Fs:
         if dry_run:
             would = [{"path": t.display, "from": oct(cur), "to": oct(want),
                       "changed": cur != want} for t, cur, want in plans]
-            return {"path": res.display, "dry_run": True, "targets": would,
+            return {"path": res.display, "dry_run": True, "targets": would, "via": res.via(),
                     "would_chmod": oct(plans[0][2]), "changed_count": sum(1 for p in would if p["changed"])}
         applied, skipped, failures = [], [], []
         for t, current, want in plans:
@@ -831,7 +840,7 @@ class Fs:
                 row["undo_token"] = token
             applied.append(row)
         out: dict[str, Any] = {
-            "path": res.display, "mode": oct(plans[0][2]),
+            "path": res.display, "mode": oct(plans[0][2]), "via": res.via(),
             "mode_before": oct(plans[0][1]), "changed": bool(applied),
             "targets": applied, "count": len(applied), "unchanged": len(skipped),
         }

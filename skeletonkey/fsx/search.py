@@ -53,6 +53,7 @@ class SearchOutcome:
     duration_ms: int = 0
     scanned_files: int = 0
     notes: list[str] = field(default_factory=list)
+    via: dict[str, Any] | None = None
 
     def to_dict(self, *, max_hits: int = 200) -> dict[str, Any]:
         shown = self.hits[:max_hits]
@@ -63,6 +64,7 @@ class SearchOutcome:
                 "scanned_files": self.scanned_files, "duration_ms": self.duration_ms,
                 "next": ({"tool": "fs.search", "args": {"pattern": self.pattern, "limit": max_hits * 2}}
                          if len(self.hits) > max_hits else None),
+                **({"via": self.via} if self.via else {}),
                 **({"notes": self.notes} if self.notes else {})}
 
 
@@ -107,6 +109,7 @@ class SearchBackend:
                                word=word, context=context, glob=glob, limit=limit, max_bytes=max_bytes,
                                multiline=multiline, files_with_matches=files_with_matches)
         out.duration_ms = int((time.monotonic() - t0) * 1000)
+        out.via = root.via()
         return out
 
     # ------------------------------------------------------------------ ripgrep

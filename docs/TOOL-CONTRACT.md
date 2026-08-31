@@ -57,6 +57,24 @@ reported as `INTERNAL`, which is a bug report you wrote for yourself.
   `path` holds the **complete** payload and whose `fetch_rest` is a legal `fs.read`
   call. The payload is never cut mid-JSON.
 
+### Path provenance (`via`)
+
+Every `fs.*` result that resolves a path carries `data.via`: the provenance of the
+resolution, so a host can see *where* a path landed without re-deriving it.
+
+```jsonc
+"via": { "root": "/ws",                                  // which declared root matched
+         "symlink": { "hops": ["/ws/a", "/ws/b"],        // each link target, in order
+                      "final": "/ws/b" },                // the fully resolved path
+         "long_path": "\\\\?\\C:\\…",                    // Windows long-path rewrite, when one
+         "notes": ["resolved through symlink to b"] }    // human-readable, when relevant
+```
+
+`via.root` is always present; the other keys appear only when they describe something.
+The block is diagnostic, not a security decision — containment was already enforced
+against the resolved target, and `follow_symlinks = "never"` is refused with
+`SANDBOX_VIOLATION` before any result exists.
+
 ## 3. Errors
 
 `error = {code, error_class, message, retryable, hint, details}`.

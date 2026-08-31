@@ -84,6 +84,59 @@ def test_follow_symlinks_never_refuses_links(workspace):
     assert code_for(sb, "alias.txt")[1] == "SANDBOX_VIOLATION"
 
 
+def test_follow_symlinks_within_roots_follows_an_in_root_link(workspace):
+    """The default policy, exercised on a host that actually supports links: an
+    in-root link is followed, the containment check still runs against the
+    *real* target, and the resolution reports what it walked through."""
+    target = workspace / "target.txt"
+    target.write_text("data", encoding="utf-8")
+    link = workspace / "alias.txt"
+    try:
+        os.symlink("target.txt", link)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks unavailable")
+    sb = PathSandbox([str(workspace)])
+    verdict, res = code_for(sb, "alias.txt")
+    assert verdict == "allow"
+    assert res.resolved_via_link is True
+    assert res.real == os.path.realpath(str(target))
+    # and the via() block names the hop and the final file
+    via = res.via()
+    assert via["root"] == sb.roots[0]
+    assert via["symlink"]["hops"] == [os.path.realpath(str(target))]
+    assert via["symlink"]["final"] == os.path.realpath(str(target))
+    assert any("symlink" in n for n in via["notes"])
+
+
+def test_via_reports_root_and_chain_for_multi_hop_links(workspace):
+    real = workspace / "real.txt"
+    real.write_text("hello\n", encoding="utf-8")
+    first, second = workspace / "link1.txt", workspace / "link2.txt"
+    try:
+        os.symlink("real.txt", first)
+        os.symlink("link1.txt", second)  # relative hop, relative hop
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks unavailable")
+    sb = PathSandbox([str(workspace)])
+    _v, res = code_for(sb, "link2.txt")
+    via = res.via()
+    # each hop is the target as the link wrote it (normalized, relative targets
+    # made absolute), and `final` is the fully resolved destination
+    hop1 = os.path.normpath(os.path.join(os.path.dirname(str(second)), "link1.txt"))
+    assert via["symlink"]["hops"] == [hop1, os.path.realpath(str(real))]
+    assert via["symlink"]["final"] == os.path.realpath(str(real))
+
+
+def test_via_is_plain_for_direct_paths(workspace):
+    (workspace / "plain.txt").write_text("x", encoding="utf-8")
+    sb = PathSandbox([str(workspace)])
+    _v, res = code_for(sb, "plain.txt")
+    via = res.via()
+    assert via == {"root": sb.roots[0]}, "no hops, no long-path: just the matched root"
+    # stat-style to_dict carries the same block
+    assert res.to_dict()["via"] == via
+
+
 def test_deny_and_deny_read_rules(workspace):
     sb = PathSandbox([str(workspace)], SandboxPolicy(deny=["**/*.env"], deny_reads=["**/.env"]))
     assert code_for(sb, ".env", "read")[1] == "DENY_RULE"

@@ -82,6 +82,35 @@ def test_fs_read_on_a_directory_points_at_fs_list(writable_toolkit):
     assert any(a.get("tool") == "fs.list" for a in r.next_actions)
 
 
+def test_fs_read_result_carries_via_provenance(writable_toolkit):
+    eng = writable_toolkit.engine
+    ws = writable_toolkit.workspace
+    root = os.path.realpath(str(ws))
+    # direct path: the matched root, and nothing else
+    r = call(eng, "fs.read", path="src/pkg/mod.py")
+    assert r.ok, r.error
+    assert r.data["via"] == {"root": root}
+    # through a symlink: the hop and the final file are named
+    target = ws / "src" / "real_target.py"
+    target.write_text("x = 1\n", encoding="utf-8")
+    link = ws / "src" / "alias_mod.py"
+    try:
+        os.symlink(str(target), str(link))
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks unavailable")
+    r2 = call(eng, "fs.read", path="src/alias_mod.py")
+    assert r2.ok, r2.error
+    assert r2.data["content"] == "x = 1\n", "the default policy follows in-root links"
+    via = r2.data["via"]
+    assert via["symlink"]["hops"] == [str(target.resolve())]
+    assert via["symlink"]["final"] == str(target.resolve())
+    # writes and deletes echo it too
+    w = call(eng, "fs.write", path="src/prov.txt", content="p\n")
+    assert w.ok and w.data["via"]["root"] == root
+    d = call(eng, "fs.delete", path="src/prov.txt")
+    assert d.ok and d.data["via"]["root"] == root
+
+
 def test_fs_read_outside_the_root_is_refused(writable_toolkit):
     r = call(writable_toolkit.engine, "fs.read", path="../../etc/passwd")
     assert not r.ok and r.error.code == "SANDBOX_VIOLATION"

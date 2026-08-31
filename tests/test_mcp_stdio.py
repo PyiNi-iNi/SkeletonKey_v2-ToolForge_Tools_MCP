@@ -413,6 +413,15 @@ def test_os_trash_tier_over_the_wire(tmp_path):
         c.close()
 
 
+def test_fs_read_carries_via_provenance_over_the_wire(client, ws):
+    res = client.request("tools/call", {"name": "fs.read",
+                                        "arguments": {"path": "src/mod.py"}})
+    assert res["isError"] is False, res
+    via = _payload(res)["data"]["via"]
+    assert via["root"] == os.path.realpath(str(ws)), \
+        "the host sees which root the path resolved against"
+
+
 # ------------------------------------------------------------------ prompts / resources
 def test_prompts_expose_bootstrap_and_skills(client):
     prompts = {p["name"] for p in client.request("prompts/list", {})["prompts"]}
