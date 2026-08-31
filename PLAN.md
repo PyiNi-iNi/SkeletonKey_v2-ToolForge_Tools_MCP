@@ -3,7 +3,7 @@
 **Dynamic toolset + skills + MCP server for autopilot and autonomous agents.**
 Adaptive by host, reversible by default, bounded in bytes and tokens.
 
-Status: **P0, P1 and P2 shipped**, and documented. CI is specified (§6) but not
+Status: **P0, P1, P2 and P3 shipped**, and documented. CI is specified (§6) but not
 committed as a workflow file yet.
 
 ```bash
@@ -15,11 +15,11 @@ sk skills install ./my-skill      # an agent-authored tool, in this process
 python -m skeletonkey.mcp         # stdio server: 33 tools, prompts, resources
 ```
 
-Measured on this box: 35 tools registered / 33 advertised / **2 424 tokens** of
-advertisement (`digest fc1ca30868f2e469`), 10 probed capabilities, 4 skills discovered
+Measured on this box: 37 tools registered / 35 advertised / **3 038 tokens** of
+advertisement (`digest 3206898a746f3fde`), 10 probed capabilities, 4 skills discovered
 (one of them shipping two scripts that compile into callable tools), 0 load errors. Code:
-11 738 lines in `skeletonkey/`, 15 test modules (495 passing, 2 skipped,
-1 xfailed), 2 235 lines of docs (this plan, four contract docs, README; seven ADRs). No workflow file is committed on this branch — the pushing token
+12 678 lines in `skeletonkey/`, 16 test modules (551 passing, 3 skipped,
+1 xfailed), 2 450 lines of docs (this plan, four contract docs, README; eight ADRs). No workflow file is committed on this branch — the pushing token
 cannot write to `.github/workflows/` — and the pipeline is specified in §6 for whoever
 lands it (one command reproduces it locally: `ruff check . && pytest -q -m "not slow"`).
 
@@ -377,6 +377,12 @@ from it, not in advance), and the threat-model table has a test id per row.
 carry the rule text and the fix. Effort saved by refusing to build an OS sandbox (see
 Non-goals); state that plainly in the docs. **Effort: 7–9 days.**
 
+**Status at ship time.** All five acceptance criteria landed and are pinned by name in
+`docs/SECURITY-MODEL.md`'s test map; the exit gate is met (scope line re-measured,
+threat tables carry a test id per row, ADR 0008 recorded). One line of the plan read
+"policy.grant (already present)" — it was present as a handler but unregistered; it
+shipped as a registered tool with the receipt, which is strictly more than planned.
+
 ---
 
 ### P4 — Autopilot integration
@@ -641,6 +647,7 @@ silent-ish failure).
 | 0005 | Never fabricate a default: report what is unknown (`sniff`, empty search, gates) | accepted |
 | 0006 | Journal-and-undo in the toolkit, not delegated to git | accepted |
 | 0007 | Values are `argv`, never interpolated text; quoting is a separate explicit tool | accepted |
+| 0008 | Policy is data; approval is a tool with a receipt; undo is a precondition | accepted |
 
 `docs/adr/` holds the full text of each, with the options rejected and the observable
 consequence (usually a test id).
