@@ -174,6 +174,39 @@ roots and spilled payloads become unreadable; point it at an unwritable path and
 envelope degrades honestly — inlined prefix plus `artifacts[].meta.spill_error`, never a
 silent loss.
 
+### The publish store (P4b)
+
+`pub.*` (ADR-0010) adds a credential store for publishing — platform tokens, signing
+keys, OAuth, 2FA, account identifiers — and the honest claims about it:
+
+- **Location is the wall.** The store file lives *outside the workspace roots*
+  (default `<user config dir>/skeletonkey/publish/store.json`, override
+  `[publish] store_path`), so the fs sandbox — not a policy rule — keeps every
+  `fs.*` tool from it. `fs.read` on the store path is a sandbox violation, and a
+  test pins that the default location is outside the roots.
+- **Write-only to the agent.** No tool returns a raw stored value. `pub.store_put`
+  and `pub.store_list` return metadata with a short non-inverting mask
+  (`ab…YZ(19)` — first/last two chars + length, which is guessable for short
+  values and is *not* a substitute for rotation). The only value flow out of the
+  process is `pub.inject`, which writes values into workspace files through the
+  journaled fs layer (undoable).
+- **Secret args are redacted by declaration, not by pattern-matching luck.**
+  `pub.store_put` declares `secret_args: ["value"]` on its manifest; the engine
+  replaces exactly those keys with `***REDACTED***` before the ledger row is
+  written. A second, independent backstop: `redact_obj` (the key-name matcher)
+  now masks bare `value`-named keys too. `tests/test_publish.py` asserts the raw
+  value appears in no ledger row and no envelope.
+- **No partial publishes.** `pub.inject` plans all replacements first; a marker
+  whose store id is missing raises before any write, so a publish never half-
+  happens. `dry_run` writes nothing.
+- **The honest gap: `shell.run`.** The wall is against *fs tools*; a shell command
+  can still `cat` the store file if the user's OS permissions allow it. That is
+  true of every user-level file this toolkit keeps (the journal, the ledger) and
+  is stated here rather than papered over: the store is protected by location
+  and `0600` file permissions, **not** encryption, and there is deliberately no
+  keyring dependency (zero-mandatory-deps). On a shared machine, `0600` does not
+  mean "nobody else can read this" (the NT note above applies).
+
 ## Skills: adding capability at runtime
 
 P2 lets a *pack on disk* add callable tools, which is a new shape of exposure and worth naming
@@ -268,3 +301,8 @@ does not mean "nobody else can read this".
 | redaction of 10 secret shapes in both previews and errors | `test_ledger_redaction.py` |
 | spill artifact holds the full payload; unwritable spill dir reports `spill_error` | `test_envelope.py`, `test_tools_builtin.py` |
 | undo works after a process restart | `test_journal.py`, `test_mcp_stdio.py` |
+| publish store is write-only: no tool or ledger row ever carries the raw value | `test_publish.py::test_store_put_result_never_carries_the_value`, `::test_secret_arg_never_reaches_the_ledger`, `test_mcp_stdio.py::test_publish_store_and_inject_over_the_wire` |
+| default store location is outside the workspace roots (fs sandbox is the wall) | `test_publish.py::test_store_path_default_is_outside_the_workspace` |
+| `pub.inject` with an unbound marker writes **no** file (no partial publish) | `test_publish.py::test_inject_refuses_unbound_markers_and_writes_nothing` |
+| `pub.inject` is journaled and reverts via `fs.undo_task` (per-call scope) | `test_publish.py::test_inject_writes_through_the_journal_and_undoes` |
+| policy-denied file (e.g. `.env`) is skipped with a note, not a fatal error | `test_publish.py` (workspace fixture carries a denied `.env`) |

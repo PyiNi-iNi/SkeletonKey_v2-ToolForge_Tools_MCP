@@ -372,6 +372,47 @@ The ledger keeps exactly one row per call (asserted across the replay), and ever
 row's `context_receipt` records what the host could and could not call at that
 moment - so after the fact, an eval can read *why* an agent never saw a tool.
 
+## 7d. Publishing: the write-only store and placeholder injection
+
+The `pub.*` group (nine tools) ships credentials to a publish without letting the
+agent *see* them again. The contract, enforced by code and tested at the wire:
+
+- **The store is write-only to the agent.** `pub.store_put {id, kind, value}`
+  persists to a JSON file **outside the workspace roots** (default
+  `<user config dir>/skeletonkey/publish/store.json`, mode `0600` best-effort,
+  override `[publish] store_path`). The fs sandbox is the wall: `fs.*` tools
+  cannot read or write the store at all. No `pub.*` tool returns a raw value —
+  `pub.store_list`/`store_put` return metadata plus a short non-inverting mask
+  (`ab…YZ(19)`). The only path a value leaves the process is `pub.inject`.
+- **Secrets in args are redacted by name, declared on the manifest.**
+  `pub.store_put` declares `secret_args: ["value"]`; the engine replaces exactly
+  those keys with `***REDACTED***` before the ledger row is written (a second
+  backstop: `redact_obj` also masks bare `value`-named keys). A test asserts the
+  raw value appears in **no** ledger row.
+- **Placeholders are `{{PUB.<id>}}`** (id grammar `[a-z0-9][a-z0-9._-]{0,63}`).
+  `pub.placeholders {path?}` reports every occurrence with **exact
+  file/line/column**, the bound store id, and `bound`/`missing` status, plus
+  `ready_to_publish`. Files that policy denies are *skipped with a note*, not a
+  fatal error — a protected file is a statement that the agent may not touch it.
+- **`pub.inject` is a two-pass write with no partial publishes.** Pass 1 reads
+  every file and plans every replacement; if any marker's store id is missing,
+  it raises `ENOENT` (listing the missing ids) **before a single byte is
+  written**. Pass 2 writes only changed files through `fs.write` with
+  `expect_sha`, so each write is conflict-detected and journaled. `dry_run`
+  returns the plan and writes nothing. `bindings` maps a marker id to a
+  different store id (maps to stored credentials).
+- **Undo scope is the call, not the session.** Every engine call carries its own
+  `task_id`, so the result's `undo` block points at `fs.undo_task {task_id}` —
+  reverts exactly this injection's files, nothing the agent did before. Per-file
+  `undo_token`s are still in `data.written[]` for token-granular rollbacks.
+- **The knowledge tools are static data, not memory.** `pub.platforms` /
+  `pub.payments` / `pub.packaging` surface `skeletonkey/publish_data.py`
+  (single source of truth: console/docs URLs, steps, credential kinds,
+  placeholder examples). `pub.testers` returns a machine-executable release
+  test plan — steps as tool calls or commands with acceptance lines and
+  on-fail behavior — that references `{{PUB.<id>}}` placeholders and never raw
+  secrets.
+
 ## 8. Adding a tool
 
 | Where | How | Advertised? |

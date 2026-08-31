@@ -432,6 +432,67 @@ easy to over-promise: anything that reads wall time or host state must declare
 
 ---
 
+### P4b — Publishing tools: credential store, placeholder injection, platform knowledge
+
+**Why.** Shipping an artifact (app, package, installer, store listing) requires
+platform credentials (Play Console, App Store Connect, PyPI, GitHub, Stripe, …)
+and copy/manifest files full of the same secrets. Today an agent must copy
+secrets into files by hand, and the toolset has no idea where the console URLs,
+payment-provider setup, or packaging paths are. This phase adds a `pub.*` tool
+group (9 tools) with one honest wall: **the store is write-only to the agent —
+no tool can read a stored value back**; the only value flow is `pub.inject`
+into workspace files, journaled and undoable.
+
+**The store.** User-level JSON file, default `~/.config/skeletonkey/publish/store.json`
+(overridable via `[publish] store_path`), written `0600` best-effort, **outside
+the workspace roots** so `fs.*` tools cannot reach it (sandbox wall, not
+policy). Entry = `{id, kind, value, note, created, updated}`. Ids are
+`[a-z0-9][a-z0-9._-]{0,63}`; kinds are a validated set (token, api_key,
+client_id, client_secret, oauth_token, password, email, phone, two_factor,
+social_account, signing_key, certificate, webhook, other). Plaintext on disk —
+no keyring dependency (zero-deps rule); protected by file permissions and
+location, and said so in the SECURITY-MODEL.
+
+**Placeholders.** `{{PUB.<id>}}` markers in workspace files.
+`pub.placeholders` reports every marker with **exact file/line/column**, the
+bound store id, and bound/missing status. `pub.inject` replaces markers with
+store values, reading and writing through the fs layer (per-file
+`expect_sha`, so a file touched under the agent's feet becomes a conflict,
+not a clobber); every file is journaled → the whole publish is undoable.
+Missing store ids fail **before any write** (no partial publish). `dry_run`
+reports the plan without touching anything. Values never appear in any
+envelope, ledger row, or skill output: the handler never echoes them, and a
+new manifest field `secret_args` makes the engine redact exactly those args
+from the ledger.
+
+**Knowledge bases** (static data, real console/docs URLs, concise steps —
+data lives in `skeletonkey/publish_data.py`, single source of truth, surfaced
+by read-only tools): `pub.platforms` (google_play, apple_appstore, github,
+pypi, npm, custom/self-hosted), `pub.payments` (stripe, paddle,
+google_play_billing, apple_iap — with the honest note that Apple Pay checkout
+is a PSP feature, not a direct API), `pub.packaging` (pypi, github_release,
+windows_installer, msi, scoop, chocolatey, winget, homebrew, self_hosted).
+
+**AI testers.** `pub.testers` generates a machine-executable release test
+plan: ordered steps, each a tool call or shell command with acceptance lines
+and on-fail behavior. Plans reference placeholders, never raw secrets —
+secret material flows only through `pub.inject` before a test step runs.
+
+**Deliverables.** `core/publish.py` (store + placeholder engine),
+`publish_data.py` (knowledge bases), 9 `pub.*` tools, `sk pub` CLI
+subcommand, `secret_args` manifest field + ledger redaction,
+`skills/publishing/SKILL.md`, ADR-0010, TOOL-CONTRACT section,
+SECURITY-MODEL section, unit + wire-level tests.
+
+**Exit gate.** With a fixture store and fixture template, an MCP client can:
+store a token (value never reappears in any tool result or ledger row), scan
+for markers with exact locations, inject with dry-run then real (undoable via
+the journal), and generate a test plan for a packaging target — with a store
+id it does not have, inject reports the missing id and changes no file.
+**Effort: 2–3 days.**
+
+---
+
 ### P5 — Scale and discovery
 
 **Goal.** 33 tools become 200 without the host drowning: routing, ranking, and a tool

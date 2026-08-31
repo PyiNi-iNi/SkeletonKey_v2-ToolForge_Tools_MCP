@@ -46,14 +46,15 @@ tk.engine.call("shell.run", {"script": 'printf "[%s]" "$@"', "dialect": "bash",
 | `shell.*` | 10 | run (with `argv`)/quote/quote_check/available/jobs/job_wait/job_kill/sessions/session_reset/selftest; bash, sh, zsh, fish, pwsh, powershell 5.1+7, python |
 | `registry.*` | 4 | describe/list/search/stats — the agent's view of its own capabilities |
 | `skills.*` | 5 | list/load/match/install/uninstall — progressive disclosure, plus a skill that ships a script becoming a callable tool |
+| `pub.*` | 9 | publishing: write-only credential store (store_put/store_list/store_delete), `{{PUB.<id>}}` placeholder scan + journaled injection (placeholders/inject), platform/payment/packaging knowledge (platforms/payments/packaging), AI-executable release test plans (testers) |
 | `policy.grant` | 1 | record an approval grant; returns a receipt, and a self-grant is itself gated |
 | `profile.probe` | 1 | host capability detection with receipts |
 
-37 registered, 35 advertised, ~3.0 k tokens of advertisement. Every call returns the same
+45 registered, 44 advertised, ~4.2 k tokens of advertisement. Every call returns the same
 envelope and the same error taxonomy: see
 [`docs/TOOL-CONTRACT.md`](docs/TOOL-CONTRACT.md).
 
-Two of the 37 are **synthesized from a skill pack**, which is the part a toolset usually makes
+Two of the 45 are **synthesized from a skill pack**, which is the part a toolset usually makes
 you code: `skills/shell-crossplatform/tool.toml` declares `shell.quote_check` with an inline
 handler body and `shell.selftest` with `scripts/selftest.sh` (+ a PowerShell sibling), and the
 compiler turns each into a manifest whose handler runs one script through `shell.run`'s
