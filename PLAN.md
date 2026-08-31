@@ -581,6 +581,23 @@ consequence (usually a test id).
 
 ## 10. Order of work from here
 
+**Step 0 (before P2, small):** `shell.run {argv: [...]}` and a `shell.quote {dialect,
+args[]}` tool. Quoting is currently the one place where an agent is told "be careful"
+instead of given a tool: `shell.run` accepts a single `script` string, so every command
+built by concatenation inherits the model's quoting habits, and `fs.deny` cannot see inside
+a script (SECURITY-MODEL §Gaps). ~1 day: pure functions in `shells/dialect.py`
+(`shlex` for posix, single-quote doubling for PowerShell), a `shell.argv` pass-through, and
+a test that the rendered command survives spaces, quotes, `$`, backticks and CJK on both a
+live bash run and a rendered pwsh payload.
+
+**Step 0b (same PR):** a docs-lint test. Two claims in `docs/SHELL-DIALECTS.md` drifted from
+the code while this branch was being written (a `shell.quote` tool that does not exist, and
+an `env_mode: include` that is actually `login`); a test in `tests/test_docs.py` that
+extracts every `` `tool.id {prop: …}` `` and ``enum`` mention from `docs/*.md` and asserts
+the tool is registered and the property is in its `input_schema` turns "docs written from
+code" from a promise into a check. Same for skill prose, which already has the tool-id half
+of this rule (`test_skills.py`).
+
 P2 (skill synthesis) → P3 (policy, before install is on by default) → P4 (autopilot
 integration; this is where the loop stops hand-coding retries) → P5 (discovery at
 scale) → P6 (distribution; Windows CI *before* P7, or remote Windows work will burn

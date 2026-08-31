@@ -126,17 +126,24 @@ never retried blind), and a token mismatch means something else wrote to our std
 
 The point of `capture_state` is not the env dump: **each session re-sets `cwd` and the
 captured environment at the start of every call**, which is exactly what a real shell does
-and what makes `cd ../..` persist. `env_mode` controls what the child sees:
-`inherit` (default) / `clean` (`include` still applies) / `include` (allow-list).
-`shell.run` returns env values only when you pass `capture_env: true`;
-`shell.sessions` returns names only.
+and what makes `cd ../..` persist. `env_mode` is `inherit` (default), `clean` (only `env` survives) or `login` (profile
+sourced, slower and less reproducible); there is no allow-list mode. `shell.run` returns env
+values only when you pass `capture_env: true`; `shell.sessions` returns names only.
 
 ## Quoting
 
-`shell.quote {dialect, args[]}` renders each argument for `shell.run {argv: …}` with the
-dialect's real quoting rules (`posix_quote` via `shlex`, PowerShell single-quote doubling,
-python `repr`). Use it before concatenating anything into `script`; the renderer will not
-save you from a `"` inside a here-doc.
+**There is no quoting tool in P1** — `shell.run` takes one `script` string, so the quoting
+duty is on whoever builds it. Two recipes that are actually available today:
+
+- run the `python` dialect and let it build the command: `shlex.quote` for posix, or pass
+  the values as `argv` and never interpolate (`args = json.loads(sys.argv[1])`);
+- or write the values to a file with `fs.write` and have the script read them, which is the
+  only form that survives multi-line values, embedded quotes and a Windows console alike.
+
+What is *not* available: a `shell.quote` tool, and a `shell.run {argv: [...]}` form. Both
+are listed as the first follow-up in `PLAN.md` §10; the renderer will not save you from a
+`"` inside a here-doc, so until then treat "assemble a command by string concatenation in a
+model-written script" as the thing to avoid, not the thing to lint.
 
 ## Background jobs
 
