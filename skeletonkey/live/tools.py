@@ -341,7 +341,9 @@ def register(reg: Any, *, manager: Any, engine: Any = None) -> dict[str, Any]:
         out = manager.status()
         if program:
             out["program_detail"] = manager.get(program).status()
-        if history:
+        if history and manager.programs:
+            # history needs a program; with none running, status is still a
+            # perfectly good "nothing here yet" answer, not an error.
             out["history"] = manager.history(program, limit=int(history_limit))
         return out
 

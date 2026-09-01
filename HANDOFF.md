@@ -1,16 +1,20 @@
-# HANDOFF — SkeletonKey / ToolForge v2 (P3–P4b → P5)
+# HANDOFF — SkeletonKey / ToolForge v2 (P5 queue + the live.* subsystem)
 
-Session `arena/01a05944-skeletonkey-v2-toolforge-tools` · 2026-08-31 (America/Chicago).
-Written by the agent that shipped P3, P4 and P4b, for the session that starts **P5**.
-Read `PLAN.md` for the roadmap and `docs/` for the contracts; this file is the *transfer* —
-state, next steps, ideas, and landmines. The previous handoff (P2→P3) is superseded by this
-one; its standing constraints are carried forward in §7.
+Session `arena/01a05ad1-skeletonkey-v2-toolforge-tools` · 2026-08-31 (America/Chicago).
+Written by the agent that shipped the `live.*` Python-HMR subsystem (LiveREPL +
+hot reload + preview panel), for whatever session picks up next — P5 hardening,
+the L4 live queue, or Windows CI. Read `PLAN.md` for the roadmap, `docs/` for the
+contracts; this file is the *transfer* — state, next steps, and landmines.
 
-**Agent / model provenance.** The harness is **Arena.ai Agent Mode** (repo-cloned sandbox,
-bash + file tools, auto-saved turns). It is not attributable to a single base model: Arena's
-Agent Mode draws on many (Claude, ChatGPT, Gemini, Grok, Qwen, Kimi, …), and no specific one
-was recorded or should be assumed. Everything below was measured against the tree at handoff,
-not remembered: re-measure before you restate it.
+This supersedes the P3–P4b handoff. Its standing constraints carry forward and
+are collected in §6.
+
+**Agent / model provenance.** The harness is **Arena.ai Agent Mode** (repo-cloned
+sandbox, bash + file tools, auto-saved turns). Not attributable to a single base
+model: Arena's Agent Mode draws on many (Claude, ChatGPT, Gemini, Grok, Qwen,
+Kimi, …), and no specific one was recorded or should be assumed. Everything below
+was measured against the tree at handoff, not remembered: re-measure before you
+restate it.
 
 ---
 
@@ -18,174 +22,131 @@ not remembered: re-measure before you restate it.
 
 | | |
 | --- | --- |
-| PR | **#2** `arena/01a05944-…` → `main`, 17 commits over `adee12d`, **MERGEABLE / CLEAN** at handoff |
-| Branch head | **`58f516f`** == remote tip (verified with `git ls-remote`) |
-| Surface | **45 tools registered / 44 advertised / 4 241 advertisement tokens** / digest `6d94a998eca6f081` |
-| Skills | 5 packs discovered (incl. new `publishing`), 2 synthesized tools, 0 load errors |
-| Tests | **610 passed, 3 skipped, 1 xfailed** (~51 s), 16 test modules; `ruff check` clean |
-| Code / docs | **14 571 lines** in `skeletonkey/`; **3 083 lines** of docs (plan, 5 contract docs, 10 ADRs, README, handoff) |
-| Phases | P0 ✓ P1 ✓ P2 ✓ P3 ✓ P4 ✓ (replay/eval/plan, streaming, ADR-0009, script-content rules) **P4b ✓** (publishing) → **P5 is next** |
-| Untracked (deliberate) | `.github/workflows/ci.yml` — **not committed; see §3, it is blocked on App permissions** |
+| PR | opened/merged this session (pull request page shows the number); previous merged PRs: #2 (`arena/01a05944-…`, P3–P4b) |
+| Branch | `arena/01a05ad1-…` — Arena tracks sessions by branch; keep work there |
+| Surface | **56 tools registered / 55 advertised / 5 899 advertisement tokens** / digest `d3139e78632b35f3` |
+| New group | **`live.*` — 11 tools** (`start stop status reload patch repl state snapshot render scene serve`) |
+| Skills | 5 packs discovered, 2 synthesized tools, 0 load errors |
+| Tests | **660 passed, 3 skipped, 1 xfailed** (~50 s), 21 test modules; `ruff check skeletonkey tests` clean |
+| Code / docs | **18 328 lines** in `skeletonkey/`; ~3.5 k lines of docs (PLAN, 7 contract/reference docs, README — note tests exclude PLAN by design), 11 ADRs |
+| Phases | P0–P4b shipped earlier; **live HMR subsystem shipped this session** (not a PLAN phase — landed alongside the roadmap); **P5 is still the next roadmap phase** |
+| Preview | `sk live demo` runs the full loop; panel on the configured port (`/` frame, `/view3d`, `/agents`) |
 
-## 2. What P3–P4b actually is (one paragraph each, because it will be misrepresented)
+## 2. What the live.* subsystem is (the parts, honestly)
 
-**P3 — policy as data.** `core/policy.py` compiles `deny`/`allow`/`escalate`/`rate_limit`
-rules (legacy strings + structured tables) into one rule list; deny is read first and is
-non-overridable by any token. `fs.undo {expect_sha}` is a hard `CONFLICT` guard, `fs.redo`
-is a journaled re-apply that refuses drift, `fs.trash` gives three deletion tiers
-(`journal` | `os-trash` | `delete`), `policy.grant` returns receipts, and a property test
-proves *a wall means zero writes for every mutating tool*.
+**`live/patcher.py` — the HMR primitive Python lacks.** Functions get their
+`__code__` swapped *in place* (identity + `__globals__` survive → held
+references, decorators, and *existing class instances* run new code); classes
+patch method-by-method on the same class object; new defs are rebuilt with
+`FunctionType(code, live_ns)`. A `co_freevars` shape change degrades to a
+reported **rebind**. Removed definitions are only deleted when the binding name
+equals the object's `__name__` (aliases like `ref = draw` are *state*, never
+pruned). Whole-file reload is **transactional**: parse+scratch-exec first; only
+a clean exec merges.
 
-**P4 — the loop proves the turn.** `toolkit.plan()` ranks a shortlist; `RunRecorder`/
-`replay()` re-execute a recorded run in a scratch baseline copy and diff envelopes with
-**explicit, closed normalization** (volatile keys dropped, paths rewritten, journal tokens
-rewritten; `stateful` tools held to ok+error-code only); `sk eval` scores scripted task
-suites. The idempotency cache gained a **mutation generation** so a mutation retires stale
-reads (the bug that hid inside "reproduction"). Streaming: per-call log at debug level,
-`notifications/progress` for `fs.search`/`fs.glob` when a `progressToken` rides in.
-`shell.run` script **content** is scanned by deny/escalate path rules (allow never scans
-free text). ADR-0009.
+**`live/runtime.py` — state-preserving host + LiveREPL.** Per-name **3-way
+merge**: `base` (source value at last load) vs `live` (possibly REPL-mutated)
+vs `fresh` (new source). Untouched names track the file; REPL-moved names are
+preserved and *reported*; `live.reload {force_source}` reclaims by name;
+restore of a `live.snapshot` hands names back to the source arm. Contracts:
+`__live_keep__`, `__hmr_export_state__` (pre-patch, old code; its failure
+aborts), `__hmr_import_state__` (post-merge, new code; its failure = code
+patched, state not), `__live_registries__` (dict-of-callables re-pointed),
+`__live_on_reload__`. REPL: `mode=auto` tries eval first, `_` is the classic
+last-value, REPL-defined names get keep-listed (a save never deletes them;
+the file re-owns any name it defines). A settrace wall-clock guard
+(`live.exec_guard_s`) leashes runaway loops — python-level only, documented
+as a leash not a sandbox. Watched same-tree imports hot-patch their
+`sys.modules` object in place; from-imported names re-point only when
+provably dep-owned (per-name collision rule in `reload_dependency`, don't
+relax it without a test).
 
-**P4b — publishing with secrets you never see again.** The `pub.*` group (9 tools):
-a **write-only credential store** — `pub.store_put/list/delete` over a JSON file that lives
-**outside the workspace roots** (default `<user config dir>/skeletonkey/publish/store.json`,
-`0600` best-effort, `[publish] store_path` override), so the fs *sandbox* is the wall and no
-policy rule protects it. **No tool returns a raw value** (masked metadata only); the only
-value flow out of the process is `pub.inject`, which replaces `{{PUB.<id>}}` markers through
-the journaled fs layer (`expect_sha` per file, undo via `fs.undo_task` scoped to the call's
-own task id, two-pass with **no partial publishes**, `dry_run`, `bindings` remaps, denied
-files skipped with a note). The `value` arg is redacted from the ledger via a new manifest
-field `secret_args` (engine-level) **and** a `redact_obj` backstop (bare `value`-named
-keys). `pub.platforms/payments/packaging` surface `skeletonkey/publish_data.py` (real
-console/docs URLs, steps, credential kinds); `pub.testers` emits machine-executable,
-secret-free release test plans. ADR-0010. Honest gap, stated in SECURITY-MODEL: `shell.run`
-can still read the store file if the user's OS permissions allow it; the store is plaintext
-(no keyring dependency — the zero-deps rule).
+**`live/scene.py` / `live/panel.py` — the preview.** Retained scene graph →
+deterministic SVG (2D nodes; `mesh3d` painter-sorted + lambert-shaded;
+`cube3d` solid-or-wire). HTTP panel: `/` (frame + Vite-style error overlay +
+in-page REPL), `/view3d` (hand-rolled perspective soft-renderer, drag-orbit,
+camera is viewer-local), `/agents` (debugger: live state table with
+merge-ownership badges, registry browser with click-to-invoke, patch log,
+ledger activity rail). Refresh = 300 ms version poll with an SSE upgrade —
+polling is the deliberately reliable default through proxies.
+`POST /api/control` actions: `reload stop start patch render save_snapshot
+restore_snapshot`. **Live state is per-process**; one-shot CLI control of a
+long-running session is `sk live <action> --via-panel` (HTTP client mode).
+`POST /repl` executes code — `live.panel_repl = false` makes pages read-only,
+default bind is loopback. Say this plainly anywhere the panel is exposed.
+
+**Zero-dep discipline held (ADR-0001):** the entire subsystem is stdlib-only;
+`watchfiles` stays an optional fast path, mirroring `skills/watch.py` (report
+the degraded state, never ImportError at import time).
+
+Counts moving: README intro line, PLAN header line, and this table all carry
+the 56/55/5 899 numbers — update them together. `tests/test_docs.py` now
+checks the **`live` namespace** in docs' backtick spans (tool args, config
+keys, error-code tables) — docs that name nonexistent live knobs fail CI once
+CI exists; the docs suite is the enforcer.
 
 ## 3. What is NOT done (and why)
 
-1. **`ci.yml` is untracked and will stay that way from this branch.** The GitHub App used
-   by this harness lacks the `workflows` permission, so any push whose diff touches
-   `.github/workflows/` is rejected. The file is in the working tree at
-   `.github/workflows/ci.yml` (jobs: `core-constraint`, `test` on 3.11/3.12, `lint`).
-   **Unblock options:** (a) grant the App the `workflows` permission in repo settings, then
-   commit+push it; (b) the user pushes the file themselves; (c) leave it — the repo has no
-   CI at all until it lands, which is why nothing gates PR #2's merge.
-2. **P5 is not started.** It is specced in PLAN.md ("Scale and discovery") — tool routing,
-   ranking, a tool list that changes underneath a host safely.
-3. `watchfiles` is **deliberately not installed** in `.venv` — its absence is the tested
-   state (`tools.hot_reload` reports why it can't run). Do not `pip install watchfiles`.
+1. **P5 ("Scale and discovery") is untouched.** Specced in PLAN.md; still the
+   roadmap's next phase.
+2. **L4 queue from docs/LIVE-IMPL-PLAN.md is open:** (a) cross-package dep
+   closure (today: program → same-tree files; cycle = no-op+note), (b) panel
+   scene-edits written back to source as AST patches through the journaled fs
+   layer (blueprint Option B), (c) per-viewer 3D camera channels,
+   (d) watchfiles parity tests (guarded `skipif`; absence stays the tested
+   state — **do not `pip install watchfiles` into the dev venv**),
+   (e) a perf-budget slow-marker test.
+3. **`ci.yml` remains un-landed** (GitHub App lacks the `workflows` permission;
+   previous session's file isn't even in this checkout). Unblock = grant the
+   App the permission or push the file by hand. Until then nothing gates PR
+   merges; the local repro is `ruff check . && pytest -q -m "not slow"`.
+4. **Windows-only surfaces of `live.*`** are untested anywhere (no win runner);
+   the polling watcher and panel are stdlib-clean, but nobody has run them on
+   `\\?\` paths or CRLF files.
 
 ## 4. Next steps (in order)
 
-1. **Merge PR #2** (`gh pr merge 2 --merge --no-delete-branch` — the house style keeps the
-   branch). Then re-verify with `git ls-remote origin refs/heads/main`.
-2. **Land `ci.yml`** once the App has `workflows` (or the user pushes it). Until then the
-   "CI green" claim is a local-suite claim, and that should be said plainly.
-3. **Start P5 from PLAN.md's P5 section.** First concrete sub-step: read
-   `registry.advertise()`'s selection path (token budget, capability dedupe) and the
-   `withheld` receipt — P5 is about making that story scale from 45 to ~200 tools without
-   the host drowning.
-4. Optional quick win while P5 designs: add a **publish task to `tests/eval/suite.jsonl`**
-   (store → scan → inject → verify) so the eval scores the new surface; `pub.*` tools are
-   `stateful: "host"` and replay holds them to ok+error-code — worth one explicit replay
-   fixture proving that.
+1. Land `ci.yml` (permissions) — same blocker as last session.
+2. P5 per PLAN.md; note `live.status`/`registry.*` composition already gives
+   the router a healthy surface to talk about.
+3. L4(a) cross-package closure — acceptance test ids live in
+   docs/LIVE-IMPL-PLAN.md §L4.
+4. L4(b) scene→source patch-back — it must route through `fs.patch` semantics
+   (journaled, `expect_sha`-preconditioned) or not at all.
 
-## 5. Ideas (honest, prioritized — none are decided)
+## 5. How things run here (operational)
 
-1. **ADR-0011: a controlled read path, if it ever earns one.** The store is write-only by
-   design. The likely first demand is "give me the 2FA code *now*" (`kind: two_factor`
-   stores a TOTP seed). If built, it should be a *named, approval-gated, ledgered* tool
-   (e.g. `pub.otp {id}` returning a code, not a seed) — and the ADR must say why the wall
-   gets this one door. Do not add ad-hoc reads.
-2. **Store hardening, still zero-deps:** `expiry` field + `pub.store_list {expiring: N}`,
-   and a `rotate` workflow doc (put-same-id is rotation; delete is for the rest). Optional
-   (not mandatory) encryption at rest via an *optional* keyring dependency would break
-   ADR-0001's spirit — the zero-deps rule says mandatory, not impossible; weigh it in an
-   ADR if it comes up.
-3. **`pub.inject` for >2 MB / binary-templated files** is out of scope today (text cap,
-   honest skip note). If a real need appears, the fix is byte-level marker replacement with
-   an explicit encoding contract, not lifting the cap.
-4. **Publish orchestration:** a `pub.run_plan` that executes a `pub.testers` plan step by
-   step is a *loop* concern, not a tool — it belongs to P5's planner or the autopilot
-   harness, and it should stop on the plan's `stop_rule`. Don't build a mini-interpreter
-   inside a tool.
-5. **Replay the publish:** a recorded publish run (store_put is a no-op read from the
-   store's viewpoint, inject mutates) makes a great ADR-0009 stress fixture: it exercises
-   `stateful: "host"` normalization, journal-token rewriting, and the no-partial-publish
-   error path in one run.
-6. **Windows honesty pass** (P6 territory): on NT, `chmod 0600` sets the read-only
-   attribute and *nothing else* — the SECURITY-MODEL store section already says this in
-   general; a `win`-tagged test asserting the store file's actual NT state would close it.
+```bash
+python3 -m venv .venv && .venv/bin/pip install -e . --no-deps pytest pytest-asyncio ruff
+# add 'mcp' only if you need tests/test_mcp_stdio.py; do NOT add watchfiles
+.venv/bin/pytest tests/ -q                      # 660 passed, 3 skipped, 1 xfailed
+.venv/bin/python -m skeletonkey.cli live demo --host 0.0.0.0 --port 8000
+.venv/bin/python -m skeletonkey.cli live repl 'hue = "#f2cc60"' --via-panel --port 8000
+```
 
-## 6. Suggestions for the next session
+`sk` global flags (`--root`, `--json`, `--read-only`…) go **before** the
+subcommand; argparse exits with "unrecognized arguments" otherwise (this bit
+the session once; tests don't cover the mistake).
 
-- **House rule, unchanged:** every new tool ships a TOOL-CONTRACT section (or extension of
-  an existing one), an entry in the skill guidance an agent will read, and a **wire-level**
-  test. "A feature that only works when called from Python is not done."
-- **Spec-first:** write the PLAN.md section before code; commit in 3-ish chunks
-  (core+data / tools+wiring / docs+skills) with **explicit `git add <paths>`** — `git
-  commit .` sweeps in untracked files and has bitten twice.
-- **Push early and often:** this sandbox has recycled at least once and wiped local state;
-  the remote is the only durable record.
-- **Measure, don't remember:** token counts, digests, test counts, and commit SHAs in this
-  doc were re-measured at handoff time; re-measure again before you cite them.
-- The `.venv` is persistent in the sandbox (mcp 2.1.1, pytest, ruff, pyyaml; **no
-  watchfiles**). `/tmp` is not persistent.
+## 6. Landmines carried forward + new
 
-## 7. Standing constraints (carried from the original handoff §9, reaffirmed)
-
-- Apache-2.0 + "Dime" authorship preserved; README keeps the original title line and
-  "Dime's Custom Toolkit" tagline. No relicense/retitle/author-tidying.
-- Python 3.11+, **zero mandatory dependencies**; the core must import with nothing
-  installed (`core-constraint` job — once ci.yml lands).
-- Windows and Linux/macOS both first-class; pwsh is not optional; every PowerShell claim is
-  backed by a rendered-payload assertion or a marked `win` test that self-skips off Windows.
-- The primary consumer is the bespoke autopilot loop (tools may be richer/stateful than
-  generic MCP); the MCP surface ships and stays honest (second consumer).
-- Provenance: the harness is Arena.ai Agent Mode, not a single base model.
-
-## 8. Landmines (measured this session; the old ones still bite)
-
-- **`E` is a namespace class** in `core/errors.py` (line ~54) — not `ErrorCode`. And
-  `SkeletonKeyError.code` is a **str**, so `exc.code in {E.DENY_RULE}` never matches
-  (compare `E.DENY_RULE.code` or the string). Cost one failing test cycle.
-- **The engine's `_ledger` swallows all exceptions** (`except Exception: pass`) — a typo
-  like `self.REDACTED` (no such attr) silently drops *every* ledger row for affected tools
-  and no test fails until one asserts row presence. Ledger tests must assert a row exists.
-- **Legacy `deny: ["**"]` is a tool glob** (`matches_tool`), no path constraint → it denies
-  *every* call of *every* tool, not just path-bearing ones. Path-specific denies need the
-  `tool(**/glob)` form.
-- **`fs.glob` includes root-level dotfiles** (`.env` matches `**/*`) but not dot
-  *directories*. Scanners that read all glob results must treat `DENY_RULE` on individual
-  reads as skip-with-note, not fatal.
-- **`ReadResult.sha256`** is full-length as an attribute but truncated to 16 chars in
-  `to_dict()` — pass the attribute into `expect_sha`, not the dict value.
-- **GitHub App cannot push workflow files** (no `workflows` permission); also, the local
-  fetch refspec tracks **only `main`** — verify branch state with
-  `git ls-remote origin <branch>`, not `origin/<branch>`.
-- **mcp 2.1.1 wire shapes** (P4): `req.meta` in `tools/call` is a plain dict;
-  `ClientCapabilities` has no `logging` field; `send_progress_notification` args are
-  positional; `send_log_message(level, data, logger=None, related_request_id=None)`.
-- Carried: replay flake fixed via `(-mtime, path)` + sorted dirnames; `.venv` needs mcp and
-  NOT watchfiles; no `python -m skeletonkey` (it's `skeletonkey.mcp` / the `sk` CLI);
-  replay task_id must equal the recorded one; eval refs are `$<n>.data.<path>`; never mark
-  fs reads stateful; `cmd | head; echo $?` reports `head`'s exit.
-
-## 9. Where things live (pointers, not contents)
-
-| Thing | Where |
-| --- | --- |
-| Publish core (store + marker engine) | `skeletonkey/core/publish.py` |
-| Knowledge bases + test plans | `skeletonkey/publish_data.py` |
-| `pub.*` specs + handlers | `skeletonkey/tools/builtin.py` (group `publishing`) |
-| Store wiring / default path | `skeletonkey/toolkit.py::build` (`[publish] store_path`) |
-| `sk pub` CLI | `skeletonkey/cli.py` |
-| `secret_args` declaration + ledger redaction | `core/manifest.py` (field), `core/engine.py::_ledger` |
-| Bare-`value` redaction backstop | `core/redact.py::_KEY_ONLY` |
-| Contracts | `docs/TOOL-CONTRACT.md` §7d (publishing), §4b (policy) |
-| Security claims | `docs/SECURITY-MODEL.md` ("The publish store (P4b)" + test map) |
-| Decisions | `docs/adr/0010-publish-store-write-only.md`, `0009-replay-proves-the-turn.md`, `0008-…` |
-| Roadmap + P4b/P5 specs | `PLAN.md` |
-| Agent guidance | `skills/publishing/SKILL.md` + `references/first-publish.md` |
-| Tests | `tests/test_publish.py` (28), wire: `tests/test_mcp_stdio.py::test_publish_store_and_inject_over_the_wire`, walls: `tests/test_policy_property.py` (BURST table) |
+- **Zero mandatory deps in core** (ADR-0001). If you import a third-party
+  package outside an extra, the constraint test fails; the live subsystem
+  passed it with no new imports at all.
+- **`test_docs.py` is the docs police:** every `` `tool.id {args}` `` in
+  `docs/*.md`, README, skills must name real arguments; every `` `section.key` ``
+  a real config field; every error-code table row a real code. Namespaces
+  include `live.*` now. PLAN.md is deliberately exempt (roadmap names the
+  future).
+- **`tests/test_policy_property.py` has a BURST table** covering exactly the
+  mutating tools; adding a mutating tool without a burst row fails the suite.
+  The proof is disk-level (snapshot diff), not error-level.
+- **`watchfiles` is deliberately absent from `.venv`** — the degraded branch is
+  the tested branch.
+- **pyc staleness in-session:** editing `skeletonkey/live/*.py` and importing
+  within the same second can serve stale bytecode (mtime granularity). If a
+  just-made edit doesn't show up in a quick smoke, clear `__pycache__` and
+  retry before suspecting the logic.
+- The previous session's full constraint list (deny-is-first, approval
+  receipts, journal-not-git, argv-over-interpolation, render-don't-rewrite) is
+  in git history at the P3–P4b handoff commit if you need the archaeology.

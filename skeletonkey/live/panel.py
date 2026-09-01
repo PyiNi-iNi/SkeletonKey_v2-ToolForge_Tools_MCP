@@ -337,9 +337,10 @@ class Panel:
                 self._json(200, result)
 
             def _control(self) -> None:
-                """HMR controls for the debugger page: reload/stop a program,
-                force_source passed through. Same code path as live.reload /
-                live.stop - the panel is a client, not a back door."""
+                """HMR controls for the debugger page and for one-shot CLI
+                commands (`sk live ... --via-panel`): the served process owns
+                live state, so both surfaces speak to it here. Same code paths
+                as the live.* tools - the panel is a client, not a back door."""
                 try:
                     length = int(self.headers.get("Content-Length") or 0)
                     body = json.loads(self.rfile.read(max(0, length)) or b"{}")
@@ -348,23 +349,66 @@ class Panel:
                     return
                 action = str(body.get("action", ""))
                 pid = body.get("program")
+                actions = ["reload", "stop", "start", "patch", "render",
+                           "save_snapshot", "restore_snapshot"]
                 try:
                     if action == "reload":
                         prog = panel.manager.get(pid)
                         rep = prog.reload(reason="panel",
+                                          guard_s=float(panel.manager._cfg("exec_guard_s", 10.0)),
                                           force_source=body.get("force_source") or None)
                         panel.bump()
                         self._json(200, {**rep.to_dict(), "program": prog.id})
                     elif action == "stop":
-                        panel.manager.stop(pid)
+                        out = panel.manager.stop(pid)
                         panel.bump()
-                        self._json(200, {"stopped": True, "program": pid})
+                        self._json(200, {**out, "stopped": out["stopped"]})
+                    elif action == "start":
+                        path = str(body.get("path", ""))
+                        if not path:
+                            self._json(400, {"error": "start needs a path"})
+                            return
+                        out = panel.manager.start(
+                            path, pid=pid or None, watch=bool(body.get("watch", True)),
+                            auto_render=bool(body.get("auto_render", True)),
+                            guard_s=float(panel.manager._cfg("exec_guard_s", 10.0)))
+                        panel.bump()
+                        self._json(200, out)
+                    elif action == "patch":
+                        name, code = str(body.get("name", "")), str(body.get("code", ""))
+                        if not (name and code):
+                            self._json(400, {"error": "patch needs name and code"})
+                            return
+                        prog = panel.manager.get(pid)
+                        rep = prog.patch_def(
+                            name, code,
+                            guard_s=float(panel.manager._cfg("exec_guard_s", 10.0)))
+                        panel.bump()
+                        self._json(200, {**rep.to_dict(), "program": prog.id})
+                    elif action == "render":
+                        prog = panel.manager.get(pid)
+                        frame = prog.render(
+                            guard_s=float(panel.manager._cfg("exec_guard_s", 10.0)))
+                        panel.bump()
+                        self._json(200, {"program": prog.id, "frame": frame,
+                                         **({"svg": prog.frame_svg} if body.get("svg") else {})})
+                    elif action in ("save_snapshot", "restore_snapshot"):
+                        sname = str(body.get("name", ""))
+                        if not sname:
+                            self._json(400, {"error": f"{action} needs a name"})
+                            return
+                        prog = panel.manager.get(pid)
+                        out = (prog.snapshot(sname) if action == "save_snapshot"
+                               else prog.restore(sname))
+                        panel.bump()
+                        self._json(200, out)
                     else:
                         self._json(400, {"error": f"unknown action {action!r}",
-                                         "actions": ["reload", "stop"]})
+                                         "actions": actions})
                 except Exception as exc:
                     code = getattr(exc, "code", None)
-                    self._json(400 if code == "BAD_ARGS" else 404, {"error": str(exc)})
+                    self._json(400 if code == "BAD_ARGS" else 404,
+                               {"error": str(exc), "code": str(code) if code else "ERROR"})
 
         return Handler
 

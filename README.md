@@ -57,8 +57,9 @@ envelope and the same error taxonomy: see
 
 ```console
 $ sk live demo                        # materialize a playground program + watch it + serve the panel
-$ sk call live.repl '{"code": "hue = \"#f2cc60\""}'     # mutate the running program, frame moves
-$ sk live reload --force-source hue   # hand one name back to the file after REPL experiments
+$ sk live repl 'hue = "#f2cc60"' --via-panel --port 8010   # one-shot mutate of the running program
+$ sk live patch --name render --file new_render.py --via-panel   # hot-swap code without touching disk
+$ sk live reload --force-source hue --via-panel   # hand one name back to the file after REPL experiments
 ```
 
 Two of the 45 are **synthesized from a skill pack**, which is the part a toolset usually makes

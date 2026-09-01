@@ -172,7 +172,18 @@ best-effort (documented leash, not a sandbox).
 | `/api/history` | data | REPL history + patch log |
 | `/api/activity` | data | engine ledger tail (recent tool calls) |
 | `POST /repl` | mutation | the in-page console; only when `live.panel_repl` is true |
-| `POST /api/control` | mutation | `{action: reload|stop}`; same code path as the tools |
+| `POST /api/control` | mutation | `{action: reload \| stop \| start \| patch \| render \| save_snapshot \| restore_snapshot}`; same code path as the tools - the panel is a client, not a back door |
+
+### Perprocess reality, and the `--via-panel` hatch
+
+Live state lives in the process that started it. `sk live start` then
+`sk live repl` as two invocations are two processes (the first one's program
+exits with it). For one-shot control of a long-lived session -
+`sk live demo`, `sk live serve --wait`, or `sk mcp` - pass `--via-panel`
+(optionally `--host/--port`): the CLI then speaks the panel's JSON routes
+(POST /api/control, POST /repl, GET /state, GET /frame.svg) and the running
+program answers. Inside agents and tests, of course, `engine.call("live.repl",
+...)` drives the same process directly.
 
 3D nodes (`cube3d`, `mesh3d` with vertices+faces, `poly3d`, `point3d`) render
 orthographic+painter-shaded in the SVG path and perspective in `/view3d`; the

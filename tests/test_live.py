@@ -782,3 +782,58 @@ class TestDebugPanelRoutes:
                 assert "tool" in row and "ok" in row
         finally:
             tk.engine.call("live.serve", {"op": "stop"})
+
+
+class TestPanelControls:
+    """The panel's control surface (what `sk live ... --via-panel` speaks)."""
+
+    def test_control_actions_full_cycle(self, live_ws):
+        tk, root = live_ws
+        (root / "ctl.py").write_text("x = 1\nn = 0\n"
+                                     "def render():\n    global n\n    n += 1\n"
+                                     "    canvas.text(20, 20, f'n={n}')\n",
+                                     encoding="utf-8")
+        port = _free_port()
+        _data(tk.engine.call("live.serve", {"port": port}))
+        base = f"http://127.0.0.1:{port}"
+
+        def post(payload):
+            req = urllib.request.Request(base + "/api/control",
+                                         data=json.dumps(payload).encode(),
+                                         headers={"Content-Type": "application/json"},
+                                         method="POST")
+            try:
+                with urllib.request.urlopen(req, timeout=5) as r:
+                    return json.loads(r.read())
+            except urllib.error.HTTPError as e:
+                return json.loads(e.read())
+
+        try:
+            # start through the panel (a one-shot CLI launch of a program)
+            out = post({"action": "start", "path": "ctl.py", "watch": False})
+            assert out.get("error") is None and out["status"]["id"] == "ctl"
+
+            # patch in place, no disk edit
+            out = post({"action": "patch", "program": "ctl", "name": "render",
+                        "code": "def render():\n    global n\n    n += 10\n"
+                                "    canvas.circle(30, 30, 12, fill='#fff', id='dot')\n"})
+            assert out["ok"] is True and out["patched_functions"] == ["render"]
+
+            # render + snapshot + restore
+            before = tk.live.get("ctl").ns["n"]
+            out = post({"action": "render", "program": "ctl", "svg": True})
+            assert out["frame"]["error"] is None and "<circle" in out["svg"]
+            assert tk.live.get("ctl").ns["n"] == before + 10   # the patched step ran
+            out = post({"action": "save_snapshot", "program": "ctl", "name": "snap"})
+            assert "x" in out["keys"] and "n" in out["keys"]
+            out = post({"action": "restore_snapshot", "program": "ctl", "name": "snap"})
+            assert "n" in out["restored"]
+
+            # reload from disk: file's defs patch back over the CLI-patched one
+            out = post({"action": "reload", "program": "ctl"})
+            assert out["ok"] is True and "render" in out["patched_functions"]
+
+            out = post({"action": "stop", "program": "ctl"})
+            assert out["stopped"] == ["ctl"]
+        finally:
+            tk.engine.call("live.serve", {"op": "stop"})
