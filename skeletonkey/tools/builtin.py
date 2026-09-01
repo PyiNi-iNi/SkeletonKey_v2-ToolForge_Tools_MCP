@@ -566,7 +566,11 @@ _spec(
     capability="registry.stats", risk="none", typical_latency_ms=3, stateful="session",
     tags=["stats", "metrics", "reliability", "failures"],
     tier="core",
-    input_schema={"type": "object", "properties": {"tool": {"type": "string"}}, "additionalProperties": False},
+    input_schema={"type": "object", "properties": {
+        "tool": {"type": "string", "description": "one tool id; omit for all"},
+        "source": {"type": "string", "description":
+                   "filter to one origin: a manifest source like 'builtin' or 'remote:<server>'"},
+    }, "additionalProperties": False},
 )
 
 _spec(
@@ -1143,8 +1147,12 @@ def register(reg: Any, *, engine: Any, shells: Any, fs: Any, journal: Any, skill
     def registry_describe(tool: str) -> dict[str, Any]:
         return engine.registry.describe(tool)
 
-    def registry_stats(tool: str | None = None) -> dict[str, Any]:
-        return {"stats": engine.registry.stats(tool), "overview": engine.registry.overview()}
+    def registry_stats(tool: str | None = None, source: str | None = None) -> dict[str, Any]:
+        out = {"stats": engine.registry.stats(tool, source=source),
+               "overview": engine.registry.overview()}
+        if tool is None and source is None:
+            out["by_source"] = engine.registry.stats_by_source()
+        return out
 
     def policy_grant(tool: str, scope: str = "task", ctx: Any = None,
                      engine: Any = None) -> dict[str, Any]:

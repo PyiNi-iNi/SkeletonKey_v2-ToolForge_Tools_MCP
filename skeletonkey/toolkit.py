@@ -230,6 +230,18 @@ def build(*, config: Config | None = None, overrides: dict[str, Any] | None = No
         report["dropin"] = added
         if cfg.tools.entry_points:
             report["entry_points"] = registry.load_entry_points()
+    # 4. remote MCP servers (P5b, ADR-0013): explicit [mcp.remotes.<name>] only.
+    # A failed server is a load_error + build-report row - never a silent absence.
+    report["remote"] = {"servers": [], "registered": [], "errors": []}
+    if cfg.mcp.remotes:
+        try:
+            from .mcp.client import RemoteConnector
+
+            report["remote"] = RemoteConnector(cfg.mcp.remotes).enroll(registry)
+        except Exception as exc:  # config-level failure: visible, never a crash
+            report["remote"]["errors"].append(
+                {"error": f"{type(exc).__name__}: {exc}", "stage": "config"})
+            registry.load_errors.append({"stage": "remote", "error": str(exc)[:400]})
     report["registered_after_load"] = len(registry.all())
     return Toolkit(config=cfg, profile=profile, sandbox=sandbox, fs=fs, journal=journal, shells=shells,
                    registry=registry, engine=engine, skills=skills, ledger=ledger,

@@ -922,6 +922,69 @@ def test_wire_tools_list_cursor_round_trip(tmp_path):
         c.close()
 
 
+# ------------------------------------------------------------------ P5b wire
+def test_wire_remote_tool_passthrough_and_error_code(tmp_path):
+    """ADR-0013 over the wire: a configured [mcp.remotes.demo] server appears as
+    remote.demo.*; its envelope payloads and error codes pass through untranslated."""
+    from tests.remote_helpers import write_remote_root
+
+    remote = write_remote_root(tmp_path / "remote")
+    cfgdir = tmp_path / "config"
+    cfgdir.mkdir()
+    (cfgdir / "config.toml").write_text(
+        f'[mcp.remotes.demo]\ncommand = "{sys.executable}"\n'
+        f'args = ["-m", "skeletonkey.mcp", "--cwd", "{remote}"]\n'
+        f'enabled = true\n', encoding="utf-8")
+    c = spawn(str(tmp_path), "--root", str(tmp_path))
+    c.start()
+    try:
+        names = {t["name"] for t in c.request("tools/list")["tools"]}
+        assert "remote.demo.demo.echo" in names and "remote.demo.demo.bad" in names
+
+        ok = c.request("tools/call", {"name": "remote.demo.demo.echo",
+                                      "arguments": {"text": "hi"}})
+        assert not ok.get("isError"), _payload(ok)
+        body = _payload(ok)
+        assert body["ok"] and body["data"]["echoed"] == "hi"
+        assert body["data"]["upper"] == "HI"
+
+        bad = c.request("tools/call", {"name": "remote.demo.demo.bad",
+                                       "arguments": {"why": "wire"}})
+        body = _payload(bad)
+        assert not body["ok"], "the remote refusal must not turn into a success"
+        assert body["error"]["code"] == "BAD_ARGS", "remote code must pass through"
+        assert body["error"]["details"].get("why") == "wire"
+
+        # stats rows are separable by source on the wire too
+        st = c.request("tools/call", {"name": "registry.stats",
+                                      "arguments": {"source": "remote:demo"}})
+        s = _payload(st)["data"]
+        assert "remote.demo.demo.echo" in s["stats"]
+        assert all(v["source"] == "remote:demo" for v in s["stats"].values()), s["stats"]
+    finally:
+        c.close()
+
+
+def test_wire_remote_load_error_is_visible_not_silent(tmp_path):
+    """A configured server that cannot start must be *explainable*, not absent
+    without a trace: no remote.* tools, but the failure is in the overview."""
+    cfgdir = tmp_path / "config"
+    cfgdir.mkdir()
+    (cfgdir / "config.toml").write_text(
+        '[mcp.remotes.bogus]\ncommand = "/definitely/not/a/real/sk-binary"\n'
+        'args = ["--x"]\n', encoding="utf-8")
+    c = spawn(str(tmp_path), "--root", str(tmp_path))
+    c.start()
+    try:
+        names = {t["name"] for t in c.request("tools/list")["tools"]}
+        assert not any(n.startswith("remote.bogus.") for n in names)
+        st = c.request("tools/call", {"name": "registry.stats", "arguments": {}})
+        errors = _payload(st)["data"]["overview"]["load_errors"]
+        assert any("bogus" in str(e) for e in errors), errors
+    finally:
+        c.close()
+
+
 def test_wire_route_and_explain_carry_reasons(tmp_path):
     """registry.route and capabilities.explain over the wire: reasons, not just ids."""
     c = spawn(str(tmp_path), "--root", str(tmp_path))

@@ -94,6 +94,9 @@ class E:
                                "Turn read_only off for this phase, or use dry_run to record intent only.")
 
     # ---- execution
+    REMOTE = ErrorCode("REMOTE", ErrorClass.EXECUTION, False,
+                       "An upstream MCP server reported an error.",
+                       "Read `details.remote_message`; the server's own code is `details.remote_code` when it sent one.")
     NONZERO_EXIT = ErrorCode("NONZERO_EXIT", ErrorClass.EXECUTION, False, "Command ran and returned non-zero.",
                              "Read `data.stderr_tail` before retrying; a different flag/subcommand usually applies.")
     TIMEOUT = ErrorCode("TIMEOUT", ErrorClass.EXECUTION, True, "Command exceeded its timeout and was killed.",

@@ -268,13 +268,33 @@ class Registry:
                 s.fail += 1
                 s.last_error = error_code
 
-    def stats(self, tool_id: str | None = None) -> dict[str, Any]:
+    def stats(self, tool_id: str | None = None, *, source: str | None = None) -> dict[str, Any]:
+        """Call statistics. Rows carry `source` (P5b, ADR-0013) so remote and
+        local rows are separable; `source=` filters to one origin
+        (`remote:<server>` or a manifest `source` like `builtin`)."""
+        def row(tid: str) -> dict[str, Any]:
+            s = self._stats.get(tid)
+            try:
+                src = self.get(tid).source or "builtin"
+            except SkeletonKeyError:
+                src = "unknown"
+            return {**(s.to_dict() if s else {"calls": 0}), "source": src}
+
         if tool_id:
-            s = self._stats.get(tool_id)
             # keyed by id either way: a filtered response must not change shape, or the
             # caller loses the tool name it asked about
-            return {tool_id: s.to_dict() if s else {"calls": 0}}
-        return {k: v.to_dict() for k, v in sorted(self._stats.items())}
+            return {tool_id: row(tool_id)}
+        rows = {tid: row(tid) for tid in sorted(self._stats)}
+        if source is not None:
+            rows = {k: v for k, v in rows.items() if v.get("source") == source}
+        return rows
+
+    def stats_by_source(self) -> dict[str, dict[str, Any]]:
+        """Aggregate the same rows grouped by `source` (remote vs local views)."""
+        out: dict[str, dict[str, Any]] = {}
+        for tid, row in self.stats().items():
+            out.setdefault(row["source"], {})[tid] = row
+        return out
 
     # ------------------------------------------------------------------- gating
     def gate(self, man: ToolManifest, *, read_only: bool = False,
