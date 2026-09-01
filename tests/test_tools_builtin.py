@@ -428,6 +428,25 @@ def test_search_finds_content_and_explains_zero_matches(writable_toolkit):
     assert none.data["zero_match_advice"], "a zero-hit search must suggest the next move"
 
 
+def test_search_falls_back_when_rg_vanished(writable_toolkit, monkeypatch):
+    """P5b AC5: an auto-picked ripgrep that vanished is an honest python fallback,
+    not a surprise failure and not a silent substitution."""
+    eng = writable_toolkit.engine
+    assert "search.ripgrep" in eng.profile.capabilities
+    monkeypatch.setattr(eng.profile, "has_binary", lambda _name: None)  # gone now
+    r = eng.call("fs.search", {"pattern": "handler", "glob": "**/*.py"})
+    assert r.ok, r.error
+    assert r.data["provider"] == "python"
+    assert r.metrics.provider == "python", "metrics must name the actual provider"
+    assert any("fell back" in w for w in r.warnings), r.warnings
+    assert any("fell back" in n for n in r.data.get("notes", [])), r.data.keys()
+    assert r.data["files_matched"] >= 1, "the fallback must still answer"
+
+    # an explicit preference is a promise: it raises instead of substituting
+    bad = eng.call("fs.search", {"pattern": "handler", "prefer": "ripgrep"})
+    assert not bad.ok and bad.error.code == "MISSING_BINARY", bad.error
+
+
 @pytest.mark.parametrize("prefer", [None, "python"])
 def test_search_regex_context_and_glob_agree_across_providers(writable_toolkit, prefer):
     eng = writable_toolkit.engine

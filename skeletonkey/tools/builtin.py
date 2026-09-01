@@ -12,7 +12,7 @@ import time
 from typing import Any
 
 from ..core.engine import ApprovalRequired
-from ..core.envelope import ToolResult
+from ..core.envelope import Metrics, ToolResult
 from ..core.errors import E, SkeletonKeyError
 from ..core.manifest import Requirement, ToolManifest
 from ..shells.execute import run_script
@@ -1007,7 +1007,12 @@ def register(reg: Any, *, engine: Any, shells: Any, fs: Any, journal: Any, skill
         if out.files_matched == 0:
             d["zero_match_advice"] = ("pattern is literal by default - set regex=true for regex syntax; "
                                       "also try ignore_case=true and a wider path")
-        return d
+        # P5b AC5: the actual provider (python vs ripgrep, incl. the auto
+        # fallback) belongs in metrics.provider, and a fallback is a warning
+        # the agent can read - never a silent substitution.
+        return ToolResult.success(data=d, metrics=Metrics(provider=out.provider,
+                                                          duration_ms=out.duration_ms),
+                                  warnings=out.notes or None)
 
     def fs_list(path: str = ".", depth: int = 1, sort: str = "name", include_hidden: bool | None = None,
                 limit: int = 400) -> dict[str, Any]:
