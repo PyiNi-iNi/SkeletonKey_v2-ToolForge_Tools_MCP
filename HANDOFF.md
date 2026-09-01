@@ -22,7 +22,7 @@ restate it.
 
 | | |
 | --- | --- |
-| PR | opened/merged this session (pull request page shows the number); previous merged PRs: #2 (`arena/01a05944-…`, P3–P4b) |
+| PR | **#3** — merged `06ac35c` (merge commit); previous merged PRs: #2 (`arena/01a05944-…`, P3–P4b) |
 | Branch | `arena/01a05ad1-…` — Arena tracks sessions by branch; keep work there |
 | Surface | **56 tools registered / 55 advertised / 5 899 advertisement tokens** / digest `d3139e78632b35f3` |
 | New group | **`live.*` — 11 tools** (`start stop status reload patch repl state snapshot render scene serve`) |
