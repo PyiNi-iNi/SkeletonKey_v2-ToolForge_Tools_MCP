@@ -22,8 +22,8 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[1]
 DOC_FILES = sorted(
-    [p for pat in ("docs/*.md", "docs/adr/*.md", "README.md", "skills/*/SKILL.md",
-                   "skills/*/references/*.md") for p in REPO.glob(pat)]
+    [p for pat in ("docs/*.md", "docs/site/*.md", "docs/adr/*.md", "README.md",
+                   "skills/*/SKILL.md", "skills/*/references/*.md") for p in REPO.glob(pat)]
 )
 assert DOC_FILES, "the docs the suite checks disappeared"
 
@@ -230,3 +230,28 @@ def test_error_codes_in_doc_tables_are_real():
             line = text[: m.start()].count("\n") + 1
             problems.append(f"{name}:{line}: `{tok}` is documented as an error code but is not in E")
     assert not problems, "unknown error codes in docs:\n" + "\n".join(problems)
+
+
+LINK_RE = re.compile(r"\]\(([^)]+)\)")
+SITE_FILES = sorted([*REPO.glob("docs/*.md"), *REPO.glob("docs/site/*.md")])
+
+
+def test_docs_site_links_resolve():
+    """The docs site is served from plain markdown: every relative link in the
+    index and the site pages must point at a real file (anchors ignored). A
+    broken link is a broken page, whether or not a browser rendered it."""
+    problems: list[str] = []
+    for page in SITE_FILES:
+        text = page.read_text(encoding="utf-8")
+        for m in LINK_RE.finditer(text):
+            target = m.group(1).split("#")[0]
+            if not target or "://" in target or target.startswith("//"):
+                continue
+            if target.startswith("/"):
+                resolved = REPO / target.lstrip("/")
+            else:
+                resolved = (page.parent / target).resolve()
+            if not resolved.exists():
+                line = text[: m.start()].count("\n") + 1
+                problems.append(f"{page.relative_to(REPO)}:{line}: {target}")
+    assert not problems, "docs site links point nowhere:\n" + "\n".join(problems)

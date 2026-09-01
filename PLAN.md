@@ -619,11 +619,17 @@ site, security pass, Windows CI remain.
   `pip-audit` clean on the extras/dev tree.
 - Docs site in-repo: this plan, the four contract docs, a "write a skill" tutorial, and
   a "connect to host X" page (Claude Desktop / generic stdio clients / our autopilot).
+  _Shipped:_ `docs/README.md` as the index; `docs/site/write-a-skill.md` +
+  `docs/site/connect-host.md` as the tutorials; `tests/test_docs.py` now lints
+  `docs/site/*.md` and verifies every site link resolves (no build step, no
+  hosting).
 - Security pass: dependency audit in CI (`pip-audit` on the extras only, since core has
   none), fuzz-ish tests for the sentinel parser and path normalization (property tests
   over random path shapes), red-team list of bypass attempts as executable tests
   (`..`, absolute-external, symlink escape, device names, `\\?\`, env injection,
-  CLIXML spoofing, spill-path traversal).
+  CLIXML spoofing, spill-path traversal). _Shipped:_ the audit was run on the extras/dev
+  tree and is clean; the matrix is in `tests/test_security_matrix.py` (11 tests) with
+  the provenance table in `docs/security-matrix.md`.
 - Windows CI runner turns `@pytest.mark.win` from skip to real: CLIXML decoding,
   CRLF round-trips, pwsh strict mode, long paths, recycle-bin deletion.
 
