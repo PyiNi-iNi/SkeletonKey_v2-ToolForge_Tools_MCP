@@ -1,10 +1,11 @@
-# HANDOFF — SkeletonKey / ToolForge v2 (P3–P4b → P5)
+# HANDOFF — SkeletonKey / ToolForge v2 (P5a shipped → P5b)
 
-Session `arena/01a05944-skeletonkey-v2-toolforge-tools` · 2026-08-31 (America/Chicago).
-Written by the agent that shipped P3, P4 and P4b, for the session that starts **P5**.
-Read `PLAN.md` for the roadmap and `docs/` for the contracts; this file is the *transfer* —
-state, next steps, ideas, and landmines. The previous handoff (P2→P3) is superseded by this
-one; its standing constraints are carried forward in §7.
+Session `arena/01a05a44-skeletonkey-v2-toolforge-tools` · 2026-09-01.
+Written by the agent that shipped **P5a** (tiers, routing, receipts), for the session that
+starts **P5b** (semantic stage, MCP client aggregation). Read `PLAN.md` for the roadmap and
+`docs/` for the contracts; this file is the *transfer* — state, next steps, ideas, and
+landmines. The P3–P4b handoff is superseded by this one; its standing constraints are
+carried forward in §7.
 
 **Agent / model provenance.** The harness is **Arena.ai Agent Mode** (repo-cloned sandbox,
 bash + file tools, auto-saved turns). It is not attributable to a single base model: Arena's
@@ -18,174 +19,173 @@ not remembered: re-measure before you restate it.
 
 | | |
 | --- | --- |
-| PR | **#2** `arena/01a05944-…` → `main`, 17 commits over `adee12d`, **MERGEABLE / CLEAN** at handoff |
-| Branch head | **`58f516f`** == remote tip (verified with `git ls-remote`) |
-| Surface | **45 tools registered / 44 advertised / 4 241 advertisement tokens** / digest `6d94a998eca6f081` |
-| Skills | 5 packs discovered (incl. new `publishing`), 2 synthesized tools, 0 load errors |
-| Tests | **610 passed, 3 skipped, 1 xfailed** (~51 s), 16 test modules; `ruff check` clean |
-| Code / docs | **14 571 lines** in `skeletonkey/`; **3 083 lines** of docs (plan, 5 contract docs, 10 ADRs, README, handoff) |
-| Phases | P0 ✓ P1 ✓ P2 ✓ P3 ✓ P4 ✓ (replay/eval/plan, streaming, ADR-0009, script-content rules) **P4b ✓** (publishing) → **P5 is next** |
-| Untracked (deliberate) | `.github/workflows/ci.yml` — **not committed; see §3, it is blocked on App permissions** |
+| Branch | `arena/01a05a44-skeletonkey-v2-toolforge-tools` — **push only here** |
+| HEAD | `f2a5641` (pushed). P5a commits: `873de6f` (spec), `4e9a1c3` (core), `7dc1e19` (tools+wiring), `2d43528` (docs), `f2a5641` (skills) |
+| main | still at `6ad120e` — P5a is on the arena branch, **not merged**; review + merge is yours (see §3.4) |
+| Test suite | **630 passed, 3 skipped, 1 xfailed** in ~51 s (`pytest -q` exit 0). Before P5a it was 610 passed |
+| Ruff | `ruff check .` clean |
+| Venv | `.venv` at repo root: mcp 2.1.1, pytest, ruff, pyyaml; **no watchfiles** (its absence is the tested state) |
+| Registered tools | **50** (repo-root build) |
+| Advertised (default `full`) | **48** tools, **4752** tokens, digest `41da93e9b81b0d1d` |
+| Per-tier | core **11**/945 tokens (`94f7da59a9f9937a`), task **38**/3482 (`34cd2f31d4af4484`), full **48**/4752 |
+| Gated (registered, not advertised) | `shell.selftest` (skill declares `advertised = false`), `skills.install` (`skills.allow_install` off) |
+| Route hit-rate | 25/25 (1.000) at k=5 over `tests/eval/suite.jsonl`; semantic on/off identical (no backend installed — the only shipped state) |
+| Wire tests | 3 P5a tests in `tests/test_mcp_stdio.py` green (expand → `list_changed`, cursor round-trip, route/explain reasons) |
+| Docs | `docs/TOOL-CONTRACT.md` §7e (author-facing P5a contract), `skills/fs-safe-refactor/references/discovery.md`, README updated |
 
-## 2. What P3–P4b actually is (one paragraph each, because it will be misrepresented)
+Note on the two surface numbers: repo-root `tk.build()` = 50 registered / 48 advertised
+(what README says). The MCP wire server started with `--cwd` in a bare temp dir finds no
+skills dir, so it sees **48 registered / 47 advertised** — both are honest, just different
+workspaces. Don't "fix" one to match the other.
 
-**P3 — policy as data.** `core/policy.py` compiles `deny`/`allow`/`escalate`/`rate_limit`
-rules (legacy strings + structured tables) into one rule list; deny is read first and is
-non-overridable by any token. `fs.undo {expect_sha}` is a hard `CONFLICT` guard, `fs.redo`
-is a journaled re-apply that refuses drift, `fs.trash` gives three deletion tiers
-(`journal` | `os-trash` | `delete`), `policy.grant` returns receipts, and a property test
-proves *a wall means zero writes for every mutating tool*.
+## 2. What P5a actually is
 
-**P4 — the loop proves the turn.** `toolkit.plan()` ranks a shortlist; `RunRecorder`/
-`replay()` re-execute a recorded run in a scratch baseline copy and diff envelopes with
-**explicit, closed normalization** (volatile keys dropped, paths rewritten, journal tokens
-rewritten; `stateful` tools held to ok+error-code only); `sk eval` scores scripted task
-suites. The idempotency cache gained a **mutation generation** so a mutation retires stale
-reads (the bug that hid inside "reproduction"). Streaming: per-call log at debug level,
-`notifications/progress` for `fs.search`/`fs.glob` when a `progressToken` rides in.
-`shell.run` script **content** is scanned by deny/escalate path rules (allow never scans
-free text). ADR-0009.
-
-**P4b — publishing with secrets you never see again.** The `pub.*` group (9 tools):
-a **write-only credential store** — `pub.store_put/list/delete` over a JSON file that lives
-**outside the workspace roots** (default `<user config dir>/skeletonkey/publish/store.json`,
-`0600` best-effort, `[publish] store_path` override), so the fs *sandbox* is the wall and no
-policy rule protects it. **No tool returns a raw value** (masked metadata only); the only
-value flow out of the process is `pub.inject`, which replaces `{{PUB.<id>}}` markers through
-the journaled fs layer (`expect_sha` per file, undo via `fs.undo_task` scoped to the call's
-own task id, two-pass with **no partial publishes**, `dry_run`, `bindings` remaps, denied
-files skipped with a note). The `value` arg is redacted from the ledger via a new manifest
-field `secret_args` (engine-level) **and** a `redact_obj` backstop (bare `value`-named
-keys). `pub.platforms/payments/packaging` surface `skeletonkey/publish_data.py` (real
-console/docs URLs, steps, credential kinds); `pub.testers` emits machine-executable,
-secret-free release test plans. ADR-0010. Honest gap, stated in SECURITY-MODEL: `shell.run`
-can still read the store file if the user's OS permissions allow it; the store is plaintext
-(no keyring dependency — the zero-deps rule).
+- **Tiers are a manifestation filter, never authorization.** `tier` on every manifest
+  (`core`/`task`/`full`, default `full`); `registry.advertise(tier=…)` + `[advertise]`
+  budgets per tier (0 = no cap); `registry.active_tier` session state switched by
+  `registry.expand {tier}`; the digest changes with the set, so `tools/list_changed` fires.
+  A tier-hidden tool still works when called by id.
+- **Two-stage router.** `registry.route {task, k, semantic}`: exact-id fast path always
+  wins → deterministic lexical ranking → optional `SemanticBackend` protocol
+  (`core/semantic.py`, entry-point group `skeletonkey.semantic`). Every hit carries
+  `reasons` (field × token, capped 6) + `tier`/`provider`. No backend + `semantic=true` ⇒
+  identical to lexical, `mode: "lexical"`, honest `note`. The engine, adapter `INSTRUCTIONS`,
+  CLI (`sk tools route/expand`), `toolkit.plan()` and `registry.search` all route through it.
+- **Provider receipts.** `selection_receipts` (capability → winner, provider, score, why,
+  competitors incl. `no call evidence`), `budget_drops` (greedy by ascending score, honest),
+  surfaced in `registry.list` rows, MCP `tools/list` `_meta`, `registry.describe`, and the
+  new `capabilities.explain {capability}` tool (unknown capability ⇒ `BAD_ARGS` + `near`,
+  never silence).
+- **Cursor pagination.** `registry.list` (`cursor`/`page_size`/`next_cursor`) and MCP
+  `tools/list` (`cursor` → `nextCursor`); opaque positional, page 100, malformed cursor
+  falls back to page 0, no-cursor callers get the whole small surface (backward compatible).
+- **ACs satisfied by P5a tests** (`tests/test_discovery.py`, 17 tests): 200-tool core tier
+  ≤20 tools/≤1.2k tokens + eval hit-rate ≥0.9; semantic-off property over the eval suite;
+  expand round-trip + no-notify-when-unchanged; provider-receipt honesty.
 
 ## 3. What is NOT done (and why)
 
-1. **`ci.yml` is untracked and will stay that way from this branch.** The GitHub App used
-   by this harness lacks the `workflows` permission, so any push whose diff touches
-   `.github/workflows/` is rejected. The file is in the working tree at
-   `.github/workflows/ci.yml` (jobs: `core-constraint`, `test` on 3.11/3.12, `lint`).
-   **Unblock options:** (a) grant the App the `workflows` permission in repo settings, then
-   commit+push it; (b) the user pushes the file themselves; (c) leave it — the repo has no
-   CI at all until it lands, which is why nothing gates PR #2's merge.
-2. **P5 is not started.** It is specced in PLAN.md ("Scale and discovery") — tool routing,
-   ranking, a tool list that changes underneath a host safely.
-3. `watchfiles` is **deliberately not installed** in `.venv` — its absence is the tested
-   state (`tools.hot_reload` reports why it can't run). Do not `pip install watchfiles`.
+1. **Semantic stage has no backend.** `core/semantic.py` is a protocol + entry-point
+   discovery only, by design: the model/dependency choice was explicitly deferred ("that is
+   an ADR, not a surprise"). P5b must pick it (see §4.3) — zero-mandatory-deps (ADR-0001)
+   means it lands as an optional extra either way.
+2. **`mcp.client` connector (multi-server aggregation) is not started.** The original
+   AC4/5: `remote.<server>.<tool>` pass-through with inherited `risk`, `reversible: false`,
+   `stateful: "host"`, remote error codes passed through un-wrapped, `registry.stats`
+   keeping remote/local rows separate.
+3. **`fs.search` provider-fallback honesty is not asserted.** `rg`-absent →
+   `metrics.provider == "python"` + `warnings` naming the fallback. Behavior is P1/P2; the
+   executable assertion is the leftover.
+4. **P5a is not merged to main** and **`ci.yml` is still untracked** (same GitHub App
+   blocker: no `workflows` permission — any push touching `.github/workflows/` is rejected
+   by design, don't retry). `ci.yml` content is at `.github/workflows/ci.yml` (untracked);
+   unblock options unchanged: grant the App `workflows`, have the user push it, or leave it.
+5. `registry.list` on the **wire** doesn't yet expose `next_cursor` semantics for
+   `registry.list` itself beyond the tool-level test; MCP `tools/list` pagination is the
+   wire-tested path. (Check `test_discovery.py::test_list_pagination` before assuming.)
 
 ## 4. Next steps (in order)
 
-1. **Merge PR #2** (`gh pr merge 2 --merge --no-delete-branch` — the house style keeps the
-   branch). Then re-verify with `git ls-remote origin refs/heads/main`.
-2. **Land `ci.yml`** once the App has `workflows` (or the user pushes it). Until then the
-   "CI green" claim is a local-suite claim, and that should be said plainly.
-3. **Start P5 from PLAN.md's P5 section.** First concrete sub-step: read
-   `registry.advertise()`'s selection path (token budget, capability dedupe) and the
-   `withheld` receipt — P5 is about making that story scale from 45 to ~200 tools without
-   the host drowning.
-4. Optional quick win while P5 designs: add a **publish task to `tests/eval/suite.jsonl`**
-   (store → scan → inject → verify) so the eval scores the new surface; `pub.*` tools are
-   `stateful: "host"` and replay holds them to ok+error-code — worth one explicit replay
-   fixture proving that.
+1. **Merge P5a to main** (review first; `gh pr merge` from this branch — it's pushed and
+   green locally).
+2. **`fs.search` fallback assertion** (smallest P5b piece, P1/P2 behavior exists): fake `rg`
+   absent (PATH shadowing in the test), assert `metrics.provider == "python"` and a
+   `warnings` entry naming the fallback. Wire-level or engine-level both fine; check
+   `fsx/search.py` for the actual provider plumbing first.
+3. **`mcp.client` connector** (the big one, exploratory per PLAN): decide config surface
+   (`[mcp.remotes]`? — check `config.py` naming for `CONFIG_RE` compat in
+   `tests/test_docs.py`), implement the client, per-tool pass-through with
+   risk/`reversible`/`stateful` mapping, remote envelope error passthrough, stats rows
+   separated by source. New tools must ship: TOOL-CONTRACT section, skill guidance, wire
+   test (house rule).
+4. **Semantic backend ADR + extra.** First write the ADR (model/dependency choice:
+   pure-python deterministic TF-IDF/char-ngram is zero-dep but weak; `fastembed`
+   (onnxruntime) or `sentence-transformers` (torch) are real embeddings but heavy — weigh
+   Windows first-class + offline + eval evidence). Then `semantic.*` extra package,
+   entry-point registration, `tools.semantic = true`, eval proof that reordering changes no
+   *outcomes* (AC2 becomes a real two-stage comparison).
+5. Optional quick wins still open: publish task in `tests/eval/suite.jsonl`; store
+   `expiry`; Windows NT chmod 0600 test.
 
 ## 5. Ideas (honest, prioritized — none are decided)
 
-1. **ADR-0011: a controlled read path, if it ever earns one.** The store is write-only by
-   design. The likely first demand is "give me the 2FA code *now*" (`kind: two_factor`
-   stores a TOTP seed). If built, it should be a *named, approval-gated, ledgered* tool
-   (e.g. `pub.otp {id}` returning a code, not a seed) — and the ADR must say why the wall
-   gets this one door. Do not add ad-hoc reads.
-2. **Store hardening, still zero-deps:** `expiry` field + `pub.store_list {expiring: N}`,
-   and a `rotate` workflow doc (put-same-id is rotation; delete is for the rest). Optional
-   (not mandatory) encryption at rest via an *optional* keyring dependency would break
-   ADR-0001's spirit — the zero-deps rule says mandatory, not impossible; weigh it in an
-   ADR if it comes up.
-3. **`pub.inject` for >2 MB / binary-templated files** is out of scope today (text cap,
-   honest skip note). If a real need appears, the fix is byte-level marker replacement with
-   an explicit encoding contract, not lifting the cap.
-4. **Publish orchestration:** a `pub.run_plan` that executes a `pub.testers` plan step by
-   step is a *loop* concern, not a tool — it belongs to P5's planner or the autopilot
-   harness, and it should stop on the plan's `stop_rule`. Don't build a mini-interpreter
-   inside a tool.
-5. **Replay the publish:** a recorded publish run (store_put is a no-op read from the
-   store's viewpoint, inject mutates) makes a great ADR-0009 stress fixture: it exercises
-   `stateful: "host"` normalization, journal-token rewriting, and the no-partial-publish
-   error path in one run.
-6. **Windows honesty pass** (P6 territory): on NT, `chmod 0600` sets the read-only
-   attribute and *nothing else* — the SECURITY-MODEL store section already says this in
-   general; a `win`-tagged test asserting the store file's actual NT state would close it.
+- `registry.route` result could feed the next prompt directly (compact "tool shortlist"
+  block) — the shape already carries `reasons`; decide in P6 UX if at all.
+- `capabilities.explain` is currently tool/capability-scoped; a `registry.explain_all`
+  (gates + receipts for the whole surface in one call) would make the 200-tool world
+  debuggable from a prompt. Same receipt data, just a projection.
+- Multi-server: decide whether remote tools participate in per-tier budgets (they should
+  count against the same caps, not bypass them).
+- Do **not** build `pub.run_plan` (a loop concern, not a tool) — recorded again because it
+  keeps coming back.
 
 ## 6. Suggestions for the next session
 
-- **House rule, unchanged:** every new tool ships a TOOL-CONTRACT section (or extension of
-  an existing one), an entry in the skill guidance an agent will read, and a **wire-level**
-  test. "A feature that only works when called from Python is not done."
+- **House rule, unchanged:** every new tool ships a TOOL-CONTRACT section (or extension), a
+  skill-guidance entry an agent will read, and a **wire-level** test. "A feature that only
+  works when called from Python is not done."
 - **Spec-first:** write the PLAN.md section before code; commit in 3-ish chunks
   (core+data / tools+wiring / docs+skills) with **explicit `git add <paths>`** — `git
-  commit .` sweeps in untracked files and has bitten twice.
-- **Push early and often:** this sandbox has recycled at least once and wiped local state;
-  the remote is the only durable record.
-- **Measure, don't remember:** token counts, digests, test counts, and commit SHAs in this
-  doc were re-measured at handoff time; re-measure again before you cite them.
-- The `.venv` is persistent in the sandbox (mcp 2.1.1, pytest, ruff, pyyaml; **no
-  watchfiles**). `/tmp` is not persistent.
+  commit .` sweeps in untracked files and has bitten twice. `.github/` stays untracked.
+- **Push early and often:** the sandbox recycles and wipes local state; the remote is the
+  only durable record.
+- **Measure, don't remember:** token counts, digests, test counts, and SHAs in this doc were
+  re-measured at handoff; re-measure before citing. pytest 9.1.1 suppresses the "N passed"
+  summary when piped — use `-rA`/grep PASSED or trust exit code.
+- P5b's semantic backend choice involves a real dependency decision — weigh it against
+  ADR-0001 (zero mandatory deps) and Windows first-class before committing; that's what the
+  ADR is for.
 
 ## 7. Standing constraints (carried from the original handoff §9, reaffirmed)
 
-- Apache-2.0 + "Dime" authorship preserved; README keeps the original title line and
-  "Dime's Custom Toolkit" tagline. No relicense/retitle/author-tidying.
-- Python 3.11+, **zero mandatory dependencies**; the core must import with nothing
-  installed (`core-constraint` job — once ci.yml lands).
-- Windows and Linux/macOS both first-class; pwsh is not optional; every PowerShell claim is
-  backed by a rendered-payload assertion or a marked `win` test that self-skips off Windows.
-- The primary consumer is the bespoke autopilot loop (tools may be richer/stateful than
-  generic MCP); the MCP surface ships and stays honest (second consumer).
-- Provenance: the harness is Arena.ai Agent Mode, not a single base model.
+- **Licensing/identity frozen:** Apache-2.0, authorship stays "Dime", README title line +
+  "Dime's Custom Toolkit" tagline. No relicense/retitle/author-tidying without the owner.
+- **Python 3.11+, zero mandatory dependencies.** Core must import with nothing installed
+  (ADR-0001); extras (`mcp`, `watch`, `dev`, `all`) carry the rest. `core-constraint` CI job
+  exists in the (unlanded) ci.yml.
+- **Windows + Linux + macOS first-class;** PowerShell is not optional. Every PowerShell
+  claim backed by a rendered-payload assertion or a `win`-tagged test that self-skips off
+  Windows.
+- **Primary consumer is the bespoke autopilot loop;** the MCP surface ships and stays
+  honest. No silent reordering: rankings and gates always readable as receipts.
+- Don't `pip install watchfiles`; no `python -m skeletonkey` (it is `skeletonkey.mcp` /
+  `sk`).
 
 ## 8. Landmines (measured this session; the old ones still bite)
 
-- **`E` is a namespace class** in `core/errors.py` (line ~54) — not `ErrorCode`. And
-  `SkeletonKeyError.code` is a **str**, so `exc.code in {E.DENY_RULE}` never matches
-  (compare `E.DENY_RULE.code` or the string). Cost one failing test cycle.
-- **The engine's `_ledger` swallows all exceptions** (`except Exception: pass`) — a typo
-  like `self.REDACTED` (no such attr) silently drops *every* ledger row for affected tools
-  and no test fails until one asserts row presence. Ledger tests must assert a row exists.
-- **Legacy `deny: ["**"]` is a tool glob** (`matches_tool`), no path constraint → it denies
-  *every* call of *every* tool, not just path-bearing ones. Path-specific denies need the
-  `tool(**/glob)` form.
-- **`fs.glob` includes root-level dotfiles** (`.env` matches `**/*`) but not dot
-  *directories*. Scanners that read all glob results must treat `DENY_RULE` on individual
-  reads as skip-with-note, not fatal.
-- **`ReadResult.sha256`** is full-length as an attribute but truncated to 16 chars in
-  `to_dict()` — pass the attribute into `expect_sha`, not the dict value.
-- **GitHub App cannot push workflow files** (no `workflows` permission); also, the local
-  fetch refspec tracks **only `main`** — verify branch state with
-  `git ls-remote origin <branch>`, not `origin/<branch>`.
-- **mcp 2.1.1 wire shapes** (P4): `req.meta` in `tools/call` is a plain dict;
-  `ClientCapabilities` has no `logging` field; `send_progress_notification` args are
-  positional; `send_log_message(level, data, logger=None, related_request_id=None)`.
-- Carried: replay flake fixed via `(-mtime, path)` + sorted dirnames; `.venv` needs mcp and
-  NOT watchfiles; no `python -m skeletonkey` (it's `skeletonkey.mcp` / the `sk` CLI);
-  replay task_id must equal the recorded one; eval refs are `$<n>.data.<path>`; never mark
-  fs reads stateful; `cmd | head; echo $?` reports `head`'s exit.
+- **mcp 2.1.1 lowlevel:** `tools/list` handler params model is **`PaginatedRequestParams`
+  directly** — the SDK does *not* wrap it in `ListToolsRequest`. Registering with
+  `ListToolsRequest` makes `params` a `ListToolsRequest` whose `.params` is `None`, so the
+  cursor silently never arrives. Same for response: put meta on the result model, and over
+  the wire it serializes as `_meta` (not `meta`). Check `types.ListToolsResult` attrs from
+  `mcp_types` before using them.
+- `SkeletonKeyError.err.code` is the **string** `"BAD_ARGS"`, not the `E.BAD_ARGS` enum
+  object — compare with `== "BAD_ARGS"`.
+- `registry.all()` returns manifests (not dicts); `registry.all()` is a method;
+  `AdSnapshot` has `.tokens` and `.digest`, **not** `.tokens_estimate`.
+- Skill inject cap: `skills/fs-safe-refactor/SKILL.md` sits at 3995 tokens; body +
+  `when_to_use` are both counted. Move detail to `references/` (they aren't counted).
+- `E` namespace class; engine `_ledger` swallows exceptions (assert row presence); legacy
+  `deny: ["**"]` is a tool glob; path denies need `tool(**/glob)`; `fs.glob` dotfile
+  behavior; `ReadResult.sha256` is 16 chars; `req.meta` is a plain dict + positional
+  progress args; replay task_id must match; `cmd | head` exit code reports head's.
+- The two failed wire tests this session were exactly the two mcp landmines above — if a
+  P5b wire test fails on cursor/meta, re-check them first.
 
 ## 9. Where things live (pointers, not contents)
 
-| Thing | Where |
-| --- | --- |
-| Publish core (store + marker engine) | `skeletonkey/core/publish.py` |
-| Knowledge bases + test plans | `skeletonkey/publish_data.py` |
-| `pub.*` specs + handlers | `skeletonkey/tools/builtin.py` (group `publishing`) |
-| Store wiring / default path | `skeletonkey/toolkit.py::build` (`[publish] store_path`) |
-| `sk pub` CLI | `skeletonkey/cli.py` |
-| `secret_args` declaration + ledger redaction | `core/manifest.py` (field), `core/engine.py::_ledger` |
-| Bare-`value` redaction backstop | `core/redact.py::_KEY_ONLY` |
-| Contracts | `docs/TOOL-CONTRACT.md` §7d (publishing), §4b (policy) |
-| Security claims | `docs/SECURITY-MODEL.md` ("The publish store (P4b)" + test map) |
-| Decisions | `docs/adr/0010-publish-store-write-only.md`, `0009-replay-proves-the-turn.md`, `0008-…` |
-| Roadmap + P4b/P5 specs | `PLAN.md` |
-| Agent guidance | `skills/publishing/SKILL.md` + `references/first-publish.md` |
-| Tests | `tests/test_publish.py` (28), wire: `tests/test_mcp_stdio.py::test_publish_store_and_inject_over_the_wire`, walls: `tests/test_policy_property.py` (BURST table) |
+- `PLAN.md` — §5 P5a/P5b spec (P5a "shipped", P5b "next"), §6 pipeline spec, risk register.
+- `docs/TOOL-CONTRACT.md` — §7e P5a contract (normative), §8 adding-a-tool checklist.
+- `skeletonkey/core/registry.py` — tiers, route, explain, receipts, advertise, pagination.
+- `skeletonkey/core/semantic.py` — SemanticBackend protocol + entry-point discovery.
+- `skeletonkey/mcp/adapter.py` — tier-aware advertise, `_page_slice`, list_changed.
+- `skeletonkey/tools/builtin.py` — registry.route/expand/explain handlers + specs,
+  tier marks on all specs.
+- `skeletonkey/toolkit.py` — `plan()` routes; status reports tier/receipts/budget_drops.
+- `skeletonkey/cli.py` — `sk tools route/expand`, `--tier/--k/--semantic`, `--gated`.
+- `tests/test_discovery.py` (17), `tests/test_mcp_stdio.py` (+3 P5a wire),
+  `tests/eval/suite.jsonl` (25 tasks, ground truth `target`).
+- `config/skeletonkey.example.toml` — `[advertise]`, `tools.semantic`.
+- `schemas/tool-manifest.schema.json` — `tier` enum.
+- `skills/fs-safe-refactor/references/discovery.md` — agent-facing discovery guidance.
+- `HANDOFF.md` (this file), `PLAN.md`, `.github/workflows/ci.yml` (untracked, push-blocked).
