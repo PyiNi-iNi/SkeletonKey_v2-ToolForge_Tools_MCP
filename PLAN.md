@@ -595,16 +595,23 @@ and is exploratory).
 ### P6 — Distribution and hardening
 
 **Goal.** Others can install, run, and debug this without reading the source.
+**Status:** in progress — zero-dep core guarantee test and `sk doctor` shipped
+(see `tests/test_core_imports.py`, `tests/test_doctor.py`); releases, docs
+site, security pass, Windows CI remain.
 
 **Deliverables.**
 
 - Packaging: tagged GitHub releases with wheels + sdist (built in CI), a
   `pipx`-installable console script set (`sk`, `skeletonkey-mcp`), and a
   zero-dependency core guarantee enforced by a test that imports `skeletonkey.core` with
-  the venv's `site-packages` hidden (ADR-0001's promise, checked).
+  the venv's `site-packages` hidden (ADR-0001's promise, checked). _Shipped:_ the
+  `-S` subprocess test proves `toolkit`/`mcp.client`/`live` import with no
+  site-packages and leak no third-party package, and that a build importing no
+  remotes never imports the `mcp` extra.
 - Diagnostics: `sk doctor` (config layers, roots, probe receipts, gate diffs, ledger
   integrity, spill dir, skill load errors — one JSON blob an operator can paste),
-  `sk doctor --fix` limited to safe moves (create state dir, refresh profile).
+  `sk doctor --fix` limited to safe moves (create state dir, refresh profile). _Shipped:_
+  `skeletonkey/doctor.py` schema v1 + CLI; documented in README.
 - Docs site in-repo: this plan, the four contract docs, a "write a skill" tutorial, and
   a "connect to host X" page (Claude Desktop / generic stdio clients / our autopilot).
 - Security pass: dependency audit in CI (`pip-audit` on the extras only, since core has

@@ -16,12 +16,33 @@ pip install -e ".[mcp,dev]" # + MCP server + pytest/ruff
 
 ```bash
 sk profile                      # what can this host actually run, with probe receipts
+sk doctor                       # one JSON blob: config, probe, gates, ledger, state — paste-able
+sk doctor --fix                 # safe moves only: create state dirs, re-probe
 sk tools search "rename a symbol across the repo"
 sk call fs.patch '{"path":"src/app.py","edits":[{"old_text":"x = 1","new_text":"x = 2"}]}'
 sk shell "Get-Process | Select-Object -First 3" --dialect pwsh   # one protocol, any dialect
 sk fs undo-task turn-7          # retract everything one turn touched
 sk call shell.quote '{"args":["/tmp/a b","$HOME"],"dialect":"pwsh"}'   # literal tokens per dialect
 ```
+
+### `sk doctor` schema (v1)
+
+One stable JSON blob for an operator or support ticket (never a traceback).
+`schema` is 1; keys are additive-only and any breaking change bumps it. Never
+contains environment values, credential material, or file contents.
+
+| Key | What it is |
+| --- | --- |
+| `version`, `python`, `config` | package version; runtime platform; cwd/workspace/roots/source files/applied overrides/warnings |
+| `profile` | os/arch/python, probed capabilities, warnings, fingerprint, probe receipts |
+| `advertise` | active tier, registered/advertised/tokens/digest, budget drops |
+| `gates` | per tool not advertised: callable?, manifest `advertised`, `hidden_reason`, gate reasons/unmet |
+| `registry` | load errors, loaded drop-in dirs |
+| `skills` | pack count, parse notes, tool-compile errors |
+| `state` | journal root + index existence; ledger path + chain verify + stats; spill dir writability |
+| `remote` | configured `[mcp.remotes.*]` servers, registered tools, connect/list errors |
+| `build` | assembly report: builtins, drop-ins (files/errors), entry points, publish store path |
+| `applied` | only with `--fix`: the safe moves that ran |
 
 ```jsonc
 // mcpServers entry for any stdio client
