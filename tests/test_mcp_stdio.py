@@ -855,3 +855,154 @@ def test_publish_store_and_inject_over_the_wire(tmp_path):
         assert "wixtoolset.org" in json.dumps(_payload(kb))
     finally:
         c.close()
+
+
+# ------------------------------------------------------------------ P5a wire
+def test_wire_expand_notifies_and_moves_the_surface(tmp_path):
+    """AC3 over the wire: expand -> tools/list_changed -> the new tier's list.
+    The client that made the call is the one that hears about it, and a
+    second, unchanged list must not re-notify."""
+    c = spawn(str(tmp_path), "--root", str(tmp_path))
+    c.start()
+    try:
+        first = c.request("tools/list", {})
+        names0 = {t["name"] for t in first["tools"]}
+        assert "fs.patch" in names0 and "registry.expand" in names0
+        assert first["_meta"]["sk.tier"] == "full"
+
+        notes: list[dict] = []
+        res = c.request("tools/call", {"name": "registry.expand", "arguments": {"tier": "core"}},
+                        collect=notes)
+        assert not res.get("isError"), _payload(res)
+        assert "notifications/tools/list_changed" in [n.get("method") for n in notes], notes
+
+        after = c.request("tools/list", {})
+        names1 = {t["name"] for t in after["tools"]}
+        assert "fs.patch" not in names1 and "registry.route" in names1
+        assert after["_meta"]["sk.tier"] == "core"
+        # receipts ride in the list meta and per tool
+        assert after["_meta"]["sk.selection_receipts"]
+        rec = next(t["_meta"]["sk"]["provider_receipt"] for t in after["tools"]
+                   if t["name"] == "registry.route")
+        assert rec["why"]
+
+        notes2: list[dict] = []
+        c.request("tools/list", {}, collect=notes2)
+        assert not any(n.get("method") == "notifications/tools/list_changed" for n in notes2), notes2
+
+        back = c.request("tools/call", {"name": "registry.expand", "arguments": {"tier": "full"}})
+        assert not back.get("isError"), _payload(back)
+        final = c.request("tools/list", {})
+        assert "fs.patch" in {t["name"] for t in final["tools"]}
+        assert final["_meta"]["sk.tier"] == "full"
+    finally:
+        c.close()
+
+
+def test_wire_tools_list_cursor_round_trip(tmp_path):
+    """tools/list accepts a cursor (P5a pagination plumbing over the wire)."""
+    c = spawn(str(tmp_path), "--root", str(tmp_path))
+    c.start()
+    try:
+        first = c.request("tools/list", {})
+        names = [t["name"] for t in first["tools"]]
+        assert names and first.get("nextCursor") is None
+
+        offset = min(5, len(names) - 1)
+        paged = c.request("tools/list", {"cursor": str(offset)})
+        paged_names = [t["name"] for t in paged["tools"]]
+        assert paged_names == names[offset:], "the cursor must be an opaque position, not a guess"
+        for t in paged["tools"]:
+            sk = (t.get("_meta") or {}).get("sk")
+            assert sk and "tier" in sk and "provider_receipt" in sk
+
+        bogus = c.request("tools/list", {"cursor": "not-a-number"})
+        assert [t["name"] for t in bogus["tools"]] == names, "a bad cursor falls back to page 0"
+    finally:
+        c.close()
+
+
+# ------------------------------------------------------------------ P5b wire
+def test_wire_remote_tool_passthrough_and_error_code(tmp_path):
+    """ADR-0013 over the wire: a configured [mcp.remotes.demo] server appears as
+    remote.demo.*; its envelope payloads and error codes pass through untranslated."""
+    from tests.remote_helpers import write_remote_root
+
+    remote = write_remote_root(tmp_path / "remote")
+    cfgdir = tmp_path / "config"
+    cfgdir.mkdir()
+    (cfgdir / "config.toml").write_text(
+        f'[mcp.remotes.demo]\ncommand = "{sys.executable}"\n'
+        f'args = ["-m", "skeletonkey.mcp", "--cwd", "{remote}"]\n'
+        f'enabled = true\n', encoding="utf-8")
+    c = spawn(str(tmp_path), "--root", str(tmp_path))
+    c.start()
+    try:
+        names = {t["name"] for t in c.request("tools/list")["tools"]}
+        assert "remote.demo.demo.echo" in names and "remote.demo.demo.bad" in names
+
+        ok = c.request("tools/call", {"name": "remote.demo.demo.echo",
+                                      "arguments": {"text": "hi"}})
+        assert not ok.get("isError"), _payload(ok)
+        body = _payload(ok)
+        assert body["ok"] and body["data"]["echoed"] == "hi"
+        assert body["data"]["upper"] == "HI"
+
+        bad = c.request("tools/call", {"name": "remote.demo.demo.bad",
+                                       "arguments": {"why": "wire"}})
+        body = _payload(bad)
+        assert not body["ok"], "the remote refusal must not turn into a success"
+        assert body["error"]["code"] == "BAD_ARGS", "remote code must pass through"
+        assert body["error"]["details"].get("why") == "wire"
+
+        # stats rows are separable by source on the wire too
+        st = c.request("tools/call", {"name": "registry.stats",
+                                      "arguments": {"source": "remote:demo"}})
+        s = _payload(st)["data"]
+        assert "remote.demo.demo.echo" in s["stats"]
+        assert all(v["source"] == "remote:demo" for v in s["stats"].values()), s["stats"]
+    finally:
+        c.close()
+
+
+def test_wire_remote_load_error_is_visible_not_silent(tmp_path):
+    """A configured server that cannot start must be *explainable*, not absent
+    without a trace: no remote.* tools, but the failure is in the overview."""
+    cfgdir = tmp_path / "config"
+    cfgdir.mkdir()
+    (cfgdir / "config.toml").write_text(
+        '[mcp.remotes.bogus]\ncommand = "/definitely/not/a/real/sk-binary"\n'
+        'args = ["--x"]\n', encoding="utf-8")
+    c = spawn(str(tmp_path), "--root", str(tmp_path))
+    c.start()
+    try:
+        names = {t["name"] for t in c.request("tools/list")["tools"]}
+        assert not any(n.startswith("remote.bogus.") for n in names)
+        st = c.request("tools/call", {"name": "registry.stats", "arguments": {}})
+        errors = _payload(st)["data"]["overview"]["load_errors"]
+        assert any("bogus" in str(e) for e in errors), errors
+    finally:
+        c.close()
+
+
+def test_wire_route_and_explain_carry_reasons(tmp_path):
+    """registry.route and capabilities.explain over the wire: reasons, not just ids."""
+    c = spawn(str(tmp_path), "--root", str(tmp_path))
+    c.start()
+    try:
+        r = c.request("tools/call", {"name": "registry.route",
+                                     "arguments": {"task": "rename a symbol in one file", "k": 5}})
+        assert not r.get("isError"), _payload(r)
+        body = _payload(r)
+        assert body["ok"] and body["data"]["mode"] == "lexical"
+        assert body["data"]["results"] and all(h.get("reasons") for h in body["data"]["results"])
+        assert any(h["id"] == "fs.patch" for h in body["data"]["results"])
+
+        e = c.request("tools/call", {"name": "capabilities.explain",
+                                     "arguments": {"capability": "fs.patch"}})
+        assert not e.get("isError"), _payload(e)
+        explained = _payload(e)
+        assert explained["data"]["winner"]["tool"] == "fs.patch"
+        assert explained["data"]["winner"]["why"]
+    finally:
+        c.close()

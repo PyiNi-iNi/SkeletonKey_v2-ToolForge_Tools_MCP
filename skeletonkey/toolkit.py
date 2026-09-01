@@ -68,9 +68,13 @@ class Toolkit:
         """
         from .core.util import compact_json
 
-        short = self.registry.search(task, limit=max(1, int(k)))
+        # P5a: plan() routes - exact-name + lexical with the intent synonym layer,
+        # each hit carrying its reasons - instead of bare search(), so the loop sees
+        # why a tool was shortlisted, not just that it was.
+        routed = self.registry.route(task, k=int(k),
+                                     semantic=bool(getattr(self.config.tools, "semantic", False)))
         rows: list[dict[str, Any]] = []
-        for s in short:
+        for s in routed["results"]:
             man = self.registry.get(s["id"])
             args = dict(man.examples[0].get("args", {})) if man.examples else {}
             rows.append({
@@ -84,6 +88,8 @@ class Toolkit:
         cfg = self.config
         return {
             "task": task,
+            "mode": routed["mode"],
+            "backend": routed.get("backend"),
             "shortlist": rows,
             "skills": block,
             "budgets": {"task_max_calls": cfg.budget.task_max_calls,
@@ -111,7 +117,10 @@ class Toolkit:
                        "deny_rules": len(self.config.policy.deny)},
             "tools": {"registered": len(self.registry.all()), "advertised": len(snap.tools),
                       "estimated_tokens": snap.tokens, "digest": snap.digest,
-                      "providers": snap.selected},
+                      "providers": snap.selected, "tier": snap.tier,
+                      "active_tier": self.registry.active_tier,
+                      "receipts": snap.selection_receipts,
+                      "budget_drops": snap.budget_drops},
             "skills": {"discovered": len(self.skills.discover()),
                        "errors": self.skills.errors,
                        "names": [s.name for s in self.skills.discover()]},
@@ -233,6 +242,18 @@ def build(*, config: Config | None = None, overrides: dict[str, Any] | None = No
         report["dropin"] = added
         if cfg.tools.entry_points:
             report["entry_points"] = registry.load_entry_points()
+    # 4. remote MCP servers (P5b, ADR-0013): explicit [mcp.remotes.<name>] only.
+    # A failed server is a load_error + build-report row - never a silent absence.
+    report["remote"] = {"servers": [], "registered": [], "errors": []}
+    if cfg.mcp.remotes:
+        try:
+            from .mcp.client import RemoteConnector
+
+            report["remote"] = RemoteConnector(cfg.mcp.remotes).enroll(registry)
+        except Exception as exc:  # config-level failure: visible, never a crash
+            report["remote"]["errors"].append(
+                {"error": f"{type(exc).__name__}: {exc}", "stage": "config"})
+            registry.load_errors.append({"stage": "remote", "error": str(exc)[:400]})
     report["registered_after_load"] = len(registry.all())
     return Toolkit(config=cfg, profile=profile, sandbox=sandbox, fs=fs, journal=journal, shells=shells,
                    registry=registry, engine=engine, skills=skills, ledger=ledger,
@@ -289,6 +310,7 @@ def _register_skill_tools(reg: Registry, *, engine: Engine, skills: SkillLoader,
         description="Discovered skills with triggers, token cost, and load errors. Skills are procedural "
                     "knowledge; call skills.load to get one.",
         capability="skills.list", risk="none", typical_latency_ms=6, tags=["skills", "instructions", "howto"],
+        tier="core",
         input_schema={"type": "object", "properties": {"refresh": {"type": "boolean", "default": False}},
                       "additionalProperties": False}), skills_list)
     reg.register(ToolManifest(
@@ -296,6 +318,7 @@ def _register_skill_tools(reg: Registry, *, engine: Engine, skills: SkillLoader,
         description="Return a skill's instruction body (budgeted) plus optional reference files, ready to "
                     "inject into context.",
         capability="skills.load", risk="none", typical_latency_ms=8, tags=["skills", "read", "instructions"],
+        tier="core",
         input_schema={"type": "object", "properties": {"name": {"type": "string"},
                                                        "references": {"type": "array", "items": {"type": "string"}},
                                                        "max_tokens": {"type": "integer", "minimum": 100,
@@ -310,6 +333,7 @@ def _register_skill_tools(reg: Registry, *, engine: Engine, skills: SkillLoader,
                     "block. Explainable lexical matching, no model call.",
         capability="skills.match", risk="none", typical_latency_ms=6,
         tags=["skills", "match", "trigger", "context", "inject"],
+        tier="core",
         input_schema={"type": "object", "properties": {"task": {"type": "string", "minLength": 1},
                                                         "limit": {"type": "integer", "minimum": 1, "maximum": 10,
                                                                   "default": 3},
@@ -450,7 +474,7 @@ def _register_skill_tools(reg: Registry, *, engine: Engine, skills: SkillLoader,
         description="Copy a reviewed skill directory into a skills root and compile its declared "
                     "tools in this process - no restart. Refused unless skills.allow_install is true; "
                     "dry_run answers either way, so the plan can be reviewed first.",
-        capability="skills.install", group="skills", risk="write", reversible=True,
+        capability="skills.install", group="skills", risk="write", reversible=True, tier="task",
         typical_latency_ms=90, tags=["skills", "install", "dynamic", "registry"], timeout_s=60,
         advertised=allow_install,
         hidden_reason=None if allow_install else "skills.allow_install is false, so every call "
@@ -481,6 +505,7 @@ def _register_skill_tools(reg: Registry, *, engine: Engine, skills: SkillLoader,
                     "that guards fs.delete guards it. Refuses while a job from that skill is "
                     "still running.",
         capability="skills.uninstall", group="skills", risk="destructive", destructive=True,
+        tier="task",
         reversible=True, approval="policy",
         typical_latency_ms=70, tags=["skills", "uninstall", "dynamic", "registry"], timeout_s=60,
         anti_patterns=["do not uninstall to change a script; edit the file and let the reload do it"],

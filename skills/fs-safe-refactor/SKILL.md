@@ -10,7 +10,7 @@ version: "1"
 tags: [filesystem, refactor, safety, undo]
 priority: 65
 requires: [fs]
-allowed-tools: [fs.read, fs.write, fs.patch, fs.search, fs.glob, fs.list, fs.stat, fs.move, fs.delete, fs.mkdir, fs.chmod, fs.undo, fs.redo, fs.undo_task, fs.journal_list, policy.grant]
+allowed-tools: [fs.read, fs.write, fs.patch, fs.search, fs.glob, fs.list, fs.stat, fs.move, fs.delete, fs.mkdir, fs.chmod, fs.undo, fs.redo, fs.undo_task, fs.journal_list, policy.grant, registry.route]
 ---
 
 # Safe filesystem changes
@@ -29,6 +29,7 @@ fs.glob   {pattern: "src/**/test_*.py"}
 `fs.search` returns `matches[].path/line/column/snippet` plus, when it finds
 nothing, `zero_match_advice` - read it before concluding "the code isn't here". A
 zero-hit search on `node_modules` means an ignore rule, not a missing symbol.
+Tool choice: `registry.route` → `references/discovery.md`.
 
 ## 2. Read before you write; keep the hash
 
@@ -40,8 +41,8 @@ fs.patch {path: "a.py", expect_sha: "<sha from fs.read>", edits: [...]}
 
 If anything changed the file since you read it - a formatter, a git checkout, your
 own earlier call - the patch fails with `CONFLICT` instead of overwriting work.
-That is the whole point: it converts a silent clobber into a retry. On `CONFLICT`,
-re-read, re-plan, re-apply. Never drop `expect_sha` to "just get it done".
+That is the point: a silent clobber becomes a retry. On `CONFLICT`, re-read, re-plan,
+re-apply. Never drop `expect_sha` to "just get it done".
 
 For a **new** file use `fs.write {path, content, create_dirs: true}` (no
 `overwrite`), so an existing file makes it fail with `EEXIST` rather than replacing it.

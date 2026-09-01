@@ -147,6 +147,36 @@ class ToolConfig:
     enable: list[str] = field(default_factory=list)    # empty = all
     disable: list[str] = field(default_factory=list)
     gate_by_profile: bool = True
+    # P5b: the semantic routing stage. Off by default = the deterministic lexical
+    # path, which is the tested default and what existing hosts keep seeing. On =
+    # `registry.route(semantic=True)` blends lexical 50/50 with a discovered
+    # `skeletonkey.semantic` backend (the builtin zero-dep lexical-tfidf ships,
+    # ADR-0012; entry points plug in the same way).
+    semantic: bool = False
+
+
+@dataclass
+class AdvertiseConfig:
+    """Per-tier advertisement budgets (P5a). 0 = no cap for that dimension.
+
+    `full` mirrors the legacy `mcp.advertise_max_tools` knob: the MCP bridge still
+    honours the legacy knob for the full tier, and `[advertise]` is what the tiered
+    path uses. core = what a host sees on a fresh session, before any expand.
+    """
+
+    core_max_tools: int = 20
+    core_max_tokens: int = 1200
+    task_max_tools: int = 48
+    task_max_tokens: int = 6000
+    full_max_tools: int = 0
+    full_max_tokens: int = 0
+
+    def budgets(self) -> dict[str, dict[str, int]]:
+        return {
+            "core": {"tools": self.core_max_tools, "tokens": self.core_max_tokens},
+            "task": {"tools": self.task_max_tools, "tokens": self.task_max_tokens},
+            "full": {"tools": self.full_max_tools, "tokens": self.full_max_tokens},
+        }
 
 
 @dataclass
@@ -161,6 +191,11 @@ class McpConfig:
     emit_list_changed: bool = True
     structured_content: bool = True
     log_to_stderr: bool = False                          # stdout is the protocol channel
+    # P5b (ADR-0013): remote MCP servers, enrolled at build time as
+    # `remote.<name>.<tool>`. Each entry: {"command": [...], "args": [...]} for
+    # stdio, or {"url": "..."} for streamable-http, plus optional "enabled"
+    # (default true) and "timeout_s" (default 30).
+    remotes: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 @dataclass
@@ -218,6 +253,7 @@ class Config:
     fs: FsConfig = field(default_factory=FsConfig)
     skills: SkillConfig = field(default_factory=SkillConfig)
     tools: ToolConfig = field(default_factory=ToolConfig)
+    advertise: AdvertiseConfig = field(default_factory=AdvertiseConfig)
     mcp: McpConfig = field(default_factory=McpConfig)
     state: StateConfig = field(default_factory=StateConfig)
     publish: PublishConfig = field(default_factory=PublishConfig)

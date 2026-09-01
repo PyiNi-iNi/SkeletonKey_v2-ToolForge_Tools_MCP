@@ -119,6 +119,25 @@ override_builtin = false           # a drop-in may not replace a built-in unless
 enable = []                        # empty = everything the host can run
 disable = []                       # e.g. ["shell.run"] on a locked-down runner
 gate_by_profile = true             # withhold tools whose requirements this host fails
+# P5b: the semantic routing stage. Off = the deterministic lexical path (the tested
+# default, and what existing hosts keep seeing). On = route(semantic=True) blends
+# the lexical score 50/50 with the builtin `lexical-tfidf` backend (zero-dep,
+# ADR-0012); a third-party backend under the `skeletonkey.semantic` entry-point
+# group is discovered the same way.
+semantic = false
+
+# --------------------------------------------------------------- advertise
+# Per-tier advertisement budgets (P5a): core = the bootstrap surface a fresh
+# session sees before any registry.expand; task = core + the fs/shell workhorses;
+# full = everything (the default). 0 = no cap for that dimension. The MCP bridge
+# still honours the legacy [mcp] advertise_max_tools knob for the full tier.
+[advertise]
+core_max_tools = 20
+core_max_tokens = 1200
+task_max_tools = 48
+task_max_tokens = 6000
+full_max_tools = 0
+full_max_tokens = 0
 
 # ------------------------------------------------------------------- skills
 [skills]
@@ -144,6 +163,19 @@ advertise_dialect_guides = true
 emit_list_changed = true
 structured_content = true          # our envelope in result.structuredContent
 log_to_stderr = false              # stdout is the protocol channel; keep it that way
+
+# P5b (ADR-0013): other MCP servers appear as `remote.<name>.<tool>`. Nothing is
+# discovered implicitly. Enrolled at build time; a server that fails to start is
+# reported in registry.stats -> overview.load_errors, never silently absent.
+#
+# [mcp.remotes.archive]
+# command = "/usr/bin/env"          # stdio server
+# args = ["python", "-m", "some.mcp.server", "--cwd", "/srv/archive"]
+# enabled = true
+# timeout_s = 30
+#
+# [mcp.remotes.catalog]
+# url = "https://tools.example.com/mcp"   # streamable-http server
 
 # -------------------------------------------------------------------- state
 [state]

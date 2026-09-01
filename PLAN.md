@@ -499,45 +499,96 @@ id it does not have, inject reports the missing id and changes no file.
 **Goal.** 33 tools become 200 without the host drowning: routing, ranking, and a tool
 list that changes underneath it safely.
 
+Two landings: **P5a** (tiers, routing, provider receipts — shipped) and **P5b**
+(embedding stage, MCP client aggregation — next). The original deliverables split
+between them.
+
+#### P5a — Tiers, routing, receipts (shipped)
+
 **Deliverables.**
 
-- Two-stage router: deterministic lexical shortlist (already the core of
-  `registry.search`) → optional embedding stage (`semantic.*` extra) with
-  `registry.route {task, k}` returning scores *and* reasons; exact-name matches always
-  win, and the deterministic path stays available offline (one flag: `tools.semantic =
-  false`).
-- Provider ranking: capabilities with multiple providers (search, patch, archive,
-  vcs) get selected by `registry.stats` reliability × latency × host capability, with
-  `provider_receipt` in every result (which one answered and why).
-- Advertisement tiers: `core` (always), `task` (selected by `plan()`), `full`
-  (on `registry.expand`), each with its own token budget; `tools/list_changed` fires on
-  tier changes, `list` gains `cursor` pagination (already modelled in `next`).
-- Multi-server aggregation: `mcp.client` connector so other servers' tools appear in our
-  registry as `remote.<server>.<tool>` with pass-through envelopes, `risk` inherited,
-  `reversible: false`, and `stateful: "host"`.
-- `capabilities.explain {capability}` — why a tool is gated here, with receipts.
+- Manifest `tier` field (`core` | `task` | `full`, default `full`): a `core` tool is
+  advertised in every tier, `task` in task + full, `full` only in full. The default
+  advertised tier stays `full`, so an MCP host that never calls `registry.expand` sees
+  exactly what it saw before; the autopilot opts into smaller tiers.
+- Tiered advertisement: `Registry.advertise(tier=…)` filters by tier and applies
+  per-tier budgets (`[advertise]` config: `core_max_tools`, `core_max_tokens`,
+  `task_*`, `full_*`; 0 = no cap). `registry.active_tier` is registry state, and
+  `registry.expand {tier}` switches it; the digest changes with the set, so
+  `tools/list_changed` fires on a tier change (AC3's core claim).
+- Two-stage router: `registry.route {task, k, semantic}` — exact-name fast path always
+  wins, then the deterministic lexical ranking, each hit carrying `reasons` (which
+  fields matched which tokens). The semantic stage is a registered `SemanticBackend`
+  protocol (`core/semantic.py`, entry-point group `skeletonkey.semantic`); with no
+  backend installed and `tools.semantic = false` (default) route is lexical-only and
+  says so. The concrete `semantic.*` extra stays out until a model is chosen — that is
+  an ADR, not a surprise.
+- Provider receipts: `AdSnapshot.selection_receipts` (capability → winner, `provider`,
+  score, `why`, competitors with scores), surfaced in `registry.list` rows, MCP
+  `tools/list` `_meta`, `registry.describe`, and the new `capabilities.explain
+  {capability}` tool (gates + winner + competitors + budget drops, with reasons).
+- Cursor pagination on `registry.list` (`cursor` / `page_size` / `next_cursor`) and on
+  MCP `tools/list` (`cursor` → `nextCursor`).
 
-**Acceptance criteria.**
+**Acceptance criteria satisfied by P5a tests.**
 
-1. With 200 registered tools, `tools/list` on tier `core` stays ≤ 20 tools / ≤ 1.2 k
-   tokens, and every task in the eval suite still resolves its tool from tier `task`
-   alone (asserted by `registry.route` top-k hit-rate ≥ 0.9 on the suite).
-2. Turning the semantic stage off changes no call outcomes — only ordering
-   (property test over the eval suite).
-3. A `tools/list_changed` round-trip: drop-in a tool → the stdio client sees the
-   notification and the new `digest` within one refresh; no notification when the
-   advertisement is unchanged (already true; extended to tier changes).
-4. Aggregation: a fixture second server contributes 3 tools; a denied remote call
-   returns the *remote* envelope's error code, not a wrapper; `registry.stats` keeps
-   remote and local rows separate.
-5. Selection honesty: with `rg` faked absent, `fs.search` reports
-   `metrics.provider == "python"` and `warnings` naming the fallback (never a silent
-   provider switch).
+1. With 200 registered tools, `advertise(tier="core")` stays ≤ 20 tools / ≤ 1.2 k
+   tokens, and `registry.route(task, k=5)` top-k hit-rate ≥ 0.9 over
+   `tests/eval/suite.jsonl` (every step tool of every task resolves from the task text
+   alone).
+2. With no semantic backend installed (the only shipped state), `route` is identical
+   with `semantic=true` and `semantic=false` — same ids, same order — and reports
+   `mode: "lexical"` plus why (property test over the eval suite).
+3. `registry.expand {tier}` round-trip: over the wire the client receives
+   `notifications/tools/list_changed` and the next `tools/list` carries the new tier's
+   set and digest; no notification when the advertisement is unchanged (extended to
+   tier changes).
+4. Provider ranking honesty: every capability race exposes the winner's `provider` and
+   `why` in snapshot receipts, `registry.list` rows and `capabilities.explain` —
+   asserted, not claimed.
+
+**What stays after P5a** (the original AC 4/5): multi-server aggregation and the
+`rg`-absent provider-fallback assertion; plus the semantic land that makes AC2 a real
+two-stage comparison instead of a statement about absence. All three are P5b, below.
+
+#### P5b — Semantic stage live, aggregation (shipped)
+
+**Goal.** Turn AC2 into a real two-stage comparison and finish AC4/AC5: a zero-dependency
+semantic stage, honest `fs.search` provider fallback, and the `mcp.client` connector.
+
+**Deliverables (in order of landing).**
+
+- **Zero-dep semantic backend (ADR-0012, shipped).** A deterministic, pure-stdlib
+  `lexical-tfidf` backend (word + char-bigram TF-IDF cosine) lives in `core/semantic.py`
+  and is registered under the `skeletonkey.semantic` entry-point group so an installed
+  dist discovers it exactly like a third-party backend; a dev checkout resolves it
+  directly. `tools.semantic = true` switches it on; `registry.route` blends normalized
+  lexical + semantic (0.5/0.5, deterministic id tie-break) and reports `mode: "semantic"`,
+  `backend`, and a per-hit `semantic_score`. AC2's property test now runs **both** modes
+  over the eval suite: identical ground-truth hit-rate (25/25 @ k=5), reordering
+  observed — the stage is real and changes no outcomes.
+- **`fs.search` provider-fallback honesty (original AC5, shipped).** With `search.ripgrep`
+  probed but `rg` absent at call time, the auto path falls back to the built-in python
+  walker: `metrics.provider == "python"` and a `warnings` entry naming the fallback.
+  `prefer="ripgrep"` still raises `MISSING_BINARY` — an explicit preference is never
+  silently substituted.
+- **`mcp.client` connector (original AC4, ADR-0013, shipped).** Servers configured under
+  `[mcp.remotes.<name>]` (`command`/`args` for stdio, `url` for streamable-http) appear as
+  `remote.<name>.<tool>` manifests: risk inherited from remote tool annotations
+  (unannotated ⇒ `write`, so approval still gates), `reversible: false`,
+  `stateful: "host"`, `source: "remote:<name>"`. A failed/denied remote call returns the
+  *remote* envelope's error code un-wrapped (a non-SkeletonKey remote gets `REMOTE`, never
+  `INTERNAL`); `registry.stats` rows carry `source` and `stats(source=...)` keeps remote
+  and local separate. A connection failure at build time is a `load_error` with the
+  reason — never a silent empty set.
 
 **Exit gate.** No host is ever handed a tool that fails because of a gate we could have
 predicted. **Risks.** Rankings can silently deprioritise the correct tool → every
-ranking decision is exposed in `provider_receipt` and asserted in tests.
-**Effort: 10–14 days.**
+ranking decision is exposed in `provider_receipt` and asserted in tests; a remote server
+can lie about its capability (it cannot — pass-through only, no authorization the remote
+does not itself enforce; document that a remote tool is only as trusted as its server).
+**Effort: 10–14 days** (semantic + fallback ≈ 2–3 days; the `mcp.client` part is the rest
+and is exploratory).
 
 ---
 
@@ -636,7 +687,7 @@ rather than re-deciding:
 
 | Job | Matrix / runner | Steps |
 | --- | --- | --- |
-| `core-constraint` | ubuntu-latest, py3.11 | `pip install -e ".[dev]"`, then a stdlib-only import check that **fails if `mcp`, `mcp_types`, `pydantic`, `watchfiles` or `jsonschema` is importable**, then `pytest tests/test_core_contracts.py tests/test_envelope.py tests/test_ledger_redaction.py tests/test_dialects.py`. This is ADR-0001 enforced, not ADR-0001 asserted. |
+| `core-constraint` | ubuntu-latest, py3.11 | `pip install -e . pytest pytest-asyncio` (**no extras** — the spec's `.[dev]` would install mcp/watchfiles and make the guard below self-contradictory; the intent is ADR-0001 enforced), then a stdlib-only import check that **fails if `mcp`, `mcp_types`, `pydantic`, `watchfiles` or `jsonschema` is importable**, then `pytest tests/test_core_contracts.py tests/test_envelope.py tests/test_ledger_redaction.py tests/test_dialects.py`. This is ADR-0001 enforced, not ADR-0001 asserted. |
 `slow` is registered in `pyproject.toml` and currently marks **nothing**: the two
 process-spawning files (`test_shell_runner.py`, `test_tools_builtin.py` — 95 tests) cost
 ~10 s of the ~19 s suite, which is cheap enough to keep inside the default gate, and a marker
@@ -713,6 +764,9 @@ silent-ish failure).
 | 0009 | Replay proves the turn: explicit normalization, `stateful` means loose, mutations retire cached reads | accepted |
 | 0010 | Publish store is write-only; location is the wall, injection is the only door | accepted |
 | 0011 | Live HMR: in-place code swap + 3-way state merge; zero-dep watcher; panel over plain HTTP/SVG/JSON | accepted |
+| 0012 | The semantic routing backend is a zero-dependency deterministic scorer (`lexical-tfidf`) | accepted |
+| 0013 | Remote MCP tools are pass-through with inherited risk and un-wrapped errors | accepted |
+| 0014 | Discovery is tiers + receipts: every ranking decision is exposed, the default advertisement is unchanged (register entry; contract in TOOL-CONTRACT §7e) | accepted |
 
 `docs/adr/` holds the full text of each, with the options rejected and the observable
 consequence (usually a test id).
@@ -767,10 +821,33 @@ packs agents can actually load. The MCP surface moved `tools/list_changed` from 
 we advertised to behaviour a client can rely on. `skills.allow_install` stays false — that
 is P3's decision to make, and §P2 says so in the tool's own `hidden_reason`.
 
+**Step 5b — P5 shipped (semantic stage live + aggregation):** the zero-dep
+`lexical-tfidf` semantic backend (ADR-0012, entry-point registered, `tools.semantic`
+gated) makes `registry.route {semantic: true}` a real two-stage blend with per-hit
+`semantic_score`, and AC2 is asserted both ways over the eval suite (same hit-rate,
+reordering observed); `fs.search` falls back from a vanished `rg` to the python walker
+with `metrics.provider` + a naming `warnings` entry (`prefer` still raises); the
+`mcp.client` connector (ADR-0013) surfaces `[mcp.remotes.<name>]` servers as
+`remote.<name>.<tool>` with risk inherited, `reversible: false`, `stateful: "host"`,
+remote error codes passed through un-wrapped, and `registry.stats(source=...)` keeping
+remote and local separate. `docs/TOOL-CONTRACT.md` §7f is the author-facing contract.
+
+**Step 5 — shipped (P5a, discovery at scale):** a `tier` field on every manifest
+(`core` / `task` / `full`), tier-aware `registry.advertise` with per-tier budgets and a
+session `registry.active_tier` switched by `registry.expand {tier}`; `registry.route
+{task, k, semantic}` — exact-name fast path, lexical ranking with per-hit `reasons`, and
+a `SemanticBackend` protocol so the embedding stage can be added without changing the
+router; `selection_receipts` in every advertisement snapshot (winner, provider, score,
+why, competitors), surfaced in `registry.list`, MCP `tools/list` `_meta` and the new
+`capabilities.explain {capability}`; cursor pagination on `registry.list` and MCP
+`tools/list`. `docs/TOOL-CONTRACT.md` §7e is the author-facing contract and
+`tests/test_discovery.py` the acceptance evidence (AC1–AC4 as split in §5).
+
 **Then the phases, in order:** P3 (policy, rate limits, trash,
 `fs.redo` — before an install path is enabled by default) → P4 (autopilot integration:
 `plan()`, receipts, replay, evals; this is where the loop stops hand-coding retries) → P5
-(discovery at scale) → P6 (distribution; Windows CI *before* P7, or remote Windows work will
+(discovery at scale; P5a shipped, P5b next: semantic extra + `mcp.client` aggregation) → P6
+(distribution; Windows CI *before* P7, or remote Windows work will
 burn the budget) → P7 (frontier spike: one remote Windows host through one transport).
 
 The incoming session starts from `HANDOFF.md` at the repo root: it records the measured

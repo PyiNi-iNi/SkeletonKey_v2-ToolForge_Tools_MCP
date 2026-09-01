@@ -32,6 +32,12 @@ How to use this server well:
 - The advertised set is capability-gated for THIS host. If something is missing, no
   backend exists for it here; `registry.search` with include_gated=true shows what is
   gated and why.
+- Discovery: `registry.route {task}` ranks tools for a need (exact-name first, then a
+  deterministic lexical stage, each hit carrying its `reasons`); `registry.expand
+  {tier}` switches the advertised set between `core` (bootstrap), `task` and `full`
+  (default) - the set changes, and a `tools/list_changed` notification follows.
+  `capabilities.explain {capability}` says why a capability is gated here, with the
+  provider receipt.
 - Prefer `fs.patch` over `fs.write` when editing an existing file: it returns a unified
   diff, refuses stale writes (expect_sha), and yields an undo_token.
 - `shell.run` executes your script verbatim. `data.completed=false` means the script
@@ -95,9 +101,20 @@ class McpBridge:
         )
 
     def advertise(self) -> Any:
+        """The snapshot the client sees, at the registry's active tier.
+
+        The full tier keeps the legacy `mcp.advertise_max_tools * 220` budget; the
+        tiered path uses the `[advertise]` caps for that tier (0 = no cap), so
+        `core` honestly stays a bootstrap surface instead of being silently
+        re-budgeted by a legacy knob.
+        """
         cfg = self.toolkit.config
-        return self.engine.advertise(token_budget=cfg.mcp.advertise_max_tools * 220,
-                                    dedupe_capability=True)
+        tier = self.engine.registry.active_tier
+        if tier == "full":
+            return self.engine.advertise(token_budget=cfg.mcp.advertise_max_tools * 220,
+                                         dedupe_capability=True)
+        return self.engine.advertise(tier=tier, tier_budgets=cfg.advertise.budgets(),
+                                     dedupe_capability=True)
 
 
 def build_server(toolkit: Any, *, include_resources: bool = True, include_prompts: bool = True) -> tuple:
@@ -113,8 +130,8 @@ def build_server(toolkit: Any, *, include_resources: bool = True, include_prompt
         ListPromptsResult,
         ListResourcesRequest,
         ListResourcesResult,
-        ListToolsRequest,
         ListToolsResult,
+        PaginatedRequestParams,
         Prompt,
         PromptMessage,
         ReadResourceRequestParams,
@@ -154,12 +171,18 @@ def build_server(toolkit: Any, *, include_resources: bool = True, include_prompt
                             lifespan=lifespan)
 
     # -------------------------------------------------------------------- tools
-    async def on_list_tools(ctx: Any, _req: ListToolsRequest) -> ListToolsResult:
+    async def on_list_tools(ctx: Any, params: Any) -> ListToolsResult:
         bridge.session = getattr(ctx, "session", None) or bridge.session
         snap = bridge.advertise()
         bridge._digest = snap.digest
+        # mcp 2.1.1 lowlevel: for tools/list the params model is
+        # PaginatedRequestParams (registered below), so `cursor` rides in as-is.
+        cursor = (params.get("cursor") if isinstance(params, dict)
+                  else getattr(params, "cursor", None))
+        page, next_cursor = _page_slice(snap.tools, cursor)
         tools: list[MTool] = []
-        for man in snap.tools:
+        for man in page:
+            receipt = snap.receipt_for(man)
             desc = (man.description or "").strip()
             if man.anti_patterns:
                 desc += "\nAvoid: " + "; ".join(man.anti_patterns[:2])
@@ -178,14 +201,18 @@ def build_server(toolkit: Any, *, include_resources: bool = True, include_prompt
                 output_schema=man.output_schema,
                 _meta={"sk": {"id": man.id, "risk": man.risk, "capability": man.capability,
                               "group": man.group, "tags": man.tags, "provider": man.provider,
-                              "reversible": man.reversible, "stateful": man.stateful,
+                              "tier": man.tier, "reversible": man.reversible,
+                              "stateful": man.stateful,
                               "typical_latency_ms": man.typical_latency_ms,
-                              "requires": [r.to_dict() for r in man.requirements]}},
+                              "requires": [r.to_dict() for r in man.requirements],
+                              "provider_receipt": receipt}},
             ))
-        return ListToolsResult(tools=tools, meta={
+        return ListToolsResult(tools=tools, nextCursor=next_cursor, meta={
             "sk.digest": snap.digest, "sk.tokens_estimate": snap.tokens,
-            "sk.registered": len(bridge.engine.registry.all()),
-            "sk.selected_providers": snap.selected})
+            "sk.tier": snap.tier, "sk.registered": len(bridge.engine.registry.all()),
+            "sk.selected_providers": snap.selected,
+            "sk.selection_receipts": snap.selection_receipts,
+            "sk.budget_drops": snap.budget_drops})
 
     # tools that can scan a large tree: the client asks for progress by sending a
     # progressToken in the request's _meta, and the server answers with
@@ -275,7 +302,7 @@ def build_server(toolkit: Any, *, include_resources: bool = True, include_prompt
         return CallToolResult(content=[TextContent(type="text", text=compact_json(payload))],
                               structuredContent=payload, isError=True)
 
-    server.add_request_handler("tools/list", ListToolsRequest, on_list_tools)
+    server.add_request_handler("tools/list", PaginatedRequestParams, on_list_tools)
     server.add_request_handler("tools/call", CallToolRequestParams, on_call_tool)
 
     # ------------------------------------------------------------------ prompts
@@ -409,6 +436,22 @@ def build_server(toolkit: Any, *, include_resources: bool = True, include_prompt
             experimental_capabilities={"skeletonkey": {"version": __version__, "dynamic_tools": True,
                                                         "profile_resource": "skeletonkey://profile"}}))
     return server, init_options, bridge
+
+
+def _page_slice(tools: list[Any], cursor: str | None, page_size: int = 100) -> tuple[list[Any], str | None]:
+    """Opaque positional cursor for tools/list (P5a pagination).
+
+    A host that never sends a cursor gets the whole (small) surface in one page,
+    exactly as before; the cursor is there for the 200-tool world.
+    """
+    start = 0
+    if cursor:
+        try:
+            start = max(0, int(cursor))
+        except ValueError:
+            start = 0
+    end = min(len(tools), start + page_size)
+    return tools[start:end], (str(end) if end < len(tools) else None)
 
 
 def _tail_file(path: str, nbytes: int) -> str:

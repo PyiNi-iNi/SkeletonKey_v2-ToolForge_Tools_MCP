@@ -101,9 +101,30 @@ class SearchBackend:
         root = self.sb.resolve(path, intent="list")
         prov = self.provider()
         if prov == "ripgrep":
-            out = self._rg(pattern, root=root, regex=regex, ignore_case=ignore_case, fixed=fixed, word=word,
-                           context=context, glob=glob, type_=type_, limit=limit, multiline=multiline,
-                           files_with_matches=files_with_matches, timeout_s=timeout_s)
+            rg = self.profile.has_binary("rg") if self.profile else None
+            if rg:
+                out = self._rg(pattern, root=root, regex=regex, ignore_case=ignore_case, fixed=fixed,
+                               word=word, context=context, glob=glob, type_=type_, limit=limit,
+                               multiline=multiline, files_with_matches=files_with_matches,
+                               timeout_s=timeout_s)
+            elif self.prefer == "ripgrep":
+                # an explicit preference is a promise: never silently substitute
+                raise SkeletonKeyError(
+                    E.MISSING_BINARY, "prefer='ripgrep' but rg is not on PATH",
+                    details={"missing": "rg", "fallback": "python"},
+                    next_actions=[{"tool": "fs.search", "args": {"prefer": "python", "pattern": "..."}}],
+                )
+            else:
+                # auto-selected ripgrep vanished between probe and call: fall back
+                # to the built-in walker, and say so (AC5: provider + warning, not
+                # a fabricated answer and not a surprise failure).
+                out = self._python(pattern, root=root, regex=regex, ignore_case=ignore_case,
+                                   fixed=fixed, word=word, context=context, glob=glob,
+                                   limit=limit, max_bytes=max_bytes, multiline=multiline,
+                                   files_with_matches=files_with_matches)
+                out.notes.append(
+                    "provider=python: profile advertises search.ripgrep but rg was not "
+                    "found at call time; fell back to the built-in walker")
         else:
             out = self._python(pattern, root=root, regex=regex, ignore_case=ignore_case, fixed=fixed,
                                word=word, context=context, glob=glob, limit=limit, max_bytes=max_bytes,

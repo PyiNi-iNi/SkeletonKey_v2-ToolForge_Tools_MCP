@@ -65,9 +65,15 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--receipts", action="store_true")
 
     t = sub.add_parser("tools", help="inspect the toolset")
-    t.add_argument("what", nargs="?", default="list", choices=["list", "search", "describe", "stats"])
+    t.add_argument("what", nargs="?", default="list",
+                   choices=["list", "search", "route", "expand", "describe", "stats"])
     t.add_argument("arg", nargs="?", default="")
     t.add_argument("--gated", action="store_true")
+    t.add_argument("--tier", default=None, choices=["core", "task", "full"],
+                   help="with list: query this tier without switching to it")
+    t.add_argument("--k", type=int, default=8, help="with route: top-k results")
+    t.add_argument("--semantic", action="store_true",
+                   help="with route: use a registered semantic backend if one is installed")
 
     s = sub.add_parser("shell", help="run a script")
     s.add_argument("script", nargs="?", default="")
@@ -212,7 +218,23 @@ def _dispatch(args: argparse.Namespace, tk: Any, call: Any, cfg: Config) -> int:
     if cmd == "tools":
         what = args.what
         if what == "list":
-            return _emit(call("registry.list", {"include_gated": args.gated}), json_out=args.json)
+            payload: dict[str, Any] = {"include_gated": args.gated,
+                                       "limit": 400 if args.tier else 100,
+                                       "tier": args.tier}
+            return _emit(call("registry.list", payload), json_out=args.json)
+        if what == "route":
+            if not args.arg:
+                print("usage: sk tools route '<task text>' [--k 8] [--semantic] [--gated]",
+                      file=sys.stderr)
+                return 2
+            return _emit(call("registry.route", {"task": args.arg, "k": args.k,
+                                                 "semantic": args.semantic,
+                                                 "include_gated": args.gated}), json_out=args.json)
+        if what == "expand":
+            if args.arg not in ("core", "task", "full"):
+                print("usage: sk tools expand core|task|full", file=sys.stderr)
+                return 2
+            return _emit(call("registry.expand", {"tier": args.arg}), json_out=args.json)
         if what == "stats":
             return _emit(call("registry.stats", {}), json_out=args.json)
         if what == "describe":

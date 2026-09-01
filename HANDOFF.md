@@ -1,152 +1,185 @@
-# HANDOFF — SkeletonKey / ToolForge v2 (P5 queue + the live.* subsystem)
+# HANDOFF — SkeletonKey / ToolForge v2 (P5 + live.* shipped → P6)
 
-Session `arena/01a05ad1-skeletonkey-v2-toolforge-tools` · 2026-08-31 (America/Chicago).
-Written by the agent that shipped the `live.*` Python-HMR subsystem (LiveREPL +
-hot reload + preview panel), for whatever session picks up next — P5 hardening,
-the L4 live queue, or Windows CI. Read `PLAN.md` for the roadmap, `docs/` for the
-contracts; this file is the *transfer* — state, next steps, and landmines.
+Session `arena/01a05a44-skeletonkey-v2-toolforge-tools` · 2026-09-01 (America/Chicago).
+Written after merging **P5** (this session: discovery at scale + semantic stage + remote
+MCP aggregation) with the **live.\*** subsystem (parallel session `arena/01a05ad1`, merged
+to main as PRs #3/#4) — the tree in `main` now carries both. For the session that starts
+**P6** (distribution + hardening). Read `PLAN.md` for the roadmap, `docs/` for the
+contracts; this file is the *transfer* — state, next steps, and landmines. It supersedes
+both previous handoffs; standing constraints are collected in §7.
 
-This supersedes the P3–P4b handoff. Its standing constraints carry forward and
-are collected in §6.
-
-**Agent / model provenance.** The harness is **Arena.ai Agent Mode** (repo-cloned
-sandbox, bash + file tools, auto-saved turns). Not attributable to a single base
-model: Arena's Agent Mode draws on many (Claude, ChatGPT, Gemini, Grok, Qwen,
-Kimi, …), and no specific one was recorded or should be assumed. Everything below
-was measured against the tree at handoff, not remembered: re-measure before you
-restate it.
+**Agent / model provenance.** The harness is **Arena.ai Agent Mode** (repo-cloned sandbox,
+bash + file tools, auto-saved turns). Not attributable to a single base model: Arena's
+Agent Mode draws on many (Claude, ChatGPT, Gemini, Grok, Qwen, Kimi, …), and no specific
+one was recorded or should be assumed. Everything below was measured against the merged
+tree at handoff, not remembered: re-measure before you restate it.
 
 ---
 
-## 1. State on handoff
+## 1. State on handoff (merged `main`)
 
 | | |
 | --- | --- |
-| PR | **#3** — merged `06ac35c` (merge commit); previous merged PRs: #2 (`arena/01a05944-…`, P3–P4b) |
-| Branch | `arena/01a05ad1-…` — Arena tracks sessions by branch; keep work there |
-| Surface | **56 tools registered / 55 advertised / 5 899 advertisement tokens** / digest `d3139e78632b35f3` |
-| New group | **`live.*` — 11 tools** (`start stop status reload patch repl state snapshot render scene serve`) |
-| Skills | 5 packs discovered, 2 synthesized tools, 0 load errors |
-| Tests | **660 passed, 3 skipped, 1 xfailed** (~50 s), 21 test modules; `ruff check skeletonkey tests` clean |
-| Code / docs | **18 328 lines** in `skeletonkey/`; ~3.5 k lines of docs (PLAN, 7 contract/reference docs, README — note tests exclude PLAN by design), 11 ADRs |
-| Phases | P0–P4b shipped earlier; **live HMR subsystem shipped this session** (not a PLAN phase — landed alongside the roadmap); **P5 is still the next roadmap phase** |
-| Preview | `sk live demo` runs the full loop; panel on the configured port (`/` frame, `/view3d`, `/agents`) |
+| Branch | `arena/01a05a44-skeletonkey-v2-toolforge-tools` — this session's branch; P5 PR against `main` is being merged (house style: `--merge`, branch kept) |
+| `main` | `a9c9222` (merge PR #4). History: #2 (P3–P4b) → #3/#4 (`live.*`, branch `01a05ad1`) → **#5 = P5** (this branch) |
+| Test suite | **701 passed, 3 skipped, 1 xfailed** in ~67 s; ruff clean (`ruff check .`; examples/live_hmr is per-file-ignored F821 — `canvas` is runtime-injected) |
+| Tools | **61 registered / 59 advertised / 6410 tokens** at default `full` (digest `05c88f0f77b7fd74`); core 11/945 (`94f7da59a9f9937a`), task 38/3482 (`34cd2f31d4af4484`) |
+| Groups | fs 16 · shell 11 · registry 6 · capabilities 1 · skills 5 · pub 9 · live 11 · policy.grant 1 · profile.probe 1 |
+| Gated | `shell.selftest` (skill-declared `advertised = false`), `skills.install` (`skills.allow_install`) |
+| Venv | repo `.venv`: mcp 2.1.1, pytest 9.1.1, ruff, pyyaml; **package installed editable** (`pip install -e .`) — required so remote *child* servers (`python -m skeletonkey.mcp`) import from any cwd. **No watchfiles** (absence is the tested state) |
+| Route | 25/25 @ k=5; semantic stage reorders 13/25 eval tasks, hit-rate intact |
+| Docs | ADR-0001…0011 (0011 = live HMR) + **0012** (semantic), **0013** (remote); TOOL-CONTRACT §7e (P5a), §7f (remote), §3 `REMOTE`; README measured 61/59; skills/fs-safe-refactor/references/discovery.md |
 
-## 2. What the live.* subsystem is (the parts, honestly)
+## 2. What the last two sessions actually shipped
 
-**`live/patcher.py` — the HMR primitive Python lacks.** Functions get their
-`__code__` swapped *in place* (identity + `__globals__` survive → held
-references, decorators, and *existing class instances* run new code); classes
-patch method-by-method on the same class object; new defs are rebuilt with
-`FunctionType(code, live_ns)`. A `co_freevars` shape change degrades to a
-reported **rebind**. Removed definitions are only deleted when the binding name
-equals the object's `__name__` (aliases like `ref = draw` are *state*, never
-pruned). Whole-file reload is **transactional**: parse+scratch-exec first; only
-a clean exec merges.
+**P5 (this session).** (a) Tiers (`core`/`task`/`full`, manifestation only; per-tier
+budgets + honest `budget_drops`; `registry.expand` session switch; digest-driven
+`list_changed` over the wire). (b) Two-stage `registry.route` (exact → lexical with
+`reasons` → semantic), provider receipts in snapshots/`registry.list`/MCP `_meta`/
+`capabilities.explain`; cursor pagination on `registry.list` and MCP `tools/list`. (c)
+Semantic backend `lexical-tfidf` (pure stdlib TF-IDF cosine, entry-point registered,
+gated by `tools.semantic`; blends 50/50 with normalized lexical; deterministic; the
+*only* shipped backend — an embedding extra can be added behind the same protocol).
+(d) `fs.search` provider-fallback honesty (vanished `rg` → python walker with
+`metrics.provider` + a naming warning; `prefer` still raises `MISSING_BINARY`). (e)
+`mcp.client` connector (ADR-0013): `[mcp.remotes.<name>]` → `remote.<server>.<tool>`,
+risk inherited (unannotated ⇒ `write`), `reversible: false`/`stateful: "host"`, remote
+error codes verbatim (foreign → `REMOTE`), connect/list failures are `load_errors` +
+build report, stats rows carry `source` + `stats_by_source()`.
 
-**`live/runtime.py` — state-preserving host + LiveREPL.** Per-name **3-way
-merge**: `base` (source value at last load) vs `live` (possibly REPL-mutated)
-vs `fresh` (new source). Untouched names track the file; REPL-moved names are
-preserved and *reported*; `live.reload {force_source}` reclaims by name;
-restore of a `live.snapshot` hands names back to the source arm. Contracts:
-`__live_keep__`, `__hmr_export_state__` (pre-patch, old code; its failure
-aborts), `__hmr_import_state__` (post-merge, new code; its failure = code
-patched, state not), `__live_registries__` (dict-of-callables re-pointed),
-`__live_on_reload__`. REPL: `mode=auto` tries eval first, `_` is the classic
-last-value, REPL-defined names get keep-listed (a save never deletes them;
-the file re-owns any name it defines). A settrace wall-clock guard
-(`live.exec_guard_s`) leashes runaway loops — python-level only, documented
-as a leash not a sandbox. Watched same-tree imports hot-patch their
-`sys.modules` object in place; from-imported names re-point only when
-provably dep-owned (per-name collision rule in `reload_dependency`, don't
-relax it without a test).
-
-**`live/scene.py` / `live/panel.py` — the preview.** Retained scene graph →
-deterministic SVG (2D nodes; `mesh3d` painter-sorted + lambert-shaded;
-`cube3d` solid-or-wire). HTTP panel: `/` (frame + Vite-style error overlay +
-in-page REPL), `/view3d` (hand-rolled perspective soft-renderer, drag-orbit,
-camera is viewer-local), `/agents` (debugger: live state table with
-merge-ownership badges, registry browser with click-to-invoke, patch log,
-ledger activity rail). Refresh = 300 ms version poll with an SSE upgrade —
-polling is the deliberately reliable default through proxies.
-`POST /api/control` actions: `reload stop start patch render save_snapshot
-restore_snapshot`. **Live state is per-process**; one-shot CLI control of a
-long-running session is `sk live <action> --via-panel` (HTTP client mode).
-`POST /repl` executes code — `live.panel_repl = false` makes pages read-only,
-default bind is loopback. Say this plainly anywhere the panel is exposed.
-
-**Zero-dep discipline held (ADR-0001):** the entire subsystem is stdlib-only;
-`watchfiles` stays an optional fast path, mirroring `skills/watch.py` (report
-the degraded state, never ImportError at import time).
-
-Counts moving: README intro line, PLAN header line, and this table all carry
-the 56/55/5 899 numbers — update them together. `tests/test_docs.py` now
-checks the **`live` namespace** in docs' backtick spans (tool args, config
-keys, error-code tables) — docs that name nonexistent live knobs fail CI once
-CI exists; the docs suite is the enforcer.
+**live.\*** (parallel session). Stdlib-only Python HMR: in-place `__code__`/method
+patch (identity + globals survive), transactional whole-file reload (parse + scratch-exec
+first; `__hmr_export_state__`/`__hmr_import_state__` hooks; `__live_keep__`, `__live_
+registries__`), per-name 3-way state merge (base/live/fresh), settrace wall-clock leash,
+watched same-tree dep hot-patch; retained scene graph → SVG/`mesh3d`/`cube3d` renderers;
+HTTP preview panel (`/`, `/view3d`, `/agents`) with in-page REPL + agent debugger via
+`POST /api/control` and `POST /repl` (`live.panel_repl = false` makes pages read-only;
+default bind loopback); `sk live <action> --via-panel` HTTP client mode. 11 tools:
+`live.start/stop/status/reload/patch/repl/state/snapshot/render/scene/serve`.
 
 ## 3. What is NOT done (and why)
 
-1. **P5 ("Scale and discovery") is untouched.** Specced in PLAN.md; still the
-   roadmap's next phase.
-2. **L4 queue from docs/LIVE-IMPL-PLAN.md is open:** (a) cross-package dep
-   closure (today: program → same-tree files; cycle = no-op+note), (b) panel
-   scene-edits written back to source as AST patches through the journaled fs
-   layer (blueprint Option B), (c) per-viewer 3D camera channels,
-   (d) watchfiles parity tests (guarded `skipif`; absence stays the tested
-   state — **do not `pip install watchfiles` into the dev venv**),
-   (e) a perf-budget slow-marker test.
-3. **`ci.yml` remains un-landed** (GitHub App lacks the `workflows` permission;
-   previous session's file isn't even in this checkout). Unblock = grant the
-   App the permission or push the file by hand. Until then nothing gates PR
-   merges; the local repro is `ruff check . && pytest -q -m "not slow"`.
-4. **Windows-only surfaces of `live.*`** are untested anywhere (no win runner);
-   the polling watcher and panel are stdlib-clean, but nobody has run them on
-   `\\?\` paths or CRLF files.
+1. **P6 not started** (PLAN §6): wheel/sdist releases + `pipx` story, `sk doctor` +
+   `--fix`, in-repo docs site (write-a-skill, connect-a-host), security pass (dependency
+   audit, sentinel/path property + bypass test matrix), **Windows CI runner** (turns
+   `@pytest.mark.win` skips into real checks).
+2. **`ci.yml` still un-landed.** GitHub App lacks the `workflows` permission — any push
+   touching `.github/` is rejected by design. Unblock: grant the App, or have the user
+   push `.github/workflows/ci.yml` (it is written and untracked in the checkout). Until
+   then the local repro is `ruff check . && pytest -q -m "not slow"`.
+3. **L4 live queue open** (docs/LIVE-IMPL-PLAN.md): (a) cross-package dep closure, (b)
+   panel scene-edits written back to source via journaled `fs.patch`, (c) per-viewer 3D
+   camera channels, (d) watchfiles parity tests (`skipif`; keep watchfiles absent), (e)
+   perf-budget slow-marker test.
+4. **Windows-only surfaces untested anywhere** (no win runner): `live.*` on `\\?\`/CRLF;
+   store CHMOD 0600's NT semantics; pwsh strict mode round-trips.
+5. Optional quick wins not taken: publish task in `tests/eval/suite.jsonl` + one replay
+   fixture; store `expiry`; `registry.explain_all` (whole-surface gates in one call).
 
 ## 4. Next steps (in order)
 
-1. Land `ci.yml` (permissions) — same blocker as last session.
-2. P5 per PLAN.md; note `live.status`/`registry.*` composition already gives
-   the router a healthy surface to talk about.
-3. L4(a) cross-package closure — acceptance test ids live in
-   docs/LIVE-IMPL-PLAN.md §L4.
-4. L4(b) scene→source patch-back — it must route through `fs.patch` semantics
-   (journaled, `expect_sha`-preconditioned) or not at all.
+1. Confirm the P5 PR merged cleanly on `main` (`gh pr view --mergeable`, then `git
+   ls-remote origin refs/heads/main`), then pull/rebase the next session's branch onto
+   it.
+2. Land `ci.yml` (permission or manual push) — same blocker; it gates nothing until then.
+3. **P6** per PLAN §6. First sub-step that needs no network/permission: `sk doctor` +
+   the zero-dep core-guarantee test (import `skeletonkey.core` with `site-packages`
+   hidden), then the security bypass matrix, then packaging/docs; Windows CI last (needs
+   the App permission anyway).
+4. If P6 stalls: L4(a) cross-package closure (acceptance ids in LIVE-IMPL-PLAN §L4) or
+   the tiny honesty wins in §3.5.
 
 ## 5. How things run here (operational)
 
 ```bash
-python3 -m venv .venv && .venv/bin/pip install -e . --no-deps pytest pytest-asyncio ruff
-# add 'mcp' only if you need tests/test_mcp_stdio.py; do NOT add watchfiles
-.venv/bin/pytest tests/ -q                      # 660 passed, 3 skipped, 1 xfailed
+python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"   # mcp+watch+dev; the sandbox
+#                         reinstall includes mcp for test_mcp_stdio.py and -e for remote children
+.venv/bin/pytest tests/ -q                       # 701 passed, 3 skipped, 1 xfailed
+.venv/bin/ruff check .                           # clean (examples/live_hmr F821 ignored)
 .venv/bin/python -m skeletonkey.cli live demo --host 0.0.0.0 --port 8000
 .venv/bin/python -m skeletonkey.cli live repl 'hue = "#f2cc60"' --via-panel --port 8000
 ```
 
-`sk` global flags (`--root`, `--json`, `--read-only`…) go **before** the
-subcommand; argparse exits with "unrecognized arguments" otherwise (this bit
-the session once; tests don't cover the mistake).
+`sk` global flags (`--root`, `--json`, `--read-only`…) go **before** the subcommand
+(argparse aborts otherwise). Sandbox recycles: `.venv` and `.git` reset mid-session —
+recreate the venv, `git fetch origin refs/heads/<branch>:refs/remotes/origin/tip`, and
+restore the branch with `git reset --mixed origin/tip` (files reappear as a patchset and
+hash-match the remote tip; the delta is only new work).
 
-## 6. Landmines carried forward + new
+## 6. Ideas (honest, prioritized — none are decided)
 
-- **Zero mandatory deps in core** (ADR-0001). If you import a third-party
-  package outside an extra, the constraint test fails; the live subsystem
-  passed it with no new imports at all.
-- **`test_docs.py` is the docs police:** every `` `tool.id {args}` `` in
-  `docs/*.md`, README, skills must name real arguments; every `` `section.key` ``
-  a real config field; every error-code table row a real code. Namespaces
-  include `live.*` now. PLAN.md is deliberately exempt (roadmap names the
-  future).
-- **`tests/test_policy_property.py` has a BURST table** covering exactly the
-  mutating tools; adding a mutating tool without a burst row fails the suite.
-  The proof is disk-level (snapshot diff), not error-level.
-- **`watchfiles` is deliberately absent from `.venv`** — the degraded branch is
-  the tested branch.
-- **pyc staleness in-session:** editing `skeletonkey/live/*.py` and importing
-  within the same second can serve stale bytecode (mtime granularity). If a
-  just-made edit doesn't show up in a quick smoke, clear `__pycache__` and
-  retry before suspecting the logic.
-- The previous session's full constraint list (deny-is-first, approval
-  receipts, journal-not-git, argv-over-interpolation, render-don't-rewrite) is
-  in git history at the P3–P4b handoff commit if you need the archaeology.
+- `registry.explain_all`: whole-surface gates + receipts in one projection (the
+  200-tool world debuggable from a prompt). Small, same data.
+- `route` → compact "tool shortlist" block for the next prompt (UX decision for the
+  autopilot loop; data already carries reasons).
+- Remote tools are `full`-tier and count toward caps; decide whether trusted servers can
+  opt into `core`/`task` tiers.
+- Do **not** build `pub.run_plan` (a loop concern, not a tool) or a mini-interpreter in
+  any tool. Still true after two sessions of prompting.
+
+## 7. Standing constraints (carried, reaffirmed)
+
+- **Licensing/identity frozen:** Apache-2.0, authorship "Dime", README title + tagline
+  unchanged. No relicense/retitle/author-tidying without the owner.
+- **Python 3.11+, zero mandatory deps** (ADR-0001) — a test imports `skeletonkey.core`
+  with `site-packages` hidden; `mcp` and `watchfiles` are extras; `mcp.client` imports
+  `mcp` lazily so a no-remotes build never pays it.
+- **Windows + Linux + macOS first-class; PowerShell not optional.** Every claim backed by
+  a rendered-payload assertion or a `win`-tagged self-skipping test.
+- **Primary consumer is the bespoke autopilot loop; MCP surface ships and stays honest.**
+  No silent reordering (rankings/gates/receipts are data); a remote server's error code
+  is never re-wrapped.
+- **House rule for new tools:** TOOL-CONTRACT section (or extension), skill-guidance
+  entry, **wire-level** test. Spec-first + 3-ish chunks + explicit `git add`; `.github/`
+  untracked.
+
+## 8. Landmines (measured; old ones still bite)
+
+- **Sandbox recycle mid-session** (hit twice): venv + `.git` reset; remote is the only
+  durable record — push early. Recovery in §5.
+- **mcp 2.1.1 lowlevel:** `tools/list` params model is `PaginatedRequestParams` directly
+  (not a `ListToolsRequest` wrapper — registering the wrapper makes the cursor silently
+  never arrive); result `meta` serializes as `_meta`; check `mcp_types` snake/camel fields
+  (`read_only_hint`, `input_schema`, `is_error`).
+- **RemoteServer keep-alive:** the worker thread IS the event loop — use
+  `asyncio.sleep(0.25)`, never a threading `Event.wait` (that froze every
+  `run_coroutine_threadsafe` call this session).
+- **Drop-in contract is `TOOL`/`TOOLS`/`register()`** (not `TOOL_SPECS`).
+- **`engine.call` returns a failure `ToolResult` for UNKNOWN_TOOL** — assert
+  `r.error.code`, don't `pytest.raises`.
+- **`test_policy_property.py` BURST table** names every mutating tool — adding one
+  without a row fails the suite (live.* added theirs; keep it in sync).
+- **`tests/test_docs.py` is the docs police** for `docs/*.md`, README, skills: every
+  `` `tool.id {args}` `` must name real args, every `` `section.key` `` a real config
+  field, every error-code row a real code. Namespaces now include `live.*` and `remote.*`.
+  PLAN.md is deliberately exempt.
+- **pyc staleness in-session:** editing `skeletonkey/live/*.py` then importing within the
+  same second can serve stale bytecode (mtime granularity); clear `__pycache__` and retry.
+- **Managed/demo files:** `examples/live_hmr/orbital.py` is a *mirror* of
+  `skeletonkey/live/demos.py` (a test enforces sync) — edit `demos.py`, not the example;
+  `canvas` is runtime-injected (F821 ignored there by design).
+- `SkeletonKeyError.err.code` is the string `"BAD_ARGS"`; `registry.all()` is a method
+  returning manifests; `AdSnapshot` has `.tokens`/`.digest` (no `.tokens_estimate`);
+  skill inject cap for `fs-safe-refactor` ≈ 3995 tokens (detail goes in `references/`);
+  remote tests need the package installed editable.
+- Old unchanged: `E` namespace class; `_ledger` swallows exceptions; legacy
+  `deny: ["**"]`; path denies need `tool(**/glob)`; `fs.glob` dotfile behavior;
+  `ReadResult.sha256` 16 chars; `req.meta` plain dict + positional progress args; replay
+  task_id match; `cmd | head` exit code; pytest from repo root.
+
+## 9. Where things live (pointers, not contents)
+
+- `PLAN.md` — §5 P5a/P5b (shipped), §6 P6, risk register; ADR index rows 0010–0014.
+- `docs/TOOL-CONTRACT.md` — §3 errors, §7e (discovery), §7f (remote), §8 checklist.
+- `docs/adr/0011-live-hmr-…`, `0012-semantic-backend.md`, `0013-remote-tools-passthrough.md`.
+- `skeletonkey/core/{registry,semantic,config,errors}.py`; `skeletonkey/mcp/client.py`
+  (remotes); `skeletonkey/mcp/adapter.py` (tier + pagination + `_meta` receipts);
+  `skeletonkey/fsx/search.py` (fallback); `skeletonkey/tools/builtin.py` (route/expand/
+  explain/stats + search handler); `skeletonkey/live/*` (HMR subsystem).
+- Tests: `test_discovery.py` (P5a ACs + AC2 both modes), `test_semantic.py`,
+  `test_remotes.py` + `remote_helpers.py`, `test_mcp_stdio.py` (wire: P5a + remote),
+  `test_live.py` (live.*), `test_tools_builtin.py` (search fallback),
+  `tests/eval/suite.jsonl` (25 tasks, `target` ground truth).
+- `skills/fs-safe-refactor/references/discovery.md`; `config/skeletonkey.example.toml`
+  (`[advertise]`, `tools.semantic`, `[mcp.remotes.<name>]` sample);
+  `docs/LIVE-HMR.md`, `docs/LIVE-IMPL-PLAN.md` (live queue).

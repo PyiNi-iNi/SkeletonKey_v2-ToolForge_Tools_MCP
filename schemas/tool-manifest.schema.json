@@ -49,13 +49,19 @@
       ],
       "description": "Backing implementation, when the tool is one of several for a capability (rg vs the built-in walker)."
     },
-    "priority": {
-      "type": "integer",
-      "minimum": 0,
-      "maximum": 100,
-      "default": 50,
-      "description": "Higher wins when two tools advertise the same capability."
-    },
+        "priority": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100,
+            "default": 50,
+            "description": "Higher wins when two tools advertise the same capability."
+        },
+        "tier": {
+            "type": "string",
+            "enum": ["core", "task", "full"],
+            "default": "full",
+            "description": "Discovery tier (P5a): core is advertised in every tier, task in task + full, full only in full. The host-facing default set stays full, so hosts that never expand see everything as before."
+        },
     "input_schema": {
       "type": "object",
       "description": "JSON Schema for the arguments. Enforced by the engine before the handler runs, and forwarded verbatim to MCP hosts.",

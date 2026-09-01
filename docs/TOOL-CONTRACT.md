@@ -146,6 +146,8 @@ Codes an author must know how to produce:
 | `NOT_IMPLEMENTED` | declared but unbuilt (skill stubs), journal off | `config` key to flip |
 | `UNSUPPORTED_PLATFORM` | the OS genuinely lacks it (chmod on ACL-only hosts) | `os`, `alternative` |
 | `NONZERO_EXIT` | a process failed | `exit_code`, `stdout_tail`, `stderr_tail` |
+| `REMOTE` | an upstream MCP server reported an error (non-SkeletonKey) | `server`, `remote_message`, `remote_code` |
+| `DEPENDENCY_MISSING` | the `mcp` extra / a remote server's transport failed | `server`, `command` |
 | `IO`, `INTERNAL` | everything else | `trace_id` |
 
 Every refusal names the fix. "Permission denied" without an advice string is a bug.
@@ -412,6 +414,91 @@ agent *see* them again. The contract, enforced by code and tested at the wire:
   test plan — steps as tool calls or commands with acceptance lines and
   on-fail behavior — that references `{{PUB.<id>}}` placeholders and never raw
   secrets.
+
+## 7e. Tiers, routing and discovery receipts
+
+The P5a discovery contract: a host that never opts in sees exactly the surface it saw
+before, and everything that could explain a "why didn't I see it?" is a *receipt*, never a
+guess.
+
+- **Tiers are a manifestation filter, not a security boundary.** Every manifest carries
+  `tier` (`core` | `task` | `full`, default `full`). `core` is advertised in every tier,
+  `task` in task + full, `full` only in full. The active tier is session state starting at
+  `full` and is switched by `registry.expand {tier}`; read it back from `registry.list`
+  (`tier`/`active_tier` in the payload) or `sk tools list`. A tool removed by tier is
+  still *registered*: `registry.describe` sees it and reports the tier that hid it, and
+  calling it still works — the tier governs advertisement, never authorization.
+- **Per-tier budgets.** `[advertise]` (`core_max_tools`/`core_max_tokens`, `task_*`,
+  `full_*`; 0 = no cap) bounds each tier. Budget drops are greedy by ascending
+  `ProviderStats` score and are recorded in `AdSnapshot.budget_drops` with the reason —
+  the real `registry.stats` / `provider` of the tool that lost its slot, not a
+  placeholder. An explicit per-call `token_budget` still wins over `tier_budgets`.
+- **`registry.route` is the two-stage router.** `route {task, k, semantic}`: an exact
+  name (tool id, `mcp_name`, dotted/underscored/slashed forms) always wins first, then the
+  deterministic lexical ranking, every hit carrying `reasons` (which field matched which
+  token, capped at 6) plus `tier`/`provider`. The semantic stage is a registered
+  `SemanticBackend` (entry-point group `skeletonkey.semantic`); with no backend installed
+  and `tools.semantic = false` (default) `route` is lexical-only and *says so* —
+  `mode: "lexical"`, `backend: null`. `semantic=true` with no backend is identical to
+  lexical (same ids, same order) plus an honest `note` — never a silent no-op.
+- **Provider receipts ride everywhere.** Every capability race notes the winner in
+  `AdSnapshot.selection_receipts` (capability → winner id, `provider`, score, `why`,
+  competitors with scores — a competitor with zero calls is reported as `no call
+  evidence`, not guessed). The receipts appear in `registry.list` rows, MCP `tools/list`
+  `_meta` (`sk.selection_receipts`, `sk.budget_drops`, `sk.selected_providers`,
+  `sk.tier`, `sk.digest`) and per tool `_meta.sk.provider_receipt`.
+- **`capabilities.explain {capability}`** answers "why didn't I see this tool?": all tools
+  claiming the capability (or the capability of a given tool id) with each one's gate
+  reasons, score, tier, live stats, the winner and why — a missing or unknown capability
+  is a `BAD_ARGS` with `near` suggestions, never empty silence.
+- **Pagination is opaque by position.** `registry.list` and MCP `tools/list` accept
+  `cursor` / `page_size` (server default 100) and return `next_cursor`/`nextCursor` only
+  when more rows exist; a malformed cursor falls back to page 0 (documented, tested); a
+  host that never sends a cursor gets the whole small surface in one page, exactly as
+  before.
+- **`tools/list_changed` is digest-driven.** The MCP `_meta.sk.digest` is a hash of the
+  advertised set. After a tool call that can change the set (`registry.expand`,
+  `skills.install`, `tools.enable`, a profile refresh) the adapter pushes
+  `notifications/tools/list_changed` on the session that made the call — the next
+  `tools/list` on that session already carries the new set, and unchanged advertisement
+  never re-notifies. Hosts that only poll `tools/list` still converge.
+
+## 7f. Remote MCP servers (`mcp.remotes`, ADR-0013)
+
+Other MCP servers join the surface as tools without their own adapter:
+
+- **Config is explicit.** `[mcp.remotes.<name>]` with `command` + `args` (stdio) or
+  `url` (streamable-http), `enabled`, `timeout_s`. Names match `[a-z0-9][a-z0-9_-]{0,31}`;
+  exactly one of command/url; unknown keys and malformed specs are config errors —
+  never ignored. There is no auto-discovery and no env-var implicit server.
+- **Identity is honest.** `remote.<server>.<tool>`; `group: "remote"`;
+  `source`/`provider: "remote:<server>"`; `capability` = the tool's own id (no provider
+  race with local tools — a remote `fs.search` and the local one both stay callable by
+  name).
+- **Risk is inherited, never lowered.** `readOnlyHint: true` ⇒ `risk: "read"`;
+  `destructiveHint: true` ⇒ `risk: "write"`; **absent ⇒ `risk: "write"`** (approval gates
+  an unannotated foreign call). `reversible: false` (its mutations are outside our
+  journal), `stateful: "host"` (the remote owns state — never `none`), `idempotent:
+  false`, `parallel_safe: false`, `tier: "full"`.
+- **Errors pass through.** A skeletonkey-shaped remote result returns exactly the
+  remote's envelope: its `error.code` (e.g. `BAD_ARGS`), message, hint and `details`
+  arrive untranslated — the outer envelope only renames the tool for attribution. A
+  remote error that is not skeletonkey-shaped maps to `REMOTE` with `server` +
+  `remote_message` (+ `remote_code` when the server sent one); a transport/probe
+  failure maps to `DEPENDENCY_MISSING` with `server` and `command`. Never `INTERNAL`.
+- **Enrollment is visible.** A server that fails to connect, handshake or list tools is
+  a `load_errors` entry (with `server`, `stage`, and the reason) and a row in the build
+  report — as a host you see *why* `remote.<server>.*` is absent, and no remote tool is
+  ever advertised without its server having answered `tools/list`. Disabled servers
+  are reported, not skipped.
+- **Trust boundary.** Remote calls pass through the local gate/policy/approval/budget/
+  ledger *around* the call (attribution, budget, audit) but not *inside* it — the remote
+  server enforces its own policy. A remote tool is only as trustworthy as its server:
+  this is an aggregation layer for infrastructure, not a security boundary.
+- **Stats stay separable.** Every `registry.stats` row carries `source`
+  (`builtin` / `remote:<server>` / a drop-in's `source`); `registry.stats
+  {source: "remote:<server>"}` filters, `stats_by_source` groups, and
+  `registry.stats` (no args) returns the grouped view under `by_source`.
 
 ## 8. Adding a tool
 

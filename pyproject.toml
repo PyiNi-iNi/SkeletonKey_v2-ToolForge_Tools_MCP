@@ -46,6 +46,13 @@ skeletonkey-mcp = "skeletonkey.mcp.__main__:main"
 # Third-party packages can ship tools by adding an entry-point group.
 # name = "package.module:TOOL_SPECS"
 
+[project.entry-points."skeletonkey.semantic"]
+# The builtin zero-dependency backend (ADR-0012). Installed dists discover it
+# through the same group a third-party backend uses; dev checkouts resolve it
+# directly from core/semantic.py. `registry.route` enables it only when
+# tools.semantic = true.
+lexical-tfidf = "skeletonkey.core.semantic:make_builtin_backend"
+
 [tool.hatch.build.targets.wheel]
 packages = ["skeletonkey"]
 
@@ -75,6 +82,9 @@ ignore = ["E501", "RET504", "SIM105", "RUF001", "RUF002", "RUF003"]
 # Shell/PowerShell fixtures are verbatim dialect text; unicode rules don't apply.
 "tests/*" = ["B011"]
 "skeletonkey/shells/dialect.py" = ["RUF001"]
+# live:* playground demos run inside the LiveREPL: `canvas` (and friends) is
+# injected by the runtime, so the file is intentionally not standalone.
+"examples/live_hmr/*.py" = ["F821"]
 
 [tool.mypy]
 python_version = "3.11"
