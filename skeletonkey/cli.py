@@ -120,6 +120,32 @@ def main(argv: list[str] | None = None) -> int:
     pb.add_argument("--packaging", default="", help="with testers: packaging key (from pub.packaging)")
     pb.add_argument("--version", default="", help="with testers: version label for the plan")
 
+    lv = sub.add_parser("live", help="Python HMR: live.start/repl/patch/reload + preview panel")
+    lv.add_argument("action", choices=["start", "stop", "status", "reload", "patch", "repl",
+                                       "state", "snapshot", "restore", "render", "scene",
+                                       "serve", "demo"])
+    lv.add_argument("arg", nargs="?", default="",
+                    help="path (start/demo target dir), program id (stop), code (repl/patch), "
+                         "snapshot name, or a JSON object (scene)")
+    lv.add_argument("--program", default=None)
+    lv.add_argument("--pid", dest="program", help=argparse.SUPPRESS)   # alias
+    lv.add_argument("--name", default=None, help="patch: the def/class name the code defines")
+    lv.add_argument("--file", default=None, help="patch: read code from file ('-' for stdin)")
+    lv.add_argument("--mode", default="auto", choices=["auto", "eval", "exec"])
+    lv.add_argument("--no-watch", action="store_true")
+    lv.add_argument("--no-render", action="store_true")
+    lv.add_argument("--keys", default=None, help="state: comma-separated names")
+    lv.add_argument("--force-source", default=None,
+                    help="reload: comma-separated names that take the file's value")
+    lv.add_argument("--svg", action="store_true", help="render: print the SVG frame")
+    lv.add_argument("--host", default=None, help="serve/demo: bind host (0.0.0.0 for sandboxes)")
+    lv.add_argument("--port", type=int, default=None, help="serve/demo: port (0 = ephemeral)")
+    lv.add_argument("--via-panel", action="store_true",
+                    help="drive the already-running panel process over HTTP instead of this "
+                         "short-lived process (live state is per-process; the panel owns it)")
+    lv.add_argument("--wait", action="store_true",
+                    help="serve/demo: keep this process (and the panel+watcher) alive")
+
     sub.add_parser("describe", help="full toolkit/assembly report")
     e = sub.add_parser("call", help="call any tool directly: sk call <tool> '<json args>'")
     e.add_argument("tool")
@@ -178,6 +204,8 @@ def _dispatch(args: argparse.Namespace, tk: Any, call: Any, cfg: Config) -> int:
     if cmd == "describe":
         print(pretty_json(tk.describe()))
         return 0
+    if cmd == "live":
+        return _live(args, tk, call, cfg)
     if cmd == "profile":
         return _emit(call("profile.probe", {"force": bool(args.force),
                                             "include_receipts": bool(args.receipts)}), json_out=args.json)
@@ -382,6 +410,302 @@ def _dispatch(args: argparse.Namespace, tk: Any, call: Any, cfg: Config) -> int:
     if act == "undo-task":
         return _emit(call("fs.undo_task", {"task_id": rest[0]}), json_out=args.json)
     return _emit(call("fs.journal_list", {}), json_out=args.json)
+
+
+def _live(args: argparse.Namespace, tk: Any, call: Any, cfg: Config) -> int:
+    """`sk live` - one CLI surface over the live.* tools (nothing the engine
+    cannot do; the CLI just picks the envelopes).
+
+    Live state is per-process: `sk live start` then `sk live repl` as separate
+    invocations are two processes. For one-shot control of a persistent live
+    session, use `--via-panel` (talks to a served panel's HTTP controls), or
+    keep a host alive (`sk live demo`, `sk mcp`)."""
+    act = args.action
+    pid = args.program
+    if args.via_panel:
+        return _live_via_panel(args, cfg)
+
+    if act == "demo":
+        return _live_demo(args, tk, call, cfg)
+    if act == "status":
+        return _emit(call("live.status", {"history": True}), json_out=args.json)
+    if act == "start":
+        if not args.arg:
+            print("usage: sk live start <path> [--no-watch]", file=sys.stderr)
+            return 2
+        a = {"path": args.arg, "watch": not args.no_watch,
+             "auto_render": not args.no_render}
+        if pid:
+            a["program"] = pid
+        res = call("live.start", a)
+        _maybe_serve_hint(res, args, call)
+        return _emit(res, json_out=args.json)
+    if act == "stop":
+        return _emit(call("live.stop", ({"program": pid or args.arg} if (pid or args.arg) else {})),
+                     json_out=args.json)
+    if act == "reload":
+        a: dict[str, Any] = {}
+        if pid:
+            a["program"] = pid
+        if args.force_source:
+            a["force_source"] = [s.strip() for s in args.force_source.split(",") if s.strip()]
+        return _emit(call("live.reload", a), json_out=args.json)
+    if act == "patch":
+        code = args.arg or ""
+        if args.file:
+            if args.file == "-":
+                code = sys.stdin.read()
+            else:
+                with open(args.file, encoding="utf-8") as fh:
+                    code = fh.read()
+        if not (args.name and code):
+            print("usage: sk live patch <code> --name render   (or --file patch.py)", file=sys.stderr)
+            return 2
+        a = {"name": args.name, "code": code, "render": not args.no_render}
+        if pid:
+            a["program"] = pid
+        return _emit(call("live.patch", a), json_out=args.json)
+    if act == "repl":
+        code = args.arg if args.arg else sys.stdin.read()
+        if not code.strip():
+            print("usage: sk live repl '<code>'", file=sys.stderr)
+            return 2
+        a = {"code": code, "mode": args.mode, "render": not args.no_render}
+        if pid:
+            a["program"] = pid
+        return _emit(call("live.repl", a), json_out=args.json)
+    if act == "state":
+        a = {"program": pid} if pid else {}
+        if args.keys:
+            a["keys"] = [s.strip() for s in args.keys.split(",") if s.strip()]
+        return _emit(call("live.state", a), json_out=args.json)
+    if act == "snapshot":
+        if not args.arg:
+            print("usage: sk live snapshot <name>", file=sys.stderr)
+            return 2
+        a = {"op": "save", "name": args.arg}
+        if pid:
+            a["program"] = pid
+        return _emit(call("live.snapshot", a), json_out=args.json)
+    if act == "restore":
+        if not args.arg:
+            print("usage: sk live restore <name>", file=sys.stderr)
+            return 2
+        a = {"op": "restore", "name": args.arg}
+        if pid:
+            a["program"] = pid
+        return _emit(call("live.snapshot", a), json_out=args.json)
+    if act == "render":
+        a = {"svg": bool(args.svg)}
+        if pid:
+            a["program"] = pid
+        res = call("live.render", a)
+        if args.svg and not args.json:
+            d = res.to_dict(max_bytes=None)
+            if res.ok and isinstance(d.get("data"), dict) and "svg" in d["data"]:
+                sys.stdout.write(d["data"]["svg"] + "\n")
+                return 0
+        return _emit(res, json_out=args.json)
+    if act == "scene":
+        try:
+            payload = json.loads(args.arg) if args.arg.strip() else {"op": "list"}
+        except ValueError as exc:
+            print(f"invalid json: {exc}", file=sys.stderr)
+            return 2
+        if pid:
+            payload["program"] = pid
+        return _emit(call("live.scene", payload), json_out=args.json)
+    if act == "serve":
+        if args.arg == "stop":
+            return _emit(call("live.serve", {"op": "stop"}), json_out=args.json)
+        a = {}
+        if args.host:
+            a["host"] = args.host
+        if args.port is not None:
+            a["port"] = args.port
+        res = call("live.serve", a)
+        if args.wait:
+            return _live_wait(res, args)
+        return _emit(res, json_out=args.json)
+    print(f"unknown live action {act!r}", file=sys.stderr)  # pragma: no cover
+    return 2
+
+
+def _maybe_serve_hint(res: Any, args: argparse.Namespace, call: Any) -> None:
+    """`sk live start` on a tty points at the panel so the loop is visible."""
+    if not args.json and res.ok:
+        d = res.to_dict(max_bytes=None).get("data") or {}
+        st = (d.get("status") or {})
+        if st.get("abs_path"):
+            print(f"  live: {st['id']} watching {st['path']} "
+                  f"({st.get('reloads', 0)} reloads)  -  panel: `sk live serve --wait`",
+                  file=sys.stderr)
+
+
+def _live_wait(res: Any, args: argparse.Namespace) -> int:
+    """Keep the process (watcher + panel threads are daemons) alive."""
+    import time
+
+    d = res.to_dict(max_bytes=None).get("data") or {}
+    if not res.ok:
+        return _emit(res, json_out=args.json)
+    print(f"  panel: {d.get('url')}  (Ctrl-C to stop)", file=sys.stderr)
+    try:
+        while True:
+            time.sleep(3600)
+    except KeyboardInterrupt:
+        return 0
+
+
+def _live_via_panel(args: argparse.Namespace, cfg: Config) -> int:
+    """One-shot commands against the running panel's HTTP controls.
+
+    The panel process is the one that owns live programs; this client just
+    speaks its JSON routes. Any answer decodes to stdout as-is."""
+    import urllib.error
+    import urllib.request
+
+    host = args.host or cfg.live.host
+    port = args.port if args.port is not None else cfg.live.port
+    base = f"http://{host}:{port}"
+    pid = args.program
+
+    def _post(route: str, payload: dict[str, Any]) -> dict[str, Any]:
+        req = urllib.request.Request(base + route, data=json.dumps(payload).encode(),
+                                     headers={"Content-Type": "application/json"},
+                                     method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                return json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            try:
+                return json.loads(e.read())
+            except Exception:
+                return {"ok": False, "error": f"panel answered HTTP {e.code}"}
+        except OSError as e:
+            return {"ok": False,
+                    "error": f"panel unreachable at {base} ({e}) - is `sk live serve "
+                             "--wait` or `sk live demo` running?"}
+
+    def _get(route: str) -> Any:
+        try:
+            with urllib.request.urlopen(base + route, timeout=30) as r:
+                return json.loads(r.read())
+        except OSError as e:
+            return {"ok": False, "error": f"panel unreachable at {base} ({e})"}
+
+    def _emit_panel(obj: Any) -> int:
+        ok = bool(obj.get("ok", True)) if isinstance(obj, dict) else True
+        if args.json:
+            print(compact_json(obj))
+        else:
+            print(pretty_json(obj))
+        return 0 if ok else 1
+
+    def _ctl(action: str, extra: dict[str, Any] | None = None) -> dict[str, Any]:
+        body: dict[str, Any] = {"action": action, **(extra or {})}
+        if pid:
+            body["program"] = pid
+        return _post("/api/control", body)
+
+    act = args.action
+    if act == "status":
+        return _emit_panel(_get("/version"))
+    if act == "start":
+        if not args.arg:
+            print("usage: sk live start <path> --via-panel", file=sys.stderr)
+            return 2
+        return _emit_panel(_ctl("start", {"path": args.arg, "watch": not args.no_watch,
+                                          "auto_render": not args.no_render}))
+    if act == "stop":
+        body: dict[str, Any] = {"action": "stop"}
+        if pid or args.arg:
+            body["program"] = pid or args.arg
+        return _emit_panel(_post("/api/control", body))
+    if act == "reload":
+        extra: dict[str, Any] = {}
+        if args.force_source:
+            extra["force_source"] = [s.strip() for s in args.force_source.split(",") if s.strip()]
+        return _emit_panel(_ctl("reload", extra))
+    if act == "patch":
+        code = args.arg or ""
+        if args.file:
+            if args.file == "-":
+                code = sys.stdin.read()
+            else:
+                with open(args.file, encoding="utf-8") as fh:
+                    code = fh.read()
+        if not (args.name and code):
+            print("usage: sk live patch <code> --name render --via-panel", file=sys.stderr)
+            return 2
+        return _emit_panel(_ctl("patch", {"name": args.name, "code": code}))
+    if act == "repl":
+        code = args.arg if args.arg else sys.stdin.read()
+        if not code.strip():
+            print("usage: sk live repl '<code>' --via-panel", file=sys.stderr)
+            return 2
+        body = {"code": code, "mode": args.mode, "render": not args.no_render}
+        if pid:
+            body["program"] = pid
+        return _emit_panel(_post("/repl", body))
+    if act == "state":
+        route = "/state" + (f"?program={pid}" if pid else "")
+        out = _get(route)
+        if args.keys and isinstance(out, dict) and "names" in out:
+            wanted = {s.strip() for s in args.keys.split(",") if s.strip()}
+            out["names"] = {k: v for k, v in out["names"].items() if k in wanted}
+        return _emit_panel(out)
+    if act == "snapshot":
+        return _emit_panel(_ctl("save_snapshot", {"name": args.arg}))
+    if act == "restore":
+        return _emit_panel(_ctl("restore_snapshot", {"name": args.arg}))
+    if act == "render":
+        if args.svg:
+            try:
+                with urllib.request.urlopen(base + "/frame.svg", timeout=30) as r:
+                    sys.stdout.write(r.read().decode("utf-8", "replace") + "\n")
+                return 0
+            except OSError as e:
+                print(f"panel unreachable at {base} ({e})", file=sys.stderr)
+                return 1
+        return _emit_panel(_ctl("render", {}))
+    print(f"--via-panel is not meaningful for `sk live {act}`", file=sys.stderr)
+    return 2
+
+
+def _live_demo(args: argparse.Namespace, tk: Any, call: Any, cfg: Config) -> int:
+    """`sk live demo`: materialise the orbital playground into the workspace
+    (journaled fs.write - undoable), start it watched, and serve the panel.
+    One command = the whole HMR loop visible in a browser."""
+    from .live.demos import ORBITAL_SRC
+
+    target_dir = args.arg or os.path.join(cfg.workspace, "live_playground")
+    cfg_abs = os.path.abspath(target_dir)
+    mk = call("fs.mkdir", {"path": cfg_abs})
+    if not mk.ok:
+        return _emit(mk, json_out=args.json)
+    prog_path = os.path.join(cfg_abs, "orbital.py")
+    wr = call("fs.write", {"path": prog_path, "content": ORBITAL_SRC})
+    if not wr.ok:
+        return _emit(wr, json_out=args.json)
+    start = call("live.start", {"path": prog_path, "program": "demo"})
+    if not start.ok:
+        return _emit(start, json_out=args.json)
+    a: dict[str, Any] = {}
+    if args.host:
+        a["host"] = args.host
+    if args.port is not None:
+        a["port"] = args.port
+    panel = call("live.serve", a)
+    if not panel.ok:
+        return _emit(panel, json_out=args.json)
+    url = (panel.to_dict(max_bytes=None).get("data") or {}).get("url")
+    print("  LiveREPL HMR demo is up:", file=sys.stderr)
+    print(f"    program : {prog_path}", file=sys.stderr)
+    print(f"    panel   : {url}", file=sys.stderr)
+    print("    try     : edit the file and save, or in the panel REPL:  hue = \"#f2cc60\"",
+          file=sys.stderr)
+    return _live_wait(panel, args)
 
 
 if __name__ == "__main__":  # pragma: no cover
