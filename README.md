@@ -50,6 +50,7 @@ tk.engine.call("shell.run", {"script": 'printf "[%s]" "$@"', "dialect": "bash",
 | `pub.*` | 9 | publishing: write-only credential store (store_put/store_list/store_delete), `{{PUB.<id>}}` placeholder scan + journaled injection (placeholders/inject), platform/payment/packaging knowledge (platforms/payments/packaging), AI-executable release test plans (testers) |
 | `policy.grant` | 1 | record an approval grant; returns a receipt, and a self-grant is itself gated |
 | `profile.probe` | 1 | host capability detection with receipts |
+| `remote.*` | 0 by default | other MCP servers under `[mcp.remotes.<name>]`, enrolled as `remote.<server>.<tool>` (risk inherited, error codes pass through) |
 
 50 registered, 48 advertised, ~4.8 k tokens of advertisement at the default `full` tier
 (11 tools / 0.9 k at `core`, 38 / 3.5 k at `task`). Every call returns the same

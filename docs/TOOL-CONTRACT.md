@@ -146,6 +146,8 @@ Codes an author must know how to produce:
 | `NOT_IMPLEMENTED` | declared but unbuilt (skill stubs), journal off | `config` key to flip |
 | `UNSUPPORTED_PLATFORM` | the OS genuinely lacks it (chmod on ACL-only hosts) | `os`, `alternative` |
 | `NONZERO_EXIT` | a process failed | `exit_code`, `stdout_tail`, `stderr_tail` |
+| `REMOTE` | an upstream MCP server reported an error (non-SkeletonKey) | `server`, `remote_message`, `remote_code` |
+| `DEPENDENCY_MISSING` | the `mcp` extra / a remote server's transport failed | `server`, `command` |
 | `IO`, `INTERNAL` | everything else | `trace_id` |
 
 Every refusal names the fix. "Permission denied" without an advice string is a bug.
@@ -460,6 +462,43 @@ guess.
   `notifications/tools/list_changed` on the session that made the call — the next
   `tools/list` on that session already carries the new set, and unchanged advertisement
   never re-notifies. Hosts that only poll `tools/list` still converge.
+
+## 7f. Remote MCP servers (`mcp.remotes`, ADR-0013)
+
+Other MCP servers join the surface as tools without their own adapter:
+
+- **Config is explicit.** `[mcp.remotes.<name>]` with `command` + `args` (stdio) or
+  `url` (streamable-http), `enabled`, `timeout_s`. Names match `[a-z0-9][a-z0-9_-]{0,31}`;
+  exactly one of command/url; unknown keys and malformed specs are config errors —
+  never ignored. There is no auto-discovery and no env-var implicit server.
+- **Identity is honest.** `remote.<server>.<tool>`; `group: "remote"`;
+  `source`/`provider: "remote:<server>"`; `capability` = the tool's own id (no provider
+  race with local tools — a remote `fs.search` and the local one both stay callable by
+  name).
+- **Risk is inherited, never lowered.** `readOnlyHint: true` ⇒ `risk: "read"`;
+  `destructiveHint: true` ⇒ `risk: "write"`; **absent ⇒ `risk: "write"`** (approval gates
+  an unannotated foreign call). `reversible: false` (its mutations are outside our
+  journal), `stateful: "host"` (the remote owns state — never `none`), `idempotent:
+  false`, `parallel_safe: false`, `tier: "full"`.
+- **Errors pass through.** A skeletonkey-shaped remote result returns exactly the
+  remote's envelope: its `error.code` (e.g. `BAD_ARGS`), message, hint and `details`
+  arrive untranslated — the outer envelope only renames the tool for attribution. A
+  remote error that is not skeletonkey-shaped maps to `REMOTE` with `server` +
+  `remote_message` (+ `remote_code` when the server sent one); a transport/probe
+  failure maps to `DEPENDENCY_MISSING` with `server` and `command`. Never `INTERNAL`.
+- **Enrollment is visible.** A server that fails to connect, handshake or list tools is
+  a `load_errors` entry (with `server`, `stage`, and the reason) and a row in the build
+  report — as a host you see *why* `remote.<server>.*` is absent, and no remote tool is
+  ever advertised without its server having answered `tools/list`. Disabled servers
+  are reported, not skipped.
+- **Trust boundary.** Remote calls pass through the local gate/policy/approval/budget/
+  ledger *around* the call (attribution, budget, audit) but not *inside* it — the remote
+  server enforces its own policy. A remote tool is only as trustworthy as its server:
+  this is an aggregation layer for infrastructure, not a security boundary.
+- **Stats stay separable.** Every `registry.stats` row carries `source`
+  (`builtin` / `remote:<server>` / a drop-in's `source`); `registry.stats
+  {source: "remote:<server>"}` filters, `stats_by_source` groups, and
+  `registry.stats` (no args) returns the grouped view under `by_source`.
 
 ## 8. Adding a tool
 

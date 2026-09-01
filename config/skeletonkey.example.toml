@@ -164,6 +164,19 @@ emit_list_changed = true
 structured_content = true          # our envelope in result.structuredContent
 log_to_stderr = false              # stdout is the protocol channel; keep it that way
 
+# P5b (ADR-0013): other MCP servers appear as `remote.<name>.<tool>`. Nothing is
+# discovered implicitly. Enrolled at build time; a server that fails to start is
+# reported in registry.stats -> overview.load_errors, never silently absent.
+#
+# [mcp.remotes.archive]
+# command = "/usr/bin/env"          # stdio server
+# args = ["python", "-m", "some.mcp.server", "--cwd", "/srv/archive"]
+# enabled = true
+# timeout_s = 30
+#
+# [mcp.remotes.catalog]
+# url = "https://tools.example.com/mcp"   # streamable-http server
+
 # -------------------------------------------------------------------- state
 [state]
 dir = ".sk"                        # journal, ledger, profile cache, spill, shell scratch

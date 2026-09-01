@@ -27,5 +27,12 @@ provider won and why. Two honest answers the explain tool will give:
   tool it saw before. `registry.list` reports `tier`/`active_tier` plus the
   receipts.
 
+**Remote tools** — a configured `[mcp.remotes.<server>]` shows up as
+`remote.<server>.<tool>` with `source: "remote:<server>"` and honest risk
+(unannotated ⇒ `write`, so approval gates it). The remote's error code passes
+through untouched; `registry.stats {source: "remote:<server>"}` isolates its
+rows. A remote server that failed to start is never advertised, and the reason
+is in `registry.stats` → `overview.load_errors`.
+
 Tiers govern *advertisement*, never authorization: a tool hidden by tier still
 works if you call it by id. Only a gate can refuse a call.

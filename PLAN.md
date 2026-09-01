@@ -550,7 +550,7 @@ between them.
 `rg`-absent provider-fallback assertion; plus the semantic land that makes AC2 a real
 two-stage comparison instead of a statement about absence. All three are P5b, below.
 
-#### P5b — Semantic stage live, aggregation (shipped when the connector lands)
+#### P5b — Semantic stage live, aggregation (shipped)
 
 **Goal.** Turn AC2 into a real two-stage comparison and finish AC4/AC5: a zero-dependency
 semantic stage, honest `fs.search` provider fallback, and the `mcp.client` connector.
@@ -571,7 +571,7 @@ semantic stage, honest `fs.search` provider fallback, and the `mcp.client` conne
   walker: `metrics.provider == "python"` and a `warnings` entry naming the fallback.
   `prefer="ripgrep"` still raises `MISSING_BINARY` — an explicit preference is never
   silently substituted.
-- **`mcp.client` connector (original AC4, ADR-0013, next).** Servers configured under
+- **`mcp.client` connector (original AC4, ADR-0013, shipped).** Servers configured under
   `[mcp.remotes.<name>]` (`command`/`args` for stdio, `url` for streamable-http) appear as
   `remote.<name>.<tool>` manifests: risk inherited from remote tool annotations
   (unannotated ⇒ `write`, so approval still gates), `reversible: false`,
