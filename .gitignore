@@ -221,3 +221,6 @@ __marimo__/
 # pre-edit bytes), spill artifacts and rendered shell payloads. Never commit it.
 .sk/
 *.sk/
+
+# sk live demo scratch (a journaled playground the demo materializes in your workspace)
+live_playground/

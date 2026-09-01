@@ -44,6 +44,7 @@ class Toolkit:
     skills: SkillLoader
     ledger: Ledger | None = None
     publish: PublishStore | None = None
+    live: Any = None                    # live.runtime.LiveManager (HMR subsystem)
     build_report: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -144,10 +145,14 @@ class Toolkit:
 
     def close(self) -> None:
         try:
-            self.engine.close()
+            if self.live is not None:
+                self.live.close()
         finally:
-            if self.ledger:
-                self.ledger.close()
+            try:
+                self.engine.close()
+            finally:
+                if self.ledger:
+                    self.ledger.close()
 
     def __enter__(self) -> Toolkit:
         return self
@@ -214,6 +219,13 @@ def build(*, config: Config | None = None, overrides: dict[str, Any] | None = No
     rep = builtin.register(registry, engine=engine, shells=shells, fs=fs, journal=journal,
                            publish=publish_store)
     report["builtin"] = rep
+    # 1b. the live HMR subsystem (docs/LIVE-HMR.md): one shared LiveManager
+    # so `sk`, MCP hosts and in-process callers all drive the same programs.
+    from .live import tools as live_tools
+    from .live.runtime import LiveManager
+
+    live_manager = LiveManager(cfg.live, sandbox=fs.sb)
+    report["live"] = live_tools.register(registry, manager=live_manager, engine=engine)
     # 2. skills -> tool manifests (declarative), and the skills.* tools themselves
     skills = SkillLoader(cfg.skills.dirs, max_body_bytes=cfg.skills.max_body_bytes,
                              profile=profile, respect_priority=cfg.skills.respect_priority,
@@ -245,7 +257,7 @@ def build(*, config: Config | None = None, overrides: dict[str, Any] | None = No
     report["registered_after_load"] = len(registry.all())
     return Toolkit(config=cfg, profile=profile, sandbox=sandbox, fs=fs, journal=journal, shells=shells,
                    registry=registry, engine=engine, skills=skills, ledger=ledger,
-                   publish=publish_store, build_report=report)
+                   publish=publish_store, live=live_manager, build_report=report)
 
 
 def _mk_overrides(overrides: dict[str, Any] | None, roots: list[str] | None,

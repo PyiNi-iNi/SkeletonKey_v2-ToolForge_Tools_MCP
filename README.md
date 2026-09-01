@@ -48,11 +48,12 @@ tk.engine.call("shell.run", {"script": 'printf "[%s]" "$@"', "dialect": "bash",
 | `capabilities.*` | 1 | explain — why a capability is gated here, with the provider receipt |
 | `skills.*` | 5 | list/load/match/install/uninstall — progressive disclosure, plus a skill that ships a script becoming a callable tool |
 | `pub.*` | 9 | publishing: write-only credential store (store_put/store_list/store_delete), `{{PUB.<id>}}` placeholder scan + journaled injection (placeholders/inject), platform/payment/packaging knowledge (platforms/payments/packaging), AI-executable release test plans (testers) |
+| `live.*` | 11 | Python HMR over a LiveREPL: start/stop, transactional hot-reload (in-place function/class patch, 3-way state merge), repl/state/snapshot, retained 2D+3D scene render, and an HTTP preview panel with an in-page REPL + agent debugger |
 | `policy.grant` | 1 | record an approval grant; returns a receipt, and a self-grant is itself gated |
 | `profile.probe` | 1 | host capability detection with receipts |
 | `remote.*` | 0 by default | other MCP servers under `[mcp.remotes.<name>]`, enrolled as `remote.<server>.<tool>` (risk inherited, error codes pass through) |
 
-50 registered, 48 advertised, ~4.8 k tokens of advertisement at the default `full` tier
+61 registered, 59 advertised, ~6.4 k tokens of advertisement at the default `full` tier
 (11 tools / 0.9 k at `core`, 38 / 3.5 k at `task`). Every call returns the same
 envelope and the same error taxonomy: see
 [`docs/TOOL-CONTRACT.md`](docs/TOOL-CONTRACT.md). The two not advertised are
@@ -60,7 +61,14 @@ envelope and the same error taxonomy: see
 (gated until `skills.allow_install = true`) — both stay *registered* and
 `registry.describe`/`capabilities.explain` say exactly why.
 
-Two of the 50 are **synthesized from a skill pack**, which is the part a toolset usually makes
+```console
+$ sk live demo                        # materialize a playground program + watch it + serve the panel
+$ sk live repl 'hue = "#f2cc60"' --via-panel --port 8010   # one-shot mutate of the running program
+$ sk live patch --name render --file new_render.py --via-panel   # hot-swap code without touching disk
+$ sk live reload --force-source hue --via-panel   # hand one name back to the file after REPL experiments
+```
+
+Two of the 61 are **synthesized from a skill pack**, which is the part a toolset usually makes
 you code: `skills/shell-crossplatform/tool.toml` declares `shell.quote_check` with an inline
 handler body and `shell.selftest` with `scripts/selftest.sh` (+ a PowerShell sibling), and the
 compiler turns each into a manifest whose handler runs one script through `shell.run`'s
@@ -80,6 +88,8 @@ $ sk call skill.my-skill.wordcount '{"path": "notes.txt"}'
 | --- | --- |
 | [`PLAN.md`](PLAN.md) | you want the phase plan, risk register, non-goals |
 | [`docs/TOOL-CONTRACT.md`](docs/TOOL-CONTRACT.md) | you are adding or calling a tool |
+| [`docs/LIVE-HMR.md`](docs/LIVE-HMR.md) | you are driving a live program (HMR semantics, state merge law, panel routes) |
+| [`docs/LIVE-IMPL-PLAN.md`](docs/LIVE-IMPL-PLAN.md) | you want the blueprint → repo build order for the live subsystem |
 | [`docs/SHELL-DIALECTS.md`](docs/SHELL-DIALECTS.md) | bash vs pwsh vs python behaviour |
 | [`docs/SKILLS-SPEC.md`](docs/SKILLS-SPEC.md) | you are writing a `SKILL.md` |
 | [`docs/SECURITY-MODEL.md`](docs/SECURITY-MODEL.md) | you need to know what is and is *not* enforced |

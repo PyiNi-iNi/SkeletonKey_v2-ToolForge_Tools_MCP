@@ -32,8 +32,8 @@ assert DOC_FILES, "the docs the suite checks disappeared"
 # `{count, matches}`" from being misread as a call signature.
 CALL_RE = re.compile(r"`([a-z][a-z0-9_]*(?:\.[a-z0-9_]+)+)[ \t]*\{([^`]*)\}`")
 # A bare dotted name in the namespaces that belong to us.
-BARE_RE = re.compile(r"`((?:fs|shell|registry|skills|profile|toolkit)\.[a-z_][a-z0-9_]*)`")
-CONFIG_RE = re.compile(r"`((?:fs|policy|budget|shell|skills|state|tools|mcp)\.[a-z_][a-z0-9_]*)`")
+BARE_RE = re.compile(r"`((?:fs|shell|registry|skills|profile|toolkit|live)\.[a-z_][a-z0-9_]*)`")
+CONFIG_RE = re.compile(r"`((?:fs|policy|budget|shell|skills|state|tools|mcp|live)\.[a-z_][a-z0-9_]*)`")
 
 # `Engine.call` keyword arguments, which docs legitimately write next to tool arguments.
 ENGINE_KWARGS = {"ctx", "dry_run", "max_output_bytes", "idempotency_key", "approval_token",

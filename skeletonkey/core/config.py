@@ -218,6 +218,31 @@ class PublishConfig:
 
 
 @dataclass
+class LiveConfig:
+    """The `live.*` group (docs/LIVE-HMR.md): Python HMR over a LiveREPL.
+
+    Executing code is the whole point of start/repl/patch, so those tools are
+    risk=write like shell.run and obey the same policy surface (deny rules,
+    read_only, approvals, tools.disable). The knobs here are resource and
+    panel shaping, not trust decisions."""
+    enabled: bool = True                  # false = the live.* tools refuse (like a gate)
+    watch_interval_s: float = 0.35        # polling baseline; watchfiles backend ignores this
+    debounce_ms: int = 120                # editor save-storm collapsing window
+    max_programs: int = 8
+    max_source_bytes: int = 400_000
+    exec_guard_s: float = 10.0            # wall-clock leash on repl/patch/reload bodies
+    repl_max_output_bytes: int = 16_000
+    state_value_max_repr: int = 400
+    snapshots_max: int = 16
+    auto_render: bool = True              # render() after every mutation by default
+    # the preview panel (live.serve). POST /repl executes code: loopback by
+    # default, and panel_repl=false turns the page into a read-only viewer.
+    host: str = "127.0.0.1"
+    port: int = 8010
+    panel_repl: bool = True
+
+
+@dataclass
 class Config:
     roots: list[str] = field(default_factory=list)
     cwd: str = ""
@@ -232,6 +257,7 @@ class Config:
     mcp: McpConfig = field(default_factory=McpConfig)
     state: StateConfig = field(default_factory=StateConfig)
     publish: PublishConfig = field(default_factory=PublishConfig)
+    live: LiveConfig = field(default_factory=LiveConfig)
     log_level: str = "WARNING"
     source_files: list[str] = field(default_factory=list)
     overrides_applied: list[str] = field(default_factory=list)

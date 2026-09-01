@@ -15,11 +15,12 @@ sk skills install ./my-skill      # an agent-authored tool, in this process
 python -m skeletonkey.mcp         # stdio server: 33 tools, prompts, resources
 ```
 
-Measured on this box: 37 tools registered / 35 advertised / **3 038 tokens** of
-advertisement (`digest 3206898a746f3fde`), 10 probed capabilities, 4 skills discovered
-(one of them shipping two scripts that compile into callable tools), 0 load errors. Code:
-12 678 lines in `skeletonkey/`, 16 test modules (551 passing, 3 skipped,
-1 xfailed), 2 450 lines of docs (this plan, four contract docs, README; eight ADRs). No workflow file is committed on this branch — the pushing token
+Measured on this box: 56 tools registered / 55 advertised / **5 899 tokens** of
+advertisement (`digest d3139e78632b35f3`), 10 probed capabilities, 5 skills discovered
+(two of them shipping scripts that compile into callable tools), 0 load errors. Code:
+18 328 lines in `skeletonkey/`, 20 test modules (659 passing, 3 skipped,
+1 xfailed), ~3 450 lines of docs (this plan, six contract/reference docs, README, handoff;
+eleven ADRs). No workflow file is committed on this branch — the pushing token
 cannot write to `.github/workflows/` — and the pipeline is specified in §6 for whoever
 lands it (one command reproduces it locally: `ruff check . && pytest -q -m "not slow"`).
 
@@ -761,8 +762,11 @@ silent-ish failure).
 | 0007 | Values are `argv`, never interpolated text; quoting is a separate explicit tool | accepted |
 | 0008 | Policy is data; approval is a tool with a receipt; undo is a precondition | accepted |
 | 0009 | Replay proves the turn: explicit normalization, `stateful` means loose, mutations retire cached reads | accepted |
-| 0010 | The publish store is write-only: no tool returns a raw value, injection is the only flow | accepted |
-| 0011 | Discovery is tiers + receipts: every ranking decision is exposed, the default advertisement is unchanged | accepted |
+| 0010 | Publish store is write-only; location is the wall, injection is the only door | accepted |
+| 0011 | Live HMR: in-place code swap + 3-way state merge; zero-dep watcher; panel over plain HTTP/SVG/JSON | accepted |
+| 0012 | The semantic routing backend is a zero-dependency deterministic scorer (`lexical-tfidf`) | accepted |
+| 0013 | Remote MCP tools are pass-through with inherited risk and un-wrapped errors | accepted |
+| 0014 | Discovery is tiers + receipts: every ranking decision is exposed, the default advertisement is unchanged (register entry; contract in TOOL-CONTRACT §7e) | accepted |
 
 `docs/adr/` holds the full text of each, with the options rejected and the observable
 consequence (usually a test id).

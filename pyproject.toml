@@ -82,6 +82,9 @@ ignore = ["E501", "RET504", "SIM105", "RUF001", "RUF002", "RUF003"]
 # Shell/PowerShell fixtures are verbatim dialect text; unicode rules don't apply.
 "tests/*" = ["B011"]
 "skeletonkey/shells/dialect.py" = ["RUF001"]
+# live:* playground demos run inside the LiveREPL: `canvas` (and friends) is
+# injected by the runtime, so the file is intentionally not standalone.
+"examples/live_hmr/*.py" = ["F821"]
 
 [tool.mypy]
 python_version = "3.11"

@@ -1,193 +1,185 @@
-# HANDOFF — SkeletonKey / ToolForge v2 (P5 shipped → P6)
+# HANDOFF — SkeletonKey / ToolForge v2 (P5 + live.* shipped → P6)
 
-Session `arena/01a05a44-skeletonkey-v2-toolforge-tools` · 2026-09-01.
-Written by the agent that shipped **P5** (P5a discovery at scale + P5b semantic stage,
-`fs.search` fallback honesty, `mcp.client` aggregation), for the session that starts
-**P6** (distribution + hardening) and then P7 (Windows frontier spike). Read `PLAN.md`
-for the roadmap and `docs/` for the contracts; this file is the *transfer* — state, next
-steps, ideas, and landmines. The P3→P5a handoff is superseded by this one; standing
-constraints are carried in §7.
+Session `arena/01a05a44-skeletonkey-v2-toolforge-tools` · 2026-09-01 (America/Chicago).
+Written after merging **P5** (this session: discovery at scale + semantic stage + remote
+MCP aggregation) with the **live.\*** subsystem (parallel session `arena/01a05ad1`, merged
+to main as PRs #3/#4) — the tree in `main` now carries both. For the session that starts
+**P6** (distribution + hardening). Read `PLAN.md` for the roadmap, `docs/` for the
+contracts; this file is the *transfer* — state, next steps, and landmines. It supersedes
+both previous handoffs; standing constraints are collected in §7.
 
 **Agent / model provenance.** The harness is **Arena.ai Agent Mode** (repo-cloned sandbox,
-bash + file tools, auto-saved turns). It is not attributable to a single base model:
-Arena's Agent Mode draws on many (Claude, ChatGPT, Gemini, Grok, Qwen, Kimi, …), and no
-specific one was recorded or should be assumed. Everything below was measured against the
+bash + file tools, auto-saved turns). Not attributable to a single base model: Arena's
+Agent Mode draws on many (Claude, ChatGPT, Gemini, Grok, Qwen, Kimi, …), and no specific
+one was recorded or should be assumed. Everything below was measured against the merged
 tree at handoff, not remembered: re-measure before you restate it.
 
 ---
 
-## 1. State on handoff
+## 1. State on handoff (merged `main`)
 
 | | |
 | --- | --- |
-| Branch | `arena/01a05a44-skeletonkey-v2-toolforge-tools` — **push only here** |
-| HEAD | `d8e1dbb` (pushed). P5 commits: `873de6f` (P5a spec), `4e9a1c3` (P5a core), `7dc1e19` (P5a tools+wiring), `2d43528` (docs), `f2a5641` (skills), `84f2ae8` (handoff), `c8621bb` (P5b spec+ADRs), `b08ca56` (semantic), `ce76ddf` (fs.search fallback), `d8e1dbb` (mcp.client) |
-| main | still at `6ad120e` — **all of P5 is on the arena branch, not merged**; merge + review is yours (see §3.4) |
-| Test suite | **651 passed, 3 skipped, 1 xfailed** in ~60 s (`pytest -q` exit 0) |
-| Ruff | clean |
-| Venv | repo `.venv`: mcp 2.1.1, pytest, ruff, pyyaml, **package installed editable** (`pip install -e .`) — needed so remote *child* servers (`python -m skeletonkey.mcp`) resolve from any cwd. No watchfiles (its absence is the tested state) |
-| Registered tools | **50** (repo-root build, no remotes) |
-| Advertised (default `full`) | **48** tools, **4752** tokens; per-tier core 11/945, task 38/3482 |
-| Route hit-rate | 25/25 (1.000) at k=5; **semantic stage reorders 13/25 eval tasks** and keeps 25/25 (AC2 now real, both asserted) |
-| Remote tests | engine level `tests/test_remotes.py` (8) + wire level 2 in `tests/test_mcp_stdio.py` — all green |
-| Docs | TOOL-CONTRACT §7e (P5a) + §7f (remote, ADR-0013), §3 `REMOTE`; ADR-0012 (semantic), ADR-0013 (remote); README updated |
+| Branch | `arena/01a05a44-skeletonkey-v2-toolforge-tools` — this session's branch; P5 PR against `main` is being merged (house style: `--merge`, branch kept) |
+| `main` | `a9c9222` (merge PR #4). History: #2 (P3–P4b) → #3/#4 (`live.*`, branch `01a05ad1`) → **#5 = P5** (this branch) |
+| Test suite | **701 passed, 3 skipped, 1 xfailed** in ~67 s; ruff clean (`ruff check .`; examples/live_hmr is per-file-ignored F821 — `canvas` is runtime-injected) |
+| Tools | **61 registered / 59 advertised / 6410 tokens** at default `full` (digest `05c88f0f77b7fd74`); core 11/945 (`94f7da59a9f9937a`), task 38/3482 (`34cd2f31d4af4484`) |
+| Groups | fs 16 · shell 11 · registry 6 · capabilities 1 · skills 5 · pub 9 · live 11 · policy.grant 1 · profile.probe 1 |
+| Gated | `shell.selftest` (skill-declared `advertised = false`), `skills.install` (`skills.allow_install`) |
+| Venv | repo `.venv`: mcp 2.1.1, pytest 9.1.1, ruff, pyyaml; **package installed editable** (`pip install -e .`) — required so remote *child* servers (`python -m skeletonkey.mcp`) import from any cwd. **No watchfiles** (absence is the tested state) |
+| Route | 25/25 @ k=5; semantic stage reorders 13/25 eval tasks, hit-rate intact |
+| Docs | ADR-0001…0011 (0011 = live HMR) + **0012** (semantic), **0013** (remote); TOOL-CONTRACT §7e (P5a), §7f (remote), §3 `REMOTE`; README measured 61/59; skills/fs-safe-refactor/references/discovery.md |
 
-## 2. What P5 actually is (one paragraph each, because it will be misrepresented)
+## 2. What the last two sessions actually shipped
 
-- **P5a — discovery at scale.** `tier` on every manifest (`core`/`task`/`full`, default
-  `full`; manifestation only, never authorization); tier-aware `registry.advertise` with
-  per-tier `[advertise]` budgets + honest `budget_drops`; `registry.active_tier` switched
-  by `registry.expand`; two-stage `registry.route {task, k, semantic}` (exact → lexical
-  with per-hit `reasons` → optional backend); `selection_receipts`/`provider_receipt` in
-  snapshots, `registry.list` rows, MCP `_meta`, and `capabilities.explain`; cursor
-  pagination on `registry.list` and MCP `tools/list` (opaque positional, page 100, bad
-  cursor → page 0); digest-driven `tools/list_changed` on the calling session.
-- **P5b — semantic stage (ADR-0012).** The core ships `lexical-tfidf` (pure stdlib,
-  TF-IDF cosine over words + char bigrams, micro-corpus idf, deterministic, versioned),
-  registered under the `skeletonkey.semantic` entry-point group (installed dists) and
-  resolved directly in dev checkouts; discovery dedupes by name and returns per-backend
-  `load_errors`. `tools.semantic = false` (default) keeps the lexical path untouched;
-  `semantic = true` blends normalized lexical + semantic 50/50 with an id tie-break and
-  reports `mode`/`backend`/`semantic_score`/`blend`. AC2 asserts both modes: same
-  candidate ids, reordering observed, hit-rate intact.
-- **P5b — `fs.search` fallback honesty.** Auto-selected ripgrep that vanished at call
-  time falls back to the built-in python walker: `data.provider` and
-  `metrics.provider == "python"`, a `warnings` entry naming the fallback, `data.notes`
-  for payload consumers. `prefer="ripgrep"` still raises `MISSING_BINARY`.
-- **P5b — `mcp.client` aggregation (ADR-0013).** `[mcp.remotes.<name>]` (command+args
-  stdio OR url; enabled; timeout_s) enrolls at build time as
-  `remote.<server>.<tool>`: risk inherited (`readOnlyHint` → read; unannotated ⇒
-  `write`, never lowered), `reversible: false`, `stateful: "host"`, `idempotent: false`,
-  `source/provider: "remote:<server>"`, unique capability, `tier: "full"`. Each server
-  runs one thread + its own asyncio loop (sync engine calls it; mcp imported lazily).
-  Skeletonkey-shaped remote envelopes pass through code-verbatim (BAD_ARGS stays
-  BAD_ARGS); foreign errors → `REMOTE` (new code); transport/probe → `DEPENDENCY_MISSING`;
-  connect/list failures → `load_errors` + build report, never a silent absence.
-  `registry.stats` rows carry `source`, `stats(source=...)` filters,
-  `stats_by_source()` groups.
+**P5 (this session).** (a) Tiers (`core`/`task`/`full`, manifestation only; per-tier
+budgets + honest `budget_drops`; `registry.expand` session switch; digest-driven
+`list_changed` over the wire). (b) Two-stage `registry.route` (exact → lexical with
+`reasons` → semantic), provider receipts in snapshots/`registry.list`/MCP `_meta`/
+`capabilities.explain`; cursor pagination on `registry.list` and MCP `tools/list`. (c)
+Semantic backend `lexical-tfidf` (pure stdlib TF-IDF cosine, entry-point registered,
+gated by `tools.semantic`; blends 50/50 with normalized lexical; deterministic; the
+*only* shipped backend — an embedding extra can be added behind the same protocol).
+(d) `fs.search` provider-fallback honesty (vanished `rg` → python walker with
+`metrics.provider` + a naming warning; `prefer` still raises `MISSING_BINARY`). (e)
+`mcp.client` connector (ADR-0013): `[mcp.remotes.<name>]` → `remote.<server>.<tool>`,
+risk inherited (unannotated ⇒ `write`), `reversible: false`/`stateful: "host"`, remote
+error codes verbatim (foreign → `REMOTE`), connect/list failures are `load_errors` +
+build report, stats rows carry `source` + `stats_by_source()`.
+
+**live.\*** (parallel session). Stdlib-only Python HMR: in-place `__code__`/method
+patch (identity + globals survive), transactional whole-file reload (parse + scratch-exec
+first; `__hmr_export_state__`/`__hmr_import_state__` hooks; `__live_keep__`, `__live_
+registries__`), per-name 3-way state merge (base/live/fresh), settrace wall-clock leash,
+watched same-tree dep hot-patch; retained scene graph → SVG/`mesh3d`/`cube3d` renderers;
+HTTP preview panel (`/`, `/view3d`, `/agents`) with in-page REPL + agent debugger via
+`POST /api/control` and `POST /repl` (`live.panel_repl = false` makes pages read-only;
+default bind loopback); `sk live <action> --via-panel` HTTP client mode. 11 tools:
+`live.start/stop/status/reload/patch/repl/state/snapshot/render/scene/serve`.
 
 ## 3. What is NOT done (and why)
 
-1. **Merged to main.** All five phases of P5 sit on the arena branch. PRs: the branch
-   was created from `main` at `6ad120e`; review (and merge `--merge` or squash) is the
-   next session's first job. Nothing on `main` has tiers/routing/remotes yet.
-2. **`ci.yml` still untracked** (`.github/workflows/ci.yml` exists; the GitHub App lacks
-   `workflows` permission so any push touching `.github/` is *rejected by design — don't
-   retry*). Jobs included: `core-constraint`, `test` 3.11/3.12, `lint`. Unblock: grant
-   the App `workflows`, user pushes it, or leave it (repo has no CI until then).
-3. **P6 is the next phase.** Distribution/hardening per PLAN §6 (Windows CI *before* P7
-   is the stated priority), plus the small open items below.
-4. **Optional quick wins not taken.** publish task in `tests/eval/suite.jsonl`; store
-   `expiry` + rotate doc; Windows NT chmod-0600 honesty test; `registry.explain_all`
-   (whole-surface gates in one call).
+1. **P6 not started** (PLAN §6): wheel/sdist releases + `pipx` story, `sk doctor` +
+   `--fix`, in-repo docs site (write-a-skill, connect-a-host), security pass (dependency
+   audit, sentinel/path property + bypass test matrix), **Windows CI runner** (turns
+   `@pytest.mark.win` skips into real checks).
+2. **`ci.yml` still un-landed.** GitHub App lacks the `workflows` permission — any push
+   touching `.github/` is rejected by design. Unblock: grant the App, or have the user
+   push `.github/workflows/ci.yml` (it is written and untracked in the checkout). Until
+   then the local repro is `ruff check . && pytest -q -m "not slow"`.
+3. **L4 live queue open** (docs/LIVE-IMPL-PLAN.md): (a) cross-package dep closure, (b)
+   panel scene-edits written back to source via journaled `fs.patch`, (c) per-viewer 3D
+   camera channels, (d) watchfiles parity tests (`skipif`; keep watchfiles absent), (e)
+   perf-budget slow-marker test.
+4. **Windows-only surfaces untested anywhere** (no win runner): `live.*` on `\\?\`/CRLF;
+   store CHMOD 0600's NT semantics; pwsh strict mode round-trips.
+5. Optional quick wins not taken: publish task in `tests/eval/suite.jsonl` + one replay
+   fixture; store `expiry`; `registry.explain_all` (whole-surface gates in one call).
 
 ## 4. Next steps (in order)
 
-1. **Merge P5 to main** (it is pushed and green; make sure `.github/` is excluded from
-   any commit before pushing — the branch currently has it untracked only).
-2. **Land `ci.yml`** once the App has `workflows` (or the user pushes it). Until then
-   "CI green" is a local claim.
-3. **Start P6 from PLAN.md §6.** Its first sub-step is Windows CI *before* P7's remote
-   Windows spike: a GitHub-hosted `windows-latest` job (if workflow permission arrives)
-   or a documented local Windows run; PowerShell assertions already self-skip off
-   Windows (`pwsh`/`powershell` probes), so a real Windows machine is the only gap.
-4. If P6 stalls, the highest-value leftover is the **publish eval task** and the
-   **Windows NT store-permission test** (§3.4) — both small, both close honesty gaps.
+1. Confirm the P5 PR merged cleanly on `main` (`gh pr view --mergeable`, then `git
+   ls-remote origin refs/heads/main`), then pull/rebase the next session's branch onto
+   it.
+2. Land `ci.yml` (permission or manual push) — same blocker; it gates nothing until then.
+3. **P6** per PLAN §6. First sub-step that needs no network/permission: `sk doctor` +
+   the zero-dep core-guarantee test (import `skeletonkey.core` with `site-packages`
+   hidden), then the security bypass matrix, then packaging/docs; Windows CI last (needs
+   the App permission anyway).
+4. If P6 stalls: L4(a) cross-package closure (acceptance ids in LIVE-IMPL-PLAN §L4) or
+   the tiny honesty wins in §3.5.
 
-## 5. Ideas (honest, prioritized — none are decided)
+## 5. How things run here (operational)
 
-- `capabilities.explain` is per-capability; a whole-surface `registry.explain_all`
-  (gates + receipts for everything in one call) would make the 200-tool world
-  debuggable from a prompt. Same data, one projection.
-- `route` could emit a compact "tool shortlist" block for the next prompt — it already
-  carries reasons; a UX decision for the autopilot loop, not a tool change.
-- Remote servers: `registry.route`/budgets currently treat remote tools like any
-  `full`-tier tool (they count toward caps); decide whether remote tools should ever
-  opt into `core`/`task` tiers when a server is trusted.
-- Do **not** build `pub.run_plan` (a loop concern, not a tool). Recorded again because
-  it keeps coming back.
+```bash
+python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"   # mcp+watch+dev; the sandbox
+#                         reinstall includes mcp for test_mcp_stdio.py and -e for remote children
+.venv/bin/pytest tests/ -q                       # 701 passed, 3 skipped, 1 xfailed
+.venv/bin/ruff check .                           # clean (examples/live_hmr F821 ignored)
+.venv/bin/python -m skeletonkey.cli live demo --host 0.0.0.0 --port 8000
+.venv/bin/python -m skeletonkey.cli live repl 'hue = "#f2cc60"' --via-panel --port 8000
+```
 
-## 6. Suggestions for the next session
+`sk` global flags (`--root`, `--json`, `--read-only`…) go **before** the subcommand
+(argparse aborts otherwise). Sandbox recycles: `.venv` and `.git` reset mid-session —
+recreate the venv, `git fetch origin refs/heads/<branch>:refs/remotes/origin/tip`, and
+restore the branch with `git reset --mixed origin/tip` (files reappear as a patchset and
+hash-match the remote tip; the delta is only new work).
 
-- **House rule, unchanged:** every new tool ships a TOOL-CONTRACT section (or extension),
-  a skill-guidance entry an agent will read, and a **wire-level** test. "A feature that
-  only works when called from Python is not done."
-- **Spec-first + 3-ish chunks** (core+data / tools+wiring / docs+skills) with **explicit
-  `git add <paths>`** — `git commit .` sweeps in untracked files; `.github/` stays out.
-- **Push early.** Sandbox recycles: it re-clones at the base commit and reapplies file
-  state as an uncommitted patchset, so *unpushed* commits can vanish (recovery this
-  session: fetch the remote branch, `git reset --soft` to it, re-add and commit — files
-  hash-match the remote, so the delta is exactly the new work). `git push` early.
-- **Measure, don't remember:** token counts, digests, test counts, SHAs re-measured at
-  handoff; re-measure before citing. pytest 9.1.1 suppresses the summary line when
-  piped — use `-rA`/grep or trust exit code.
-- **Venv gotcha for remote tests:** the package must be installed (`pip install -e .`)
-  or remote *child* servers launched from a tmp cwd can't import `skeletonkey`. The RpcClient
-  helper sets `PYTHONPATH` for the outer server only.
+## 6. Ideas (honest, prioritized — none are decided)
 
-## 7. Standing constraints (carried from the original handoff §9, reaffirmed)
+- `registry.explain_all`: whole-surface gates + receipts in one projection (the
+  200-tool world debuggable from a prompt). Small, same data.
+- `route` → compact "tool shortlist" block for the next prompt (UX decision for the
+  autopilot loop; data already carries reasons).
+- Remote tools are `full`-tier and count toward caps; decide whether trusted servers can
+  opt into `core`/`task` tiers.
+- Do **not** build `pub.run_plan` (a loop concern, not a tool) or a mini-interpreter in
+  any tool. Still true after two sessions of prompting.
 
-- **Licensing/identity frozen:** Apache-2.0, authorship stays "Dime", README title line +
-  tagline unchanged. No relicense/retitle/author-tidying without the owner.
-- **Python 3.11+, zero mandatory dependencies.** Core imports with nothing installed
-  (ADR-0001); extras (`mcp`, `watch`, `dev`, `all`) carry the rest; the `mcp.client`
-  connector imports `mcp` lazily so a no-remotes build never pays the import.
-- **Windows + Linux + macOS first-class; PowerShell is not optional.** Every PowerShell
-  claim is backed by a rendered-payload assertion or a `win`-tagged self-skipping test.
+## 7. Standing constraints (carried, reaffirmed)
+
+- **Licensing/identity frozen:** Apache-2.0, authorship "Dime", README title + tagline
+  unchanged. No relicense/retitle/author-tidying without the owner.
+- **Python 3.11+, zero mandatory deps** (ADR-0001) — a test imports `skeletonkey.core`
+  with `site-packages` hidden; `mcp` and `watchfiles` are extras; `mcp.client` imports
+  `mcp` lazily so a no-remotes build never pays it.
+- **Windows + Linux + macOS first-class; PowerShell not optional.** Every claim backed by
+  a rendered-payload assertion or a `win`-tagged self-skipping test.
 - **Primary consumer is the bespoke autopilot loop; MCP surface ships and stays honest.**
-  No silent reordering: rankings, gates, and receipts are data; a remote server's error
-  code is never re-wrapped.
-- Don't `pip install watchfiles`; no `python -m skeletonkey` (it is `skeletonkey.mcp` /
-  `sk`).
+  No silent reordering (rankings/gates/receipts are data); a remote server's error code
+  is never re-wrapped.
+- **House rule for new tools:** TOOL-CONTRACT section (or extension), skill-guidance
+  entry, **wire-level** test. Spec-first + 3-ish chunks + explicit `git add`; `.github/`
+  untracked.
 
-## 8. Landmines (measured this session; the old ones still bite)
+## 8. Landmines (measured; old ones still bite)
 
-- **mcp 2.1.1 lowlevel:** `tools/list` params model is `PaginatedRequestParams`
-  *directly*, not a `ListToolsRequest` wrapper — registering with the wrapper makes
-  `params` a model whose `.params` is `None` and the cursor silently never arrives.
-  Result `meta` serializes as `_meta` on the wire. Check `mcp_types` camel/snake-case
-  fields (`read_only_hint`, `input_schema`, `is_error`) before use.
-- **RemoteServer keep-alive:** the thread IS the event loop — `threading.Event.wait` in
-  the keep-alive loop blocks every `run_coroutine_threadsafe` call; use
-  `asyncio.sleep(0.25)` and `await` yourself.
-- **Drop-in contract is `TOOL`/`TOOLS`/`register()`** (plus MANIFEST(S)); `TOOL_SPECS`
-  is the built-in internal name and will not be picked up ("no TOOL/TOOLS/register()
-  found").
-- **`engine.call` returns a failure `ToolResult` for UNKNOWN_TOOL** — don't
-  `pytest.raises`; assert `r.error.code` (discovery tests already corrected this).
-- **Sandbox recycle** (see §6): venv excluded from snapshots (recreate + editable
-  install), `.git` history re-cloned at base.
-- `SkeletonKeyError.err.code` is the **string** `"BAD_ARGS"` (compare to `"BAD_ARGS"`,
-  not the enum); `registry.all()` is a method returning manifests; `AdSnapshot`
-  has `.tokens`/`.digest`, not `.tokens_estimate`; config `_set_path` handles
-  `[mcp.remotes.<name>]` because `mcp.remotes` is a `dict` field (per-server keys are
-  raw dicts — RemoteSpec validates them).
-- Skill inject cap: `fs-safe-refactor` is at ~3995 tokens — detail lives in
-  `references/` (not counted). Remote/semantic pointers must stay one line.
-- Old ones unchanged: `E` namespace class; `_ledger` swallows exceptions; legacy
+- **Sandbox recycle mid-session** (hit twice): venv + `.git` reset; remote is the only
+  durable record — push early. Recovery in §5.
+- **mcp 2.1.1 lowlevel:** `tools/list` params model is `PaginatedRequestParams` directly
+  (not a `ListToolsRequest` wrapper — registering the wrapper makes the cursor silently
+  never arrive); result `meta` serializes as `_meta`; check `mcp_types` snake/camel fields
+  (`read_only_hint`, `input_schema`, `is_error`).
+- **RemoteServer keep-alive:** the worker thread IS the event loop — use
+  `asyncio.sleep(0.25)`, never a threading `Event.wait` (that froze every
+  `run_coroutine_threadsafe` call this session).
+- **Drop-in contract is `TOOL`/`TOOLS`/`register()`** (not `TOOL_SPECS`).
+- **`engine.call` returns a failure `ToolResult` for UNKNOWN_TOOL** — assert
+  `r.error.code`, don't `pytest.raises`.
+- **`test_policy_property.py` BURST table** names every mutating tool — adding one
+  without a row fails the suite (live.* added theirs; keep it in sync).
+- **`tests/test_docs.py` is the docs police** for `docs/*.md`, README, skills: every
+  `` `tool.id {args}` `` must name real args, every `` `section.key` `` a real config
+  field, every error-code row a real code. Namespaces now include `live.*` and `remote.*`.
+  PLAN.md is deliberately exempt.
+- **pyc staleness in-session:** editing `skeletonkey/live/*.py` then importing within the
+  same second can serve stale bytecode (mtime granularity); clear `__pycache__` and retry.
+- **Managed/demo files:** `examples/live_hmr/orbital.py` is a *mirror* of
+  `skeletonkey/live/demos.py` (a test enforces sync) — edit `demos.py`, not the example;
+  `canvas` is runtime-injected (F821 ignored there by design).
+- `SkeletonKeyError.err.code` is the string `"BAD_ARGS"`; `registry.all()` is a method
+  returning manifests; `AdSnapshot` has `.tokens`/`.digest` (no `.tokens_estimate`);
+  skill inject cap for `fs-safe-refactor` ≈ 3995 tokens (detail goes in `references/`);
+  remote tests need the package installed editable.
+- Old unchanged: `E` namespace class; `_ledger` swallows exceptions; legacy
   `deny: ["**"]`; path denies need `tool(**/glob)`; `fs.glob` dotfile behavior;
-  `ReadResult.sha256` 16 chars; `req.meta` plain dict + positional progress args;
-  replay task_id match; `cmd | head` exit code; `python -m pytest` from repo root.
+  `ReadResult.sha256` 16 chars; `req.meta` plain dict + positional progress args; replay
+  task_id match; `cmd | head` exit code; pytest from repo root.
 
 ## 9. Where things live (pointers, not contents)
 
-- `PLAN.md` — §5 P5a/P5b (both shipped), §6 P6 portal, risk register.
-- `docs/TOOL-CONTRACT.md` — §3 errors, §7e (P5a), §7f (remote, ADR-0013), §8 checklist.
-- `docs/adr/0012-semantic-backend.md`, `0013-remote-tools-passthrough.md`.
-- `skeletonkey/core/{registry,semantic,config,errors}.py` — tiers/route/explain/receipts,
-  SemanticBackend + LexicalSemantic + discover(), McpConfig.remotes, REMOTE code.
-- `skeletonkey/mcp/client.py` — RemoteSpec/RemoteServer/RemoteConnector (P5b).
-- `skeletonkey/mcp/adapter.py` — tier-aware advertise, `_page_slice`, list_changed,
-  `_meta` receipts.
-- `skeletonkey/toolkit.py` — build: builtins → skills → drop-ins → entry points →
-  **remotes** (report["remote"]).
-- `skeletonkey/fsx/search.py`, `tools/builtin.py` — fallback honesty; registry.route/
-  expand/explain/stats.
-- `tests/test_discovery.py` (P5a ACs + AC2 both modes), `test_semantic.py` (backend +
-  discovery contract), `test_remotes.py` + `remote_helpers.py` (engine-level remote),
-  `test_mcp_stdio.py` (+P5a wire, +2 P5b remote wire), `test_tools_builtin.py`
-  (search fallback).
-- `tests/eval/suite.jsonl` (25 tasks, `target` ground truth) — semantic AC2 runs on it.
-- `skills/fs-safe-refactor/references/discovery.md` — agent-facing discovery + remote
-  guidance; `config/skeletonkey.example.toml` — `[advertise]`, `tools.semantic`,
-  `[mcp.remotes.<name>]` sample.
+- `PLAN.md` — §5 P5a/P5b (shipped), §6 P6, risk register; ADR index rows 0010–0014.
+- `docs/TOOL-CONTRACT.md` — §3 errors, §7e (discovery), §7f (remote), §8 checklist.
+- `docs/adr/0011-live-hmr-…`, `0012-semantic-backend.md`, `0013-remote-tools-passthrough.md`.
+- `skeletonkey/core/{registry,semantic,config,errors}.py`; `skeletonkey/mcp/client.py`
+  (remotes); `skeletonkey/mcp/adapter.py` (tier + pagination + `_meta` receipts);
+  `skeletonkey/fsx/search.py` (fallback); `skeletonkey/tools/builtin.py` (route/expand/
+  explain/stats + search handler); `skeletonkey/live/*` (HMR subsystem).
+- Tests: `test_discovery.py` (P5a ACs + AC2 both modes), `test_semantic.py`,
+  `test_remotes.py` + `remote_helpers.py`, `test_mcp_stdio.py` (wire: P5a + remote),
+  `test_live.py` (live.*), `test_tools_builtin.py` (search fallback),
+  `tests/eval/suite.jsonl` (25 tasks, `target` ground truth).
+- `skills/fs-safe-refactor/references/discovery.md`; `config/skeletonkey.example.toml`
+  (`[advertise]`, `tools.semantic`, `[mcp.remotes.<name>]` sample);
+  `docs/LIVE-HMR.md`, `docs/LIVE-IMPL-PLAN.md` (live queue).
