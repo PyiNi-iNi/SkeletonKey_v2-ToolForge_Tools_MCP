@@ -710,6 +710,8 @@ silent-ish failure).
 | 0007 | Values are `argv`, never interpolated text; quoting is a separate explicit tool | accepted |
 | 0008 | Policy is data; approval is a tool with a receipt; undo is a precondition | accepted |
 | 0009 | Replay proves the turn: explicit normalization, `stateful` means loose, mutations retire cached reads | accepted |
+| 0010 | Publish store is write-only; location is the wall, injection is the only door | accepted |
+| 0011 | Live HMR: in-place code swap + 3-way state merge; zero-dep watcher; panel over plain HTTP/SVG/JSON | accepted |
 
 `docs/adr/` holds the full text of each, with the options rejected and the observable
 consequence (usually a test id).

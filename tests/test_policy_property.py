@@ -44,6 +44,16 @@ BURST: dict[str, dict] = {
     "pub.store_put": {"id": "burst.x", "kind": "token", "value": "burst"},
     "pub.store_delete": {"id": "burst.x"},
     "pub.inject": {"path": "burst"},
+    # live.* mutators: the walls must refuse them before any python executes.
+    # (Risk "write" like shell.run; the disk assertion is the real proof.)
+    "live.start": {"path": "burst/a.txt"},
+    "live.stop": {"program": "ghost"},
+    "live.reload": {"program": "ghost"},
+    "live.patch": {"name": "run", "code": "def run():\n    pass\n"},
+    "live.repl": {"code": "open('burst/pwned.txt', 'w').write('x')"},
+    "live.snapshot": {"op": "list"},
+    "live.scene": {"op": "clear"},
+    "live.serve": {"port": 0},
 }
 
 WALL_CODES = {

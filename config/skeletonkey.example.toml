@@ -155,4 +155,22 @@ profile_ttl_s = 3600
 keep_snapshots = 200
 redact = true                      # secrets masked in the ledger's previews
 
+# ------------------------------------------------------------- live HMR / REPL
+# The live.* group (docs/LIVE-HMR.md): python hot-reload + LiveREPL + preview
+# panel. start/repl/patch execute code, so they are risk=write like shell.run
+# and obey every policy wall; these knobs shape resources and the panel only.
+[live]
+enabled = true                     # false => every live.* call refuses (TOOL_NOT_ADVERTISED)
+watch_interval_s = 0.35            # polling backend tick (watchfiles ignores it)
+debounce_ms = 120                  # editor save-storm collapse window
+max_programs = 8
+exec_guard_s = 10.0                # wall-clock leash on repl/patch/reload bodies
+repl_max_output_bytes = 16000      # captured stdout per repl call, clipped
+state_value_max_repr = 400         # repr cap in live.state rows
+snapshots_max = 16
+auto_render = true                 # render() after every load/reload/repl/patch
+host = "127.0.0.1"                 # panel bind: keep loopback away from a sandboxed proxy
+port = 8010
+panel_repl = true                  # false => served pages are READ-ONLY (POST /repl refuses)
+
 log_level = "WARNING"              # DEBUG prints probe + dispatch traces to stderr
