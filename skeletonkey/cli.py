@@ -152,6 +152,10 @@ def main(argv: list[str] | None = None) -> int:
     lv.add_argument("--wait", action="store_true",
                     help="serve/demo: keep this process (and the panel+watcher) alive")
 
+    d = sub.add_parser("doctor", help="one JSON blob of config, probe, gates, ledger, state")
+    d.add_argument("--fix", action="store_true",
+                   help="safe moves only: create state/spill dirs, refresh the capability probe")
+
     sub.add_parser("describe", help="full toolkit/assembly report")
     e = sub.add_parser("call", help="call any tool directly: sk call <tool> '<json args>'")
     e.add_argument("tool")
@@ -207,6 +211,29 @@ def main(argv: list[str] | None = None) -> int:
 
 def _dispatch(args: argparse.Namespace, tk: Any, call: Any, cfg: Config) -> int:
     cmd = args.cmd
+    if cmd == "doctor":
+        from .doctor import collect, safe_fixes
+
+        doc: dict[str, Any] = {}
+        applied: list[str] = []
+        if getattr(args, "fix", False):
+            applied += safe_fixes(tk)
+            # refresh the capability probe (the other allowed safe move): a fresh
+            # build re-probes and re-enrolls; the caller's tk closes itself.
+            from .toolkit import build as _build
+
+            tk2 = _build(config=cfg, force_probe=True)
+            try:
+                doc = collect(tk2)
+            finally:
+                tk2.close()
+            applied.append("refreshed the capability probe (force)")
+        else:
+            doc = collect(tk)
+        if applied:
+            doc["applied"] = applied
+        print(pretty_json(doc))
+        return 0
     if cmd == "describe":
         print(pretty_json(tk.describe()))
         return 0
