@@ -93,6 +93,10 @@ class ToolManifest:
     advertised: bool = True                  # False = engine-only, not listed to hosts
     hidden_reason: str = ""
     approval: Literal["never", "on_write", "always", "policy"] = "policy"
+    # discovery tier (P5a): "core" is advertised in every tier, "task" in task+full,
+    # "full" only in full. The host-facing default set is "full", so a host that never
+    # expands sees everything as before; the autopilot opts into smaller surfaces.
+    tier: Literal["core", "task", "full"] = "full"
 
     # docs for the model
     examples: list[dict[str, Any]] = field(default_factory=list)
@@ -115,6 +119,10 @@ class ToolManifest:
             self.title = self.id.replace(".", " ").replace("_", " ").title()
         if self.risk not in RISK_ORDER:
             raise SkeletonKeyError(E.BAD_ARGS, f"unknown risk class {self.risk!r}")
+        if self.tier not in ("core", "task", "full"):
+            raise SkeletonKeyError(E.BAD_ARGS, f"unknown discovery tier {self.tier!r}",
+                                   details={"tier": self.tier, "tiers": ["core", "task", "full"],
+                                            "hint": "core = every tier, task = task + full, full = full only"})
         if problems := check_schema(self.input_schema):
             raise SkeletonKeyError(
                 E.BAD_ARGS,
@@ -173,6 +181,7 @@ class ToolManifest:
             "idempotent": self.idempotent, "parallel_safe": self.parallel_safe,
             "destructive": self.destructive, "reversible": self.reversible,
             "stateful": self.stateful, "advertised": self.advertised,
+            "tier": self.tier,
             "typical_latency_ms": self.typical_latency_ms, "typical_output_bytes": self.typical_output_bytes,
         }
         if self.provider:

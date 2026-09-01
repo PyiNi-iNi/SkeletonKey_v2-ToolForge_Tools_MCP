@@ -119,6 +119,23 @@ override_builtin = false           # a drop-in may not replace a built-in unless
 enable = []                        # empty = everything the host can run
 disable = []                       # e.g. ["shell.run"] on a locked-down runner
 gate_by_profile = true             # withhold tools whose requirements this host fails
+# P5a: optional semantic routing stage. Off = the deterministic lexical path, which
+# is the tested, dependency-free state. On only matters with a backend installed
+# under the `skeletonkey.semantic` entry-point group (see PLAN P5b).
+semantic = false
+
+# --------------------------------------------------------------- advertise
+# Per-tier advertisement budgets (P5a): core = the bootstrap surface a fresh
+# session sees before any registry.expand; task = core + the fs/shell workhorses;
+# full = everything (the default). 0 = no cap for that dimension. The MCP bridge
+# still honours the legacy [mcp] advertise_max_tools knob for the full tier.
+[advertise]
+core_max_tools = 20
+core_max_tokens = 1200
+task_max_tools = 48
+task_max_tokens = 6000
+full_max_tools = 0
+full_max_tokens = 0
 
 # ------------------------------------------------------------------- skills
 [skills]

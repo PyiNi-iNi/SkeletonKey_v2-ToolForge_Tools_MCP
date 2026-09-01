@@ -27,7 +27,15 @@ from typing import Any
 from .errors import E, SkeletonKeyError
 from .manifest import RISK_ORDER, Requirement, ToolManifest
 from .profile import CapabilityProfile
+from .semantic import discover_backends
 from .util import compact_json, new_run_id, short_hash
+
+# Discovery tiers (P5a): a manifest's `tier` tells us *when* it may be advertised.
+# `core` tools are the bootstrap surface (always available), `task` the plan-selected
+# middle, `full` everything. Ordering is deliberately numeric so the filter is a
+# comparison, not a lookup table.
+TIERS = ("core", "task", "full")
+TIER_ORDER = {"core": 0, "task": 1, "full": 2}
 
 
 @dataclass
@@ -89,6 +97,14 @@ class AdSnapshot:
     tokens: int
     digest: str
     selected: dict[str, str] = field(default_factory=dict)   # capability -> winning tool id
+    # P5a: the selection receipt per capability that was de-duplicated (or is sole).
+    # This is the *advertisement-time* mirror of "which provider answered and why":
+    # a host never has to guess why it saw one search tool instead of four.
+    selection_receipts: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # tool id -> why it was trimmed by token budget / max_tools. Empty when nothing
+    # was dropped, and the digest covers it either way.
+    budget_drops: dict[str, str] = field(default_factory=dict)
+    tier: str = "full"
     at: float = field(default_factory=time.time)
 
     @property
@@ -98,6 +114,21 @@ class AdSnapshot:
     def diff(self, other: AdSnapshot) -> dict[str, list[str]]:
         a, b = set(self.names), set(other.names)
         return {"added": sorted(b - a), "removed": sorted(a - b)}
+
+    def receipt_for(self, man: ToolManifest) -> dict[str, Any]:
+        """The selection receipt for one advertised tool.
+
+        A tool that shares its capability with no other provider gets an honest
+        "sole provider" receipt; a tool that won a provider race gets the race
+        receipt (winner + why + competitors).
+        """
+        cap = man.capability or man.id
+        r = self.selection_receipts.get(cap)
+        if r is not None:
+            return r
+        return {"tool": man.id, "provider": man.provider,
+                "why": "only provider for this capability (no provider race)",
+                "sole": True}
 
 
 @dataclass
@@ -111,9 +142,28 @@ class Registry:
     _sources: dict[str, str] = field(default_factory=dict, repr=False)
     loaded_dirs: list[str] = field(default_factory=list, repr=False)
     load_errors: list[dict[str, Any]] = field(default_factory=list, repr=False)
+    # P5a: which tier `advertise()` defaults to. State, not a parameter, so a
+    # `registry.expand` call - and the MCP bridge reading the registry - agree on
+    # one number without threading a value through every call site.
+    active_tier: str = "full"
 
     def __post_init__(self) -> None:
         self.load_errors = []
+
+    def set_tier(self, tier: str) -> str:
+        """Switch the advertised tier. Returns the previous tier.
+
+        Changing the tier changes the tool set, which changes the digest, which is
+        what makes `tools/list_changed` fire - no separate notification channel is
+        needed: the diff is the signal.
+        """
+        if tier not in TIER_ORDER:
+            raise SkeletonKeyError(E.BAD_ARGS, f"unknown advertisement tier {tier!r}",
+                                   details={"tier": tier, "tiers": list(TIERS),
+                                            "hint": "core = bootstrap surface, task = plan middle, full = everything"})
+        with self._lock:
+            old, self.active_tier = self.active_tier, tier
+            return old
 
     # ------------------------------------------------------------- registration
     def register(self, manifest: ToolManifest, handler: Callable[..., Any] | None = None, *,
@@ -263,12 +313,32 @@ class Registry:
     # -------------------------------------------------------------- advertisement
     def advertise(self, *, profile: CapabilityProfile | None = None, read_only: bool = False,
                   disabled: Iterable[str] = (), dedupe_capability: bool = True,
-                  token_budget: int | None = None, include_internal: bool = False) -> AdSnapshot:
+                  token_budget: int | None = None, include_internal: bool = False,
+                  tier: str | None = None, max_tools: int | None = None,
+                  tier_budgets: dict[str, dict[str, int]] | None = None) -> AdSnapshot:
         """The tool list a host actually sees right now.
+
+        `tier` defaults to `registry.active_tier` (full unless `set_tier` ran):
+        core tools advertise in every tier, task in task + full, full only in full.
+        A tool withheld by tier shows up in `gates` with a reasoning row, so
+        "why didn't I see it" is answerable for tier drops too.
+
+        `tier_budgets` carries the `[advertise]` caps for the active tier (tools +
+        tokens; 0 = no cap) and is applied only when the caller passed neither an
+        explicit `token_budget` nor `max_tools` - an explicit budget always wins.
 
         dedupe_capability keeps one provider per capability (highest rank), which
         is how "adaptive" shows up to the model: it never sees 4 file-search tools.
         """
+        tier = tier or self.active_tier
+        if tier not in TIER_ORDER:
+            raise SkeletonKeyError(E.BAD_ARGS, f"unknown advertisement tier {tier!r}",
+                                   details={"tier": tier, "tiers": list(TIERS)})
+        if tier_budgets and tier in tier_budgets:
+            if token_budget is None:
+                token_budget = tier_budgets[tier].get("tokens") or None
+            if max_tools is None:
+                max_tools = tier_budgets[tier].get("tools") or None
         saved_profile = self.profile
         if profile is not None:
             self.profile = profile
@@ -278,6 +348,14 @@ class Registry:
             survivors: list[ToolManifest] = []
             for man in tools:
                 g = self.gate(man, read_only=read_only, disabled=disabled)
+                # Tier withholding is a pre-gate fact about *when* the tool may show,
+                # not about the host: record it separately so the withheld receipt
+                # names the real reason instead of falling through to "budget drop".
+                if TIER_ORDER.get(man.tier, 2) > TIER_ORDER[tier]:
+                    if g.available:
+                        g = AdGate(False, [f"tier {tier}: this tool is {man.tier}-tier"])
+                    gates[man.id] = g
+                    continue
                 gates[man.id] = g
                 if not g.available:
                     continue
@@ -286,6 +364,7 @@ class Registry:
                 survivors.append(man)
 
             selected: dict[str, str] = {}
+            receipts: dict[str, dict[str, Any]] = {}
             chosen: list[ToolManifest] = []
             by_cap: dict[str, list[tuple[float, ToolManifest]]] = {}
             for man in survivors:
@@ -302,31 +381,75 @@ class Registry:
                 if dedupe_capability and is_provider_race:
                     win = lst[0][1]
                     selected[cap] = win.id
+                    receipts[cap] = self._selection_receipt(cap, lst)
                     chosen.append(win)
                 else:
+                    if len(lst) == 1:
+                        receipts[cap] = self._selection_receipt(cap, lst)
                     chosen.extend(m for _s, m in lst)
             chosen.sort(key=lambda m: (m.group, m.id))
-            tokens = sum(m.tokens_estimate() for m in chosen)
-            dropped: list[ToolManifest] = []
+            budget_drops: dict[str, str] = {}
             if token_budget:
                 kept: list[ToolManifest] = []
                 running = 0
                 for man in sorted(chosen, key=lambda m: -self._score(m)):
                     cost = man.tokens_estimate()
                     if kept and running + cost > token_budget:
-                        dropped.append(man)
+                        budget_drops[man.id] = f"token budget {token_budget}"
                         continue
                     kept.append(man)
                     running += cost
                 chosen = sorted(kept, key=lambda m: (m.group, m.id))
-                tokens = running
+            if max_tools and len(chosen) > max_tools:
+                kept = chosen[:max_tools]
+                for man in chosen[max_tools:]:
+                    budget_drops.setdefault(man.id, f"max_tools {max_tools}")
+                chosen = kept
+            tokens = sum(m.tokens_estimate() for m in chosen)
 
-            digest = short_hash(compact_json([
-                [m.id, m.version, sorted(m.tags), gates.get(m.id, AdGate(True)).available] for m in chosen
-            ] + ([{"dropped": [m.id for m in dropped]}] if dropped else [])), 16)
-            return AdSnapshot(tools=chosen, gates=gates, tokens=tokens, digest=digest, selected=selected)
+            digest_rows = [["tier", tier]] + [
+                [m.id, m.version, sorted(m.tags), gates.get(m.id, AdGate(True)).available]
+                for m in chosen
+            ]
+            if budget_drops:
+                digest_rows.append({"dropped": sorted(budget_drops)})
+            digest = short_hash(compact_json(digest_rows), 16)
+            return AdSnapshot(tools=chosen, gates=gates, tokens=tokens, digest=digest,
+                              selected=selected, selection_receipts=receipts,
+                              budget_drops=budget_drops, tier=tier)
         finally:
             self.profile = saved_profile
+
+    def _selection_receipt(self, capability: str,
+                           ranked: list[tuple[float, ToolManifest]]) -> dict[str, Any]:
+        """Why this capability's winner won - the honest, asserted receipt.
+
+        The ranking is risk penalty + declared priority + observed success
+        (`ProviderStats.score()`, which needs >= 3 calls before it counts). A
+        receipt with no call evidence says so instead of pretending the score is
+        learned behaviour.
+        """
+        wscore, wman = ranked[0]
+        stat = self._stats.get(wman.id)
+        competitors = [{"id": s[1].id, "provider": s[1].provider, "priority": s[1].priority,
+                        "risk": s[1].risk, "score": round(s[0], 2)}
+                       for s in ranked[1:]]
+        if not competitors:
+            why = "sole provider for this capability (no provider race)"
+            sole = True
+        elif stat is not None and stat.calls >= 3:
+            why = (f"won provider race on observed reliability x latency (calls={stat.calls}, "
+                   f"success={stat.success_rate:.2f}, mean={stat.mean_ms:.0f}ms) over "
+                   + ", ".join(c["id"] for c in competitors))
+            sole = False
+        else:
+            why = ("won provider race on declared priority (no call evidence yet; observed "
+                   "success counts after 3 calls) over "
+                   + ", ".join(c["id"] for c in competitors))
+            sole = False
+        return {"capability": capability, "tool": wman.id, "provider": wman.provider,
+                "score": round(wscore, 2), "priority": wman.priority, "risk": wman.risk,
+                "why": why, "sole": sole, "competitors": competitors}
 
     def _score(self, man: ToolManifest) -> float:
         stat = self._stats.get(man.id)
@@ -335,8 +458,9 @@ class Registry:
     # ------------------------------------------------------------------- search
     def search(self, query: str, *, limit: int = 8, include_gated: bool = False,
                group: str | None = None, max_risk: str | None = None,
-               dialect: str | None = None) -> list[dict[str, Any]]:
-        """Deterministic lexical ranking. (Phase 5 adds semantic/hybrid recall.)"""
+               dialect: str | None = None, explain: bool = False) -> list[dict[str, Any]]:
+        """Deterministic lexical ranking. (P5a: `explain` adds per-hit reasons;
+        the semantic stage sits on top via `route`, never inside here.)"""
         q_tokens = _tokenize(query)
         if not q_tokens:
             return []
@@ -355,14 +479,120 @@ class Registry:
             score = _score_match(q_tokens, man)
             if score <= 0:
                 continue
-            out.append((score, {
+            hit = {
                 "id": man.id, "title": man.title, "capability": man.capability,
                 "risk": man.risk, "group": man.group, "score": round(score, 3),
                 "description": man.description.strip().split("\n")[0][:200],
                 "available": g.available, **({"gated": g.to_dict()} if not g.available else {}),
-            }))
+            }
+            if explain:
+                hit["reasons"] = _match_reasons(q_tokens, man)
+            out.append((score, hit))
         out.sort(key=lambda x: (-x[0], x[1]["id"]))
         return [d for _s, d in out[:limit]]
+
+    # ------------------------------------------------------------------- routing
+    def _exact_match(self, task: str) -> str | None:
+        """Exact-name fast path: `fs.patch`, `fs_patch` (a host that sanitises dots),
+        or an id typed after a slash never loses to fuzzy ranking."""
+        q = (task or "").strip().lower().replace("/", ".")
+        if not q:
+            return None
+        for man in self.all():
+            if q in (man.id, man.mcp_name, man.id.replace(".", "_"), man.id.replace(".", "/")):
+                return man.id
+        return None
+
+    def route(self, task: str, *, k: int = 8, semantic: bool = False,
+              include_gated: bool = False, group: str | None = None) -> dict[str, Any]:
+        """Two-stage router (P5a): exact-name, then deterministic lexical, then the
+        optional semantic backend. Returns scores *and* the reasons behind them.
+
+        `semantic=True` means "use a registered `skeletonkey.semantic` backend if one
+        exists"; with none installed (the shipped state) the answer is the lexical
+        one and `note` says exactly that - no silent stage, no fabricated scores.
+        """
+        k = max(1, min(int(k), 50))
+        results: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        exact = self._exact_match(task)
+        if exact is not None:
+            man = self.get(exact)
+            gate = self.gate(man)
+            results.append({"id": man.id, "title": man.title, "score": 1.0,
+                            "tier": man.tier, "provider": man.provider,
+                            "reasons": ["exact name match"], "available": gate.available,
+                            **( {"gated": gate.to_dict()} if not gate.available else {})})
+            seen.add(man.id)
+        hits = self.search(task, limit=k + len(seen), include_gated=include_gated,
+                           group=group, explain=True)
+        for h in hits:
+            if h["id"] in seen:
+                continue
+            results.append(h)
+            if len(results) >= k:
+                break
+
+        backends = discover_backends() if semantic else []
+        mode = "semantic" if backends else "lexical"
+        note = None
+        if semantic and not backends:
+            note = ("no semantic backend installed (entry-point group "
+                    "skeletonkey.semantic); the deterministic lexical stage answered")
+        if backends:
+            b = backends[0]
+            for r in results:
+                r["semantic_score"] = round(float(b.score(task, r.get("description") or "")), 4)
+            results.sort(key=lambda r: -(0.5 * float(r.get("score") or 0.0)
+                                         + 0.5 * float(r.get("semantic_score") or 0.0)))
+        return {"task": task[:300], "k": k, "mode": mode,
+                "backend": (backends[0].name if backends else None),
+                "backends_available": len(backends),
+                "results": results[:k], "count": min(len(results), k),
+                **( {"note": note} if note else {})}
+
+    # ------------------------------------------------------------------ explain
+    def explain(self, capability: str, *, k: int = 50) -> dict[str, Any]:
+        """Why a capability is (or is not) advertised here, with receipts.
+
+        Accepts a capability name (`search.text`) or a tool id (resolved to its own
+        capability). Every candidate row carries its gate reasons, its score, and
+        whether it won; the winner entry is the same receipt the snapshot carries.
+        """
+        cap = (capability or "").strip()
+        if not cap:
+            raise SkeletonKeyError(E.MISSING_ARG, "pass a capability or tool id",
+                                   details={"examples": ["search.text", "fs.patch", "shell.run"]})
+        if self.has(cap):
+            cap = self.get(cap).capability or cap
+        cands = self.by_capability(cap)
+        if not cands:
+            near = [c for c in sorted({m.capability for m in self.all()}) if cap.lower() in c.lower()]
+            raise SkeletonKeyError(E.BAD_ARGS, f"no tool claims capability {cap!r}",
+                                   details={"capability": cap, "near": near[:5],
+                                            "count": len(self.all())},
+                                   next_actions=[{"tool": "registry.list", "args": {}}])
+        snap = self.advertise()
+        rows = []
+        for man in sorted(cands, key=lambda m: (-self._score(m), m.id)):
+            gate = self.gate(man)
+            rows.append({
+                "id": man.id, "provider": man.provider, "priority": man.priority,
+                "risk": man.risk, "tier": man.tier, "score": round(self._score(man), 2),
+                "stats": self.stats(man.id)[man.id],
+                "gate": gate.to_dict(), "advertised": man.id in snap.names,
+            })
+        winner = snap.selection_receipts.get(cap)
+        if winner is None:
+            advertised = [r["id"] for r in rows if r["advertised"]]
+            winner = {"tool": None, "why": ("no tool for this capability is advertised "
+                                            "in the current tier; see rows for gates")
+                      if not advertised else "shared capability namespace: no provider race "
+                      "(these tools are not interchangeable, so all stay)"}
+        return {"capability": cap, "tier": snap.tier,
+                "registered": len(cands), "advertised": [r["id"] for r in rows if r["advertised"]],
+                "gated_out": [r["id"] for r in rows if not r["advertised"]],
+                "winner": winner, "tools": rows[:k]}
 
     # ---------------------------------------------------------------- drop-ins
     def load_dir(self, path: str, *, source: str = "dropin", replace: bool = False) -> dict[str, Any]:
@@ -460,6 +690,17 @@ class Registry:
         d["stats"] = self.stats(man.id)
         d["typical"] = {"latency_ms": man.typical_latency_ms, "output_bytes": man.typical_output_bytes,
                         "timeout_s": man.timeout_s, "reversible": man.reversible}
+        # P5a: the provider receipt from the current advertisement, or an honest
+        # "not in the current advertisement" entry - why-not is data either way.
+        snap = self.advertise()
+        if man.id in snap.names:
+            d["provider_receipt"] = snap.receipt_for(man)
+            d["advertisement"] = {"tier": snap.tier, "advertised": True}
+        else:
+            d["provider_receipt"] = {"tool": man.id, "sole": False,
+                                     "why": "not in the current advertisement; see availability "
+                                            "(or the tier gate: expand first)"}
+            d["advertisement"] = {"tier": snap.tier, "advertised": False}
         if man.examples:
             d["examples"] = man.examples
         if man.anti_patterns:
@@ -520,6 +761,82 @@ def _import_from_path(path: str) -> Any:
 
 _STOP = {"the", "a", "an", "and", "or", "of", "to", "for", "in", "on", "with", "by", "is", "are", "be", "this", "that", "it", "its", "you", "your", "we", "our", "from", "at", "as", "if", "then", "else", "when", "how", "what", "which", "can", "could", "would", "should", "do", "does", "not", "no", "yes", "all", "any"}
 
+# P5a: the deterministic stage's synonym layer. Task verbs are not queries about
+# words - "rename a symbol" must surface `fs.patch` ("replace edits") next to
+# `fs.move` ("rename"), or discovery quietly hides the right tool behind wording the
+# author did not use. Pure data, zero deps, and every entry earns its keep on the
+# eval suite (tests/test_discovery.py asserts the top-k hit rate).
+_INTENT: dict[str, tuple[str, ...]] = {
+    "rename": ("rename", "move", "patch", "replace", "edit"),
+    "move": ("move", "rename", "mv"),
+    "find": ("find", "search", "locate", "grep", "glob", "match", "look"),
+    "search": ("search", "find", "locate", "grep", "match", "glob", "read", "scan"),
+    "look": ("look", "search", "find", "glob", "list"),
+    "match": ("match", "search", "find", "grep", "glob"),
+    "edit": ("edit", "patch", "replace", "change", "update", "rename", "modify"),
+    "replace": ("replace", "patch", "edit", "rename", "change", "write"),
+    "change": ("change", "patch", "edit", "update", "replace", "write"),
+    "update": ("update", "patch", "edit", "replace", "change", "write"),
+    "rewrite": ("rewrite", "write", "convert", "normalize", "replace", "patch"),
+    "write": ("write", "create", "add", "save", "new"),
+    "create": ("create", "write", "add", "mkdir", "new"),
+    "add": ("add", "write", "create", "append", "install", "patch", "insert"),
+    "extract": ("extract", "write", "create", "split", "move", "save"),
+    "split": ("split", "extract", "separate", "move"),
+    "delete": ("delete", "remove", "erase"),
+    "remove": ("remove", "delete", "erase"),
+    "erase": ("erase", "delete", "remove"),
+    "run": ("run", "execute", "exec", "shell", "script", "background"),
+    "execute": ("execute", "run", "exec", "shell"),
+    "background": ("background", "run", "execute", "job", "daemon"),
+    "watch": ("watch", "wait", "job", "poll", "monitor"),
+    "wait": ("wait", "watch", "job", "poll"),
+    "undo": ("undo", "revert", "rollback", "restore"),
+    "revert": ("revert", "undo", "rollback", "restore"),
+    "verify": ("verify", "check", "confirm", "assert", "ensure", "search"),
+    "check": ("check", "verify", "inspect", "test", "stat", "search"),
+    "read": ("read", "view", "cat", "inspect", "load", "offset"),
+    "list": ("list", "ls", "show", "glob", "enumerate", "count"),
+    "stat": ("stat", "inspect", "metadata", "size", "check"),
+    "install": ("install", "setup", "bootstrap", "add"),
+    "count": ("count", "list", "glob", "search"),
+    "glob": ("glob", "list", "count", "search", "pattern"),
+    "build": ("build", "run", "execute", "shell", "script", "compile"),
+    "shrink": ("shrink", "stat", "size", "check"),
+    "shrinks": ("shrinks", "stat", "size", "check", "shrink"),
+    "secret": ("secret", "search", "key", "find", "scan"),
+    "key": ("key", "secret", "search", "find", "scan", "patch", "replace"),
+    "hardcoded": ("hardcoded", "search", "secret", "find", "scan"),
+    "leak": ("leak", "search", "secret", "find", "scan"),
+    "rotate": ("rotate", "replace", "patch", "edit", "change"),
+    "dependency": ("dependency", "patch", "edit", "write", "add", "requirements"),
+    "version": ("version", "patch", "edit", "write", "field"),
+    "module": ("module", "write", "create", "file", "split", "extract"),
+    "function": ("function", "write", "create", "extract", "module"),
+    "crlf": ("crlf", "write", "newline", "convert", "rewrite", "normalize"),
+    "line": ("line", "read", "write", "patch", "search"),
+    "size": ("size", "stat", "check", "inspect", "metadata"),
+    "case": ("case", "search", "ignore", "match"),
+    "left": ("left", "search", "remain", "find", "count"),
+    "remain": ("remain", "search", "count", "find", "glob"),
+    "executable": ("executable", "chmod", "mode", "permission"),
+    "mode": ("mode", "chmod", "permission", "executable"),
+    "directory": ("directory", "mkdir", "create", "list"),
+    "tree": ("tree", "mkdir", "create", "list", "directory"),
+    "offset": ("offset", "read", "line", "limit"),
+    "first": ("first", "read", "line", "offset"),
+}
+
+
+def _intent_expand(tok: str) -> list[str]:
+    """A query token plus its synonyms, for the scoring pass.
+
+    Unordered, capped (a token can only be responsible for so many hits before the
+    expansion becomes noise), and *only* used to widen recall - the base token still
+    scores highest because an exact hit beats a synonym hit.
+    """
+    return list(dict.fromkeys([tok, *_INTENT.get(tok, ())]))[:6]
+
 
 def _tokenize(text: str) -> list[str]:
     raw = re.findall(r"[a-zA-Z][a-zA-Z0-9_]*|\d+", (text or "").lower())
@@ -551,6 +868,22 @@ def _hit(tok: str, words: list[str]) -> float:
     return best
 
 
+def _hit_expanded(tok: str, words: list[str]) -> tuple[float, str]:
+    """Best hit for a token across its synonym expansion.
+
+    Returns (score, matched_word). The base token is not discounted; a synonym hit
+    is worth 85% of an exact hit of the same kind, so wording never beats wording
+    but a real synonym never loses to nothing.
+    """
+    cands = _intent_expand(tok)
+    best, best_w = _hit(tok, words), tok
+    for syn in cands[1:]:
+        h = _hit(syn, words) * 0.85
+        if h > best:
+            best, best_w = h, syn
+    return best, best_w
+
+
 def _score_match(q: list[str], man: ToolManifest) -> float:
     if not q:
         return 0.0
@@ -562,10 +895,10 @@ def _score_match(q: list[str], man: ToolManifest) -> float:
     score = 0.0
     covered = 0
     for tok in toks:
-        h_name = _hit(tok, name_words)
-        h_cap = _hit(tok, cap_words)
-        h_tag = _hit(tok, tag_words)
-        h_desc = _hit(tok, desc_words)
+        h_name, _ = _hit_expanded(tok, name_words)
+        h_cap, _ = _hit_expanded(tok, cap_words)
+        h_tag, _ = _hit_expanded(tok, tag_words)
+        h_desc, _ = _hit_expanded(tok, desc_words)
         total = 4.0 * h_name + 2.2 * h_cap + 1.6 * h_tag + 1.0 * h_desc
         if total > 0:
             covered += 1
@@ -578,6 +911,28 @@ def _score_match(q: list[str], man: ToolManifest) -> float:
     if joined and joined in man.id.lower().replace(".", " ").replace("_", " "):
         score *= 1.25
     return score / (1.0 + 0.015 * len(q))
+
+
+def _match_reasons(q: list[str], man: ToolManifest) -> list[str]:
+    """Why a tool matched: field + token + exact/prefix, capped for the wire.
+
+    A routing decision is exposed or it is a guess - this is the exposure half of
+    the P5a receipt (the provider-receipt half is the snapshot's
+    `selection_receipts`).
+    """
+    name_words = re.split(r"[._\-/]", man.id.lower())
+    cap_words = _words(" ".join([man.capability, *man.provides]))
+    tag_words = [t.lower() for t in man.tags]
+    desc_words = _words(man.description) + _words(man.title)
+    reasons: list[str] = []
+    for tok in dict.fromkeys(q):
+        for label, words in (("name", name_words), ("capability", cap_words),
+                             ("tags", tag_words), ("description", desc_words)):
+            h, word = _hit_expanded(tok, words)
+            if h > 0:
+                kind = "syn" if word != tok else ("exact" if h >= 1.0 else "prefix")
+                reasons.append(f"{label}:{kind}:{word}" + (f"<-{tok}" if word != tok else ""))
+    return reasons[:6]
 
 
 def _similar(a: str, b: str) -> float:

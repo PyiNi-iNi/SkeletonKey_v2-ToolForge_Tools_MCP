@@ -868,7 +868,12 @@ class Engine:
     def advertise(self, **kw: Any) -> Any:
         kw.setdefault("read_only", self.config.policy.read_only)
         kw.setdefault("disabled", self.config.tools.disable)
-        kw.setdefault("token_budget", self.config.budget.max_result_tokens * 40)
+        # The legacy default budget (max_result_tokens * 40) never binds for today's
+        # ~4k-token surface, but it WOULD mask the `[advertise]` tier budgets; so it is
+        # only applied when the caller is not driving the tiered path (they pass
+        # tier_budgets, and their `[advertise]` caps are the budget).
+        if kw.get("tier_budgets") is None:
+            kw.setdefault("token_budget", self.config.budget.max_result_tokens * 40)
         return self.registry.advertise(**kw)
 
     @property

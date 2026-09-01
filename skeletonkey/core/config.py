@@ -147,6 +147,34 @@ class ToolConfig:
     enable: list[str] = field(default_factory=list)    # empty = all
     disable: list[str] = field(default_factory=list)
     gate_by_profile: bool = True
+    # P5a: the optional semantic routing stage. Off by default = the deterministic
+    # lexical path is the only path, which is the tested and dependency-free state.
+    # On only matters when a `skeletonkey.semantic` entry point backend is installed.
+    semantic: bool = False
+
+
+@dataclass
+class AdvertiseConfig:
+    """Per-tier advertisement budgets (P5a). 0 = no cap for that dimension.
+
+    `full` mirrors the legacy `mcp.advertise_max_tools` knob: the MCP bridge still
+    honours the legacy knob for the full tier, and `[advertise]` is what the tiered
+    path uses. core = what a host sees on a fresh session, before any expand.
+    """
+
+    core_max_tools: int = 20
+    core_max_tokens: int = 1200
+    task_max_tools: int = 48
+    task_max_tokens: int = 6000
+    full_max_tools: int = 0
+    full_max_tokens: int = 0
+
+    def budgets(self) -> dict[str, dict[str, int]]:
+        return {
+            "core": {"tools": self.core_max_tools, "tokens": self.core_max_tokens},
+            "task": {"tools": self.task_max_tools, "tokens": self.task_max_tokens},
+            "full": {"tools": self.full_max_tools, "tokens": self.full_max_tokens},
+        }
 
 
 @dataclass
@@ -193,6 +221,7 @@ class Config:
     fs: FsConfig = field(default_factory=FsConfig)
     skills: SkillConfig = field(default_factory=SkillConfig)
     tools: ToolConfig = field(default_factory=ToolConfig)
+    advertise: AdvertiseConfig = field(default_factory=AdvertiseConfig)
     mcp: McpConfig = field(default_factory=McpConfig)
     state: StateConfig = field(default_factory=StateConfig)
     publish: PublishConfig = field(default_factory=PublishConfig)
