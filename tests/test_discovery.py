@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 
 from skeletonkey.core.config import Config
-from skeletonkey.core.errors import E, SkeletonKeyError
+from skeletonkey.core.errors import SkeletonKeyError
 from skeletonkey.core.manifest import Requirement, ToolManifest
 from skeletonkey.core.profile import CapabilityProfile
 from skeletonkey.core.registry import Registry
