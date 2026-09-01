@@ -15,11 +15,12 @@ sk skills install ./my-skill      # an agent-authored tool, in this process
 python -m skeletonkey.mcp         # stdio server: 33 tools, prompts, resources
 ```
 
-Measured on this box: 37 tools registered / 35 advertised / **3 038 tokens** of
-advertisement (`digest 3206898a746f3fde`), 10 probed capabilities, 4 skills discovered
-(one of them shipping two scripts that compile into callable tools), 0 load errors. Code:
-12 678 lines in `skeletonkey/`, 16 test modules (551 passing, 3 skipped,
-1 xfailed), 2 450 lines of docs (this plan, four contract docs, README; eight ADRs). No workflow file is committed on this branch — the pushing token
+Measured on this box: 56 tools registered / 55 advertised / **5 899 tokens** of
+advertisement (`digest d3139e78632b35f3`), 10 probed capabilities, 5 skills discovered
+(two of them shipping scripts that compile into callable tools), 0 load errors. Code:
+18 328 lines in `skeletonkey/`, 20 test modules (659 passing, 3 skipped,
+1 xfailed), ~3 450 lines of docs (this plan, six contract/reference docs, README, handoff;
+eleven ADRs). No workflow file is committed on this branch — the pushing token
 cannot write to `.github/workflows/` — and the pipeline is specified in §6 for whoever
 lands it (one command reproduces it locally: `ruff check . && pytest -q -m "not slow"`).
 

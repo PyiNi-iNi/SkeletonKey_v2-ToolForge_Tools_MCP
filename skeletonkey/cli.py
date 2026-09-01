@@ -515,7 +515,7 @@ def _live(args: argparse.Namespace, tk: Any, call: Any, cfg: Config) -> int:
 
 def _maybe_serve_hint(res: Any, args: argparse.Namespace, call: Any) -> None:
     """`sk live start` on a tty points at the panel so the loop is visible."""
-    if not args.json and res.ok and not getattr(args, "quiet", False):
+    if not args.json and res.ok:
         d = res.to_dict(max_bytes=None).get("data") or {}
         st = (d.get("status") or {})
         if st.get("abs_path"):

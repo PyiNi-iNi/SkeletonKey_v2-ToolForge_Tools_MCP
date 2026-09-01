@@ -792,8 +792,7 @@ const $ = id => document.getElementById(id);
 let current = null, hist = [], hi = 0, replN = -1;
 const esc = s => String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
 
-function onerr(e){ overlay.style.display='block'; overlay.textContent='⚠ '+e; }
-overlayOn = false;
+function onerr(e){ const o = $('overlay'); o.style.display='block'; o.textContent='⚠ '+e; }
 
 async function pollPrograms(){
   try {
@@ -816,15 +815,15 @@ async function pollPrograms(){
   } catch(e){ $('lamp').className='badge dead'; $('lamp').innerHTML='&bull; offline'; }
   setTimeout(pollPrograms, 700);
 }
-function sel(p){ current = p; dirtyState(); }
+function sel(p){ current = p; tickState(); }
 
 async function ctl(action, p){
   await fetch('/api/control', {method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({action, program:p})});
-  dirtyState();
+  tickState();                                  // controls feel instant; the poll stays the net
 }
 
-async function pollState(){
+async function tickState(){
   if (current) {
     try {
       const s = await (await fetch('/state?program='+current)).json();
@@ -851,10 +850,12 @@ async function pollState(){
       replN = h.repl.length;
     }
   } catch(e){}
+}
+
+async function pollState(){
+  await tickState();
   setTimeout(pollState, 800);
 }
-let dirtyT = null;
-function dirtyState(){ clearTimeout(dirtyT); dirtyT = setTimeout(()=>{}, 0); }
 
 async function pollActivity(){
   try {
