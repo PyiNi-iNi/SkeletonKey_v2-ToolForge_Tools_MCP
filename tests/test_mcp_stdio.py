@@ -855,3 +855,91 @@ def test_publish_store_and_inject_over_the_wire(tmp_path):
         assert "wixtoolset.org" in json.dumps(_payload(kb))
     finally:
         c.close()
+
+
+# ------------------------------------------------------------------ P5a wire
+def test_wire_expand_notifies_and_moves_the_surface(tmp_path):
+    """AC3 over the wire: expand -> tools/list_changed -> the new tier's list.
+    The client that made the call is the one that hears about it, and a
+    second, unchanged list must not re-notify."""
+    c = spawn(str(tmp_path), "--root", str(tmp_path))
+    c.start()
+    try:
+        first = c.request("tools/list", {})
+        names0 = {t["name"] for t in first["tools"]}
+        assert "fs.patch" in names0 and "registry.expand" in names0
+        assert first["_meta"]["sk.tier"] == "full"
+
+        notes: list[dict] = []
+        res = c.request("tools/call", {"name": "registry.expand", "arguments": {"tier": "core"}},
+                        collect=notes)
+        assert not res.get("isError"), _payload(res)
+        assert "notifications/tools/list_changed" in [n.get("method") for n in notes], notes
+
+        after = c.request("tools/list", {})
+        names1 = {t["name"] for t in after["tools"]}
+        assert "fs.patch" not in names1 and "registry.route" in names1
+        assert after["_meta"]["sk.tier"] == "core"
+        # receipts ride in the list meta and per tool
+        assert after["_meta"]["sk.selection_receipts"]
+        rec = next(t["_meta"]["sk"]["provider_receipt"] for t in after["tools"]
+                   if t["name"] == "registry.route")
+        assert rec["why"]
+
+        notes2: list[dict] = []
+        c.request("tools/list", {}, collect=notes2)
+        assert not any(n.get("method") == "notifications/tools/list_changed" for n in notes2), notes2
+
+        back = c.request("tools/call", {"name": "registry.expand", "arguments": {"tier": "full"}})
+        assert not back.get("isError"), _payload(back)
+        final = c.request("tools/list", {})
+        assert "fs.patch" in {t["name"] for t in final["tools"]}
+        assert final["_meta"]["sk.tier"] == "full"
+    finally:
+        c.close()
+
+
+def test_wire_tools_list_cursor_round_trip(tmp_path):
+    """tools/list accepts a cursor (P5a pagination plumbing over the wire)."""
+    c = spawn(str(tmp_path), "--root", str(tmp_path))
+    c.start()
+    try:
+        first = c.request("tools/list", {})
+        names = [t["name"] for t in first["tools"]]
+        assert names and first.get("nextCursor") is None
+
+        offset = min(5, len(names) - 1)
+        paged = c.request("tools/list", {"cursor": str(offset)})
+        paged_names = [t["name"] for t in paged["tools"]]
+        assert paged_names == names[offset:], "the cursor must be an opaque position, not a guess"
+        for t in paged["tools"]:
+            sk = (t.get("_meta") or {}).get("sk")
+            assert sk and "tier" in sk and "provider_receipt" in sk
+
+        bogus = c.request("tools/list", {"cursor": "not-a-number"})
+        assert [t["name"] for t in bogus["tools"]] == names, "a bad cursor falls back to page 0"
+    finally:
+        c.close()
+
+
+def test_wire_route_and_explain_carry_reasons(tmp_path):
+    """registry.route and capabilities.explain over the wire: reasons, not just ids."""
+    c = spawn(str(tmp_path), "--root", str(tmp_path))
+    c.start()
+    try:
+        r = c.request("tools/call", {"name": "registry.route",
+                                     "arguments": {"task": "rename a symbol in one file", "k": 5}})
+        assert not r.get("isError"), _payload(r)
+        body = _payload(r)
+        assert body["ok"] and body["data"]["mode"] == "lexical"
+        assert body["data"]["results"] and all(h.get("reasons") for h in body["data"]["results"])
+        assert any(h["id"] == "fs.patch" for h in body["data"]["results"])
+
+        e = c.request("tools/call", {"name": "capabilities.explain",
+                                     "arguments": {"capability": "fs.patch"}})
+        assert not e.get("isError"), _payload(e)
+        explained = _payload(e)
+        assert explained["data"]["winner"]["tool"] == "fs.patch"
+        assert explained["data"]["winner"]["why"]
+    finally:
+        c.close()

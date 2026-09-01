@@ -38,6 +38,7 @@ def _spec(**kw: Any) -> None:
 # ============================================================== shell tool set
 _spec(
     id="shell.run", title="Run a shell script",
+    tier="task",
     description="Execute a script in bash, PowerShell (7 or 5.1), or python and capture "
                 "stdout/stderr/exit code. The script is delivered as a temp file, is never "
                 "rewritten, and 'completed' tells you whether it reached the end. Use this for "
@@ -88,6 +89,7 @@ _spec(
 
 _spec(
     id="shell.available", title="List usable shells",
+    tier="task",
     description="Which shell dialects this host actually has, their versions, and the caveats "
                 "each one carries. Call this before choosing a dialect, not after guessing.",
     capability="profile.shells", risk="none", typical_latency_ms=1,
@@ -98,6 +100,7 @@ _spec(
 
 _spec(
     id="shell.jobs", title="List background jobs",
+    tier="task",
     description="Background jobs started by shell.run(background=true), with pid, running state "
                 "and log paths.",
     capability="exec.jobs", risk="none", typical_latency_ms=1, stateful="session",
@@ -107,6 +110,7 @@ _spec(
 
 _spec(
     id="shell.job_wait", title="Wait for a background job",
+    tier="task",
     description="Block until a background job finishes or the wait times out, then return tails of "
                 "its stdout/stderr and its exit code.",
     capability="exec.jobs", risk="none", typical_latency_ms=2000, stateful="session",
@@ -121,6 +125,7 @@ _spec(
 
 _spec(
     id="shell.job_watch", title="Watch a background job for a line",
+    tier="task",
     description="Poll a background job's stdout until a line matches `until` (regular "
                 "expression) or the timeout cap is reached. On a match returns "
                 "`matched_line`; on the cap returns `timed_out: true` and leaves the job "
@@ -141,6 +146,7 @@ _spec(
 
 _spec(
     id="shell.job_kill", title="Kill a background job",
+    tier="task",
     description="Terminate a background job and its whole process tree.",
     capability="exec.jobs", risk="destructive", destructive=True, idempotent=True, typical_latency_ms=50,
     stateful="session", tags=["shell", "jobs", "kill"],
@@ -151,6 +157,7 @@ _spec(
 
 _spec(
     id="shell.sessions", title="List shell sessions",
+    tier="task",
     description="Active persistent shell sessions (cwd and env carried across calls).",
     capability="exec.sessions", risk="none", typical_latency_ms=1, stateful="session",
     tags=["shell", "session", "cwd", "env"],
@@ -159,6 +166,7 @@ _spec(
 
 _spec(
     id="shell.session_reset", title="Reset a shell session",
+    tier="task",
     description="Drop a session's carried cwd/env (or all sessions). Use when a session drifts.",
     capability="exec.sessions", risk="write", typical_latency_ms=1, stateful="session",
     tags=["shell", "session", "reset"],
@@ -170,6 +178,7 @@ _spec(
 # ================================================================ filesystem
 _spec(
     id="fs.read", title="Read a file",
+    tier="task",
     description="Read a text file with paged access: line offsets, explicit ranges, or byte caps. "
                 "Reports encoding/newline so edits can preserve them.",
     capability="fs.read", risk="read", parallel_safe=True, typical_latency_ms=15,
@@ -189,6 +198,7 @@ _spec(
 
 _spec(
     id="fs.write", title="Write or create a file",
+    tier="task",
     description="Atomic create/overwrite of a whole file. Preserves newline style and encoding "
                 "unless told otherwise, records an undo token, and can refuse if the file changed "
                 "since you read it (expect_sha).",
@@ -212,6 +222,7 @@ _spec(
 
 _spec(
     id="fs.patch", title="Edit a file with targeted replacements",
+    tier="task",
     description="Apply ordered find/replace edits to a file and return a unified diff. Whitespace "
                 "tolerant, refuses ambiguous matches, checks for concurrent modification, and is "
                 "undoable. This is the default way to change code.",
@@ -240,6 +251,7 @@ _spec(
 
 _spec(
     id="fs.search", title="Search file contents",
+    tier="task",
     description="Grep across the workspace. Uses ripgrep when installed (honouring its rules) and a "
                 "pure-python walker otherwise, with the same result shape. Report which provider "
                 "answered in `data.provider`.",
@@ -265,6 +277,7 @@ _spec(
 
 _spec(
     id="fs.list", title="List a directory",
+    tier="task",
     description="Bounded directory listing with sizes and mtimes; ignore rules applied.",
     capability="fs.list", risk="read", parallel_safe=True, typical_latency_ms=20,
     tags=["ls", "dir", "list", "tree", "browse", "folder"],
@@ -279,6 +292,7 @@ _spec(
 
 _spec(
     id="fs.glob", title="Match filenames",
+    tier="task",
     description="Glob filenames under a root (** spans directories). Returns paths, sizes, mtimes.",
     capability="fs.glob", risk="read", parallel_safe=True, typical_latency_ms=60,
     tags=["glob", "find", "files", "match", "name"],
@@ -293,6 +307,7 @@ _spec(
 
 _spec(
     id="fs.sniff", title="Identify a file's format",
+    tier="task",
     description=("Sample a file and report encoding, line endings, whether it is binary, and size - "
                  "cheap to run, and the thing to check before reading anything unusual into context."),
     capability="fs.read", risk="read", parallel_safe=True, typical_latency_ms=3,
@@ -305,6 +320,7 @@ _spec(
 
 _spec(
     id="fs.stat", title="Inspect a path",
+    tier="task",
     description="Existence, type, size, mtime, permissions, writability, and whether a symlink was followed.",
     capability="fs.stat", risk="read", parallel_safe=True, typical_latency_ms=2,
     tags=["stat", "info", "exists", "size", "metadata"],
@@ -314,6 +330,7 @@ _spec(
 
 _spec(
     id="fs.delete", title="Delete a path",
+    tier="task",
     description="Delete a file or directory. Default (fs.trash = \"journal\"): journaled first, so the "
                 "result carries an undo token. fs.trash = \"os-trash\" moves the path to the OS recycle bin "
                 "(the journal keeps a second copy; a host without a trash API refuses with UNSUPPORTED_PLATFORM "
@@ -330,6 +347,7 @@ _spec(
 
 _spec(
     id="fs.move", title="Move or rename a path",
+    tier="task",
     description="Rename/move within the sandbox, journaled so it can be undone.",
     capability="fs.move", risk="write", destructive=True, reversible=True, idempotent=False,
     typical_latency_ms=15, tags=["mv", "rename", "move", "relocate"],
@@ -341,6 +359,7 @@ _spec(
 
 _spec(
     id="fs.mkdir", title="Create a directory",
+    tier="task",
     description="mkdir -p inside the sandbox.",
     capability="fs.mkdir", risk="write", idempotent=True, reversible=True, typical_latency_ms=5,
     tags=["mkdir", "directory", "create", "folder"],
@@ -352,6 +371,7 @@ _spec(
 
 _spec(
     id="fs.chmod", title="Set the mode bits on a path",
+    tier="task",
     description="Set permissions inside the sandbox from an octal mode (`644`, `0o755`) or "
         "symbolic clauses (`u+x`, `go-w`, `a=r`, `a=rwx,o+t`). Symbolic modes are applied to the "
         "current bits, so `u+x` cannot wipe what you did not name. Journaled: `fs.undo` puts the "
@@ -384,6 +404,7 @@ _spec(
 
 _spec(
     id="fs.undo", title="Undo one journaled change",
+    tier="task",
     description="Restore the before-image of one fs.write/fs.patch/fs.delete/fs.move using its undo token. "
                 "Pass the `undo_token` value the mutating call returned (either argument name works). "
                 "Set `expect_sha` (the sha256 from the last fs.read, full or 16-char prefix) to refuse with "
@@ -403,6 +424,7 @@ _spec(
 
 _spec(
     id="fs.redo", title="Re-apply the most recent undone change",
+    tier="task",
     description="The mirror of fs.undo: re-apply the most recently *undone* journaled change, optionally "
                 "limited to one path. The redo itself is journaled - the result carries a fresh `undo_token` "
                 "so it can be undone again. Anything that no longer holds (the file changed after the undo, "
@@ -418,6 +440,7 @@ _spec(
 
 _spec(
     id="fs.undo_task", title="Undo every change in a task",
+    tier="task",
     description="Reverse all journaled mutations for one task_id, newest first. This is 'revert the turn'.",
     capability="fs.undo", risk="write", idempotent=False, reversible=False, typical_latency_ms=80,
     tags=["undo", "revert", "rollback", "restore", "task"],
@@ -428,6 +451,7 @@ _spec(
 
 _spec(
     id="fs.journal_list", title="List journaled changes",
+    tier="task",
     description="Recent journal entries (what changed, when, and the undo token) - the audit trail.",
     capability="fs.journal", risk="read", typical_latency_ms=5, stateful="session",
     tags=["journal", "history", "undo", "audit"],
@@ -446,6 +470,7 @@ _spec(
                 "encoding, and the warnings that explain degraded behaviour.",
     capability="profile.capabilities", risk="none", typical_latency_ms=250, idempotent=True,
     tags=["profile", "capability", "host", "detect", "probe", "environment"],
+    tier="core",
     anti_patterns=["don't call this on every turn - the profile is cached and fingerprinted"],
     input_schema={"type": "object", "properties": {"force": {"type": "boolean", "default": False},
                                                     "include_receipts": {"type": "boolean", "default": False}},
@@ -454,24 +479,33 @@ _spec(
 
 _spec(
     id="registry.list", title="List available tools",
-    description="The currently advertised tool set after capability gating and provider de-duplication, "
-                "with risk class and token cost. Use this to see what you may call right now.",
+    description="The currently advertised tool set after capability gating, tier filtering and provider "
+                "de-duplication, with risk class, tier, provider receipt and token cost. `tier` says which "
+                "tier the result is for (default: the session's active tier); cursor pages the 200-tool world.",
     capability="registry.tools", risk="none", typical_latency_ms=5,
-    tags=["tools", "registry", "list", "discover", "capability"],
+    tags=["tools", "registry", "list", "discover", "capability", "tier"],
+    tier="core",
     input_schema={"type": "object",
                   "properties": {"group": {"type": "string"},
                                  "include_gated": {"type": "boolean", "default": False},
                                  "include_schema": {"type": "boolean", "default": False},
-                                 "limit": {"type": "integer", "minimum": 1, "maximum": 400, "default": 100}},
+                                 "limit": {"type": "integer", "minimum": 1, "maximum": 400, "default": 100},
+                                 "cursor": {"type": "string",
+                                            "description": "Opaque page cursor from a previous call's next_cursor."},
+                                 "tier": {"type": ["string", "null"], "default": None,
+                                          "description": "Query a tier without switching to it; omit for the "
+                                                         "session's active tier."}},
                   "additionalProperties": False},
 )
 
 _spec(
     id="registry.search", title="Find a tool for a need",
     description="Search tools by natural-language capability ('rename a bunch of files', 'run a script "
-                "in powershell'). Deterministic lexical ranking over id/tags/description/capability.",
+                "in powershell'). Deterministic lexical ranking over id/tags/description/capability. "
+                "Use registry.route when you want the reasons a tool matched.",
     capability="registry.search", risk="none", typical_latency_ms=8,
     tags=["search", "tools", "discover", "find", "capability", "need"],
+    tier="core",
     input_schema={"type": "object",
                   "properties": {"query": {"type": "string", "minLength": 1},
                                  "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 8},
@@ -486,9 +520,10 @@ _spec(
 _spec(
     id="registry.describe", title="Inspect one tool's contract",
     description="Full manifest for a tool: schema, requirements, availability gates with reasons, "
-                "risk, reversibility, examples, anti-patterns, and live stats.",
+                "risk, reversibility, examples, anti-patterns, tier, and live stats.",
     capability="registry.describe", risk="none", typical_latency_ms=4,
     tags=["tool", "schema", "describe", "inspect", "manifest"],
+    tier="core",
     input_schema={"type": "object", "properties": {"tool": {"type": "string"}},
                   "required": ["tool"], "additionalProperties": False},
 )
@@ -507,6 +542,7 @@ _spec(
     capability="policy.grant", risk="write", approval="policy", idempotent=True,
     typical_latency_ms=1, stateful="session",
     tags=["approval", "grant", "policy", "approve", "permission", "receipt", "audit"],
+    tier="task",   # grants matter when mutating tools do; the core tier has nothing to grant
     anti_patterns=["not a way to grant yourself a destructive tool unattended - "
                    "the grant is approval-gated whenever the target is"],
     see_also=["registry.describe"],
@@ -529,12 +565,73 @@ _spec(
                 "this, so check it when something seems to be failing a lot.",
     capability="registry.stats", risk="none", typical_latency_ms=3, stateful="session",
     tags=["stats", "metrics", "reliability", "failures"],
+    tier="core",
     input_schema={"type": "object", "properties": {"tool": {"type": "string"}}, "additionalProperties": False},
+)
+
+_spec(
+    id="registry.route", title="Route a task to tools",
+    description="Two-stage router (P5a): an exact-name match always wins, then deterministic lexical "
+                "ranking over id/capability/tags/description, every hit carrying the reasons it matched "
+                "and its tier. The optional semantic rerank runs only when a backend is installed and "
+                "you ask for it; offline it answers with the lexical result and says so.",
+    capability="registry.route", risk="none", typical_latency_ms=10,
+    tags=["route", "discovery", "rank", "reasons", "tools", "task"],
+    tier="core",
+    see_also=["registry.search", "registry.expand", "capabilities.explain"],
+    examples=[{"args": {"task": "rename a symbol in one file", "k": 5}}],
+    input_schema={"type": "object",
+                  "properties": {"task": {"type": "string", "minLength": 1},
+                                 "k": {"type": "integer", "minimum": 1, "maximum": 50, "default": 8},
+                                 "semantic": {"type": ["boolean", "null"], "default": None,
+                                              "description": "Use a registered semantic backend if one is "
+                                                             "installed; None = the tools.semantic config "
+                                                             "setting, false = the deterministic path."},
+                                 "include_gated": {"type": "boolean", "default": False},
+                                 "group": {"type": "string"}},
+                  "required": ["task"], "additionalProperties": False},
+)
+
+_spec(
+    id="registry.expand", title="Switch the advertised tier",
+    description="Set the discovery tier for this toolkit: core = the bootstrap surface (registry, routing, "
+                "skills, safety), task = core + the workhorse set (fs, shell, jobs), full = everything "
+                "(the default). Returns the previous tier and the new snapshot summary. The digest changes "
+                "with the set, so tools/list_changed fires after this call.",
+    capability="registry.tiers", risk="none", typical_latency_ms=5, stateful="session",
+    tags=["registry", "tier", "expand", "discovery", "advertise"],
+    tier="core",
+    see_also=["registry.list", "registry.route"],
+    examples=[{"args": {"tier": "task"}}],
+    input_schema={"type": "object",
+                  "properties": {"tier": {"type": "string", "enum": ["core", "task", "full"],
+                                          "description": "full is the default; core is the bootstrap "
+                                                         "surface; task adds the fs/shell workhorses."}},
+                  "required": ["tier"], "additionalProperties": False},
+)
+
+_spec(
+    id="capabilities.explain", title="Why a capability is gated",
+    description="Every tool that claims a capability (or the capability of a given tool id), with its gate "
+                "reasons, score, tier, live stats, which provider won and why - the receipt behind "
+                "'why didn't I see this tool?'.",
+    capability="registry.explain", group="capabilities", risk="none", typical_latency_ms=8,
+    tags=["capability", "explain", "gate", "receipt", "discovery", "why", "provider"],
+    tier="core",
+    see_also=["registry.describe", "registry.route"],
+    examples=[{"args": {"capability": "search.text"}}, {"args": {"capability": "fs.patch"}}],
+    input_schema={"type": "object",
+                  "properties": {"capability": {"type": "string", "minLength": 1,
+                                                "description": "A capability (search.text) or a tool id "
+                                                               "(fs.patch - resolved to its capability)."},
+                                 "k": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50}},
+                  "required": ["capability"], "additionalProperties": False},
 )
 
 
 _spec(
     id="shell.quote", title="Quote values for a dialect",
+    tier="task",
     description="""Render values as literal tokens for one shell dialect, for embedding in a
 `shell.run {script}` body. If the value is an *argument* rather than part of the program text,
 do not quote it - pass `shell.run {argv: [...]}` and it never reaches a shell parser.
@@ -974,25 +1071,61 @@ def register(reg: Any, *, engine: Any, shells: Any, fs: Any, journal: Any, skill
         return d
 
     def registry_list(group: str | None = None, include_gated: bool = False, include_schema: bool = False,
-                      limit: int = 100) -> dict[str, Any]:
-        snap = engine.advertise(dedupe_capability=not include_gated,
-                               token_budget=engine.config.mcp.advertise_max_tools * 200)
+                      limit: int = 100, cursor: str | None = None,
+                      tier: str | None = None) -> dict[str, Any]:
+        active = engine.registry.active_tier
+        if tier is None:
+            query_tier = active
+        elif tier in ("core", "task", "full"):
+            query_tier = tier
+        else:
+            raise SkeletonKeyError(E.BAD_ARGS, f"unknown tier {tier!r}",
+                                   details={"tier": tier, "tiers": ["core", "task", "full"],
+                                            "hint": "omit for the session's active tier"})
+        # P5a: the tiered path uses [advertise] caps; the full tier keeps the legacy knob.
+        if query_tier == "full":
+            snap = engine.advertise(dedupe_capability=not include_gated,
+                                    token_budget=engine.config.mcp.advertise_max_tools * 200)
+        else:
+            snap = engine.advertise(dedupe_capability=not include_gated, tier=query_tier,
+                                    tier_budgets=engine.config.advertise.budgets())
+        filtered = [man for man in snap.tools if not group or man.group == group]
+        start = int(cursor) if cursor and str(cursor).isdigit() else 0
+        page = filtered[start:start + int(limit)]
         items = []
-        for man in snap.tools:
-            if group and man.group != group:
-                continue
+        for man in page:
             d = man.to_dict(include_schema=include_schema)
+            d["provider_receipt"] = snap.receipt_for(man)
             items.append(d)
-            if len(items) >= int(limit):
-                break
+        next_cursor = str(start + len(page)) if start + len(page) < len(filtered) else None
         if include_gated:
             for tid, gate in snap.gates.items():
                 if not gate.available and (not group or tid.split(".")[0] == group):
                     items.append({"id": tid, "available": False, "gate": gate.to_dict()})
-        return {"tools": items, "count": len(items), "digest": snap.digest,
-                "selected_providers": snap.selected,
-                "estimated_tokens": snap.tokens,
+        return {"tools": items, "count": len(items), "total": len(filtered),
+                "digest": snap.digest, "selected_providers": snap.selected,
+                "receipts": snap.selection_receipts, "budget_drops": snap.budget_drops,
+                "tier": snap.tier, "active_tier": active,
+                "estimated_tokens": snap.tokens, "next_cursor": next_cursor,
                 "budget": engine.config.mcp.advertise_max_tools}
+
+    def registry_route(task: str, k: int = 8, semantic: bool | None = None,
+                       include_gated: bool = False, group: str | None = None) -> dict[str, Any]:
+        if semantic is None:
+            semantic = bool(getattr(engine.config.tools, "semantic", False))
+        return engine.registry.route(task, k=int(k), semantic=bool(semantic),
+                                     include_gated=include_gated, group=group)
+
+    def registry_expand(tier: str) -> dict[str, Any]:
+        old = engine.registry.set_tier(tier)
+        snap = engine.advertise(tier=tier, tier_budgets=engine.config.advertise.budgets())
+        return {"previous_tier": old, "tier": snap.tier, "digest": snap.digest,
+                "tools": len(snap.tools), "estimated_tokens": snap.tokens,
+                "note": "tools/list now reflects the new tier; if the set changed, "
+                        "a tools/list_changed notification follows"}
+
+    def capabilities_explain(capability: str, k: int = 50) -> dict[str, Any]:
+        return engine.registry.explain(capability, k=int(k))
 
     def registry_search(query: str, limit: int = 8, include_gated: bool = False, group: str | None = None,
                         max_risk: str | None = None) -> dict[str, Any]:
@@ -1288,6 +1421,8 @@ def register(reg: Any, *, engine: Any, shells: Any, fs: Any, journal: Any, skill
                      ("fs.journal_list", fs_journal_list), ("profile.probe", profile_probe),
                      ("registry.list", registry_list), ("registry.search", registry_search),
                      ("registry.describe", registry_describe), ("registry.stats", registry_stats),
+                     ("registry.route", registry_route), ("registry.expand", registry_expand),
+                     ("capabilities.explain", capabilities_explain),
                      ("policy.grant", policy_grant)]:
         add(name, fn)
     for name, fn in [("pub.store_put", pub_store_put), ("pub.store_list", pub_store_list),
