@@ -147,9 +147,11 @@ class ToolConfig:
     enable: list[str] = field(default_factory=list)    # empty = all
     disable: list[str] = field(default_factory=list)
     gate_by_profile: bool = True
-    # P5a: the optional semantic routing stage. Off by default = the deterministic
-    # lexical path is the only path, which is the tested and dependency-free state.
-    # On only matters when a `skeletonkey.semantic` entry point backend is installed.
+    # P5b: the semantic routing stage. Off by default = the deterministic lexical
+    # path, which is the tested default and what existing hosts keep seeing. On =
+    # `registry.route(semantic=True)` blends lexical 50/50 with a discovered
+    # `skeletonkey.semantic` backend (the builtin zero-dep lexical-tfidf ships,
+    # ADR-0012; entry points plug in the same way).
     semantic: bool = False
 
 
@@ -189,6 +191,11 @@ class McpConfig:
     emit_list_changed: bool = True
     structured_content: bool = True
     log_to_stderr: bool = False                          # stdout is the protocol channel
+    # P5b (ADR-0013): remote MCP servers, enrolled at build time as
+    # `remote.<name>.<tool>`. Each entry: {"command": [...], "args": [...]} for
+    # stdio, or {"url": "..."} for streamable-http, plus optional "enabled"
+    # (default true) and "timeout_s" (default 30).
+    remotes: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 @dataclass

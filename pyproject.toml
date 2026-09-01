@@ -46,6 +46,13 @@ skeletonkey-mcp = "skeletonkey.mcp.__main__:main"
 # Third-party packages can ship tools by adding an entry-point group.
 # name = "package.module:TOOL_SPECS"
 
+[project.entry-points."skeletonkey.semantic"]
+# The builtin zero-dependency backend (ADR-0012). Installed dists discover it
+# through the same group a third-party backend uses; dev checkouts resolve it
+# directly from core/semantic.py. `registry.route` enables it only when
+# tools.semantic = true.
+lexical-tfidf = "skeletonkey.core.semantic:make_builtin_backend"
+
 [tool.hatch.build.targets.wheel]
 packages = ["skeletonkey"]
 

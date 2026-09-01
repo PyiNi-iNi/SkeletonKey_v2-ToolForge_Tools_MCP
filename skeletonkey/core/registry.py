@@ -27,7 +27,7 @@ from typing import Any
 from .errors import E, SkeletonKeyError
 from .manifest import RISK_ORDER, Requirement, ToolManifest
 from .profile import CapabilityProfile
-from .semantic import discover_backends
+from .semantic import discover
 from .util import compact_json, new_run_id, short_hash
 
 # Discovery tiers (P5a): a manifest's `tier` tells us *when* it may be advertised.
@@ -533,23 +533,30 @@ class Registry:
             if len(results) >= k:
                 break
 
-        backends = discover_backends() if semantic else []
+        backends, backend_errors = (discover() if semantic else ([], []))
         mode = "semantic" if backends else "lexical"
         note = None
         if semantic and not backends:
-            note = ("no semantic backend installed (entry-point group "
+            note = ("no semantic backend available (entry-point group "
                     "skeletonkey.semantic); the deterministic lexical stage answered")
         if backends:
+            # P5b blend (ADR-0012): normalize the lexical score against the best
+            # hit so 0.5/0.5 is actually half-and-half, then tie-break by id for
+            # determinism. The stage reranks *within* the lexical candidate set
+            # (both modes return the same ids) - it can reorder, never invent.
             b = backends[0]
+            top = max((float(r.get("score") or 0.0) for r in results), default=1.0) or 1.0
             for r in results:
-                r["semantic_score"] = round(float(b.score(task, r.get("description") or "")), 4)
-            results.sort(key=lambda r: -(0.5 * float(r.get("score") or 0.0)
-                                         + 0.5 * float(r.get("semantic_score") or 0.0)))
+                sem = round(float(b.score(task, r.get("description") or "")), 4)
+                r["semantic_score"] = sem
+                r["blend"] = round(0.5 * (float(r.get("score") or 0.0) / top) + 0.5 * sem, 4)
+            results.sort(key=lambda r: (-(float(r.get("blend") or 0.0)), r["id"]))
         return {"task": task[:300], "k": k, "mode": mode,
                 "backend": (backends[0].name if backends else None),
                 "backends_available": len(backends),
                 "results": results[:k], "count": min(len(results), k),
-                **( {"note": note} if note else {})}
+                **( {"note": note} if note else {}),
+                **( {"backend_errors": backend_errors} if backend_errors else {})}
 
     # ------------------------------------------------------------------ explain
     def explain(self, capability: str, *, k: int = 50) -> dict[str, Any]:

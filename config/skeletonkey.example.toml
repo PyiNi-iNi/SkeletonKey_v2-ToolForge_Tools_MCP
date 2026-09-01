@@ -119,9 +119,11 @@ override_builtin = false           # a drop-in may not replace a built-in unless
 enable = []                        # empty = everything the host can run
 disable = []                       # e.g. ["shell.run"] on a locked-down runner
 gate_by_profile = true             # withhold tools whose requirements this host fails
-# P5a: optional semantic routing stage. Off = the deterministic lexical path, which
-# is the tested, dependency-free state. On only matters with a backend installed
-# under the `skeletonkey.semantic` entry-point group (see PLAN P5b).
+# P5b: the semantic routing stage. Off = the deterministic lexical path (the tested
+# default, and what existing hosts keep seeing). On = route(semantic=True) blends
+# the lexical score 50/50 with the builtin `lexical-tfidf` backend (zero-dep,
+# ADR-0012); a third-party backend under the `skeletonkey.semantic` entry-point
+# group is discovered the same way.
 semantic = false
 
 # --------------------------------------------------------------- advertise

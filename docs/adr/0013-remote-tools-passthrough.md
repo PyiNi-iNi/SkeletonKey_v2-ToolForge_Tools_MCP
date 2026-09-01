@@ -54,8 +54,9 @@ machine without lying about what they are.
   Transport failures map to `DEPENDENCY_MISSING` with the server name and the reason.
 - **Enrollment.** The connector connects at build time (one thread + event loop per
   remote server, so the sync engine can call it). A server that fails to connect or
-  handshake is a `registry.load_errors` entry (with the reason and `near` fix), not a
-  silent absence — the host sees *why* `remote.<server>.*` isn't there.
+  handshake is an entry in the registry's `load_errors` report (with the reason and a
+  `near` fix), not a silent absence — the host sees *why* `remote.<server>.*` isn't
+  there.
 - **Stats.** `registry.stats` rows gain `source` (manifest source); `stats(source=...)`
   filters, and the aggregate view gains `by_source` so remote and local counts are
   separate and readable.

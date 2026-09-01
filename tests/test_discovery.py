@@ -1,10 +1,12 @@
-"""P5a acceptance: tiers, routing, provider receipts, explain, pagination.
+"""P5 acceptance: tiers, routing, provider receipts, explain, pagination (P5a)
+and the shipped semantic stage (P5b, ADR-0012).
 
 AC1: with 200 registered tools, advertise(tier="core") stays <= 20 tools / <= 1.2 k
 tokens, and registry.route(task, k=5) top-k hit-rate >= 0.9 over the eval suite
 (ground truth: each task's `target`).
-AC2: with no semantic backend installed (the only shipped state), route(semantic=True)
-is identical to route(semantic=False) and reports mode="lexical" + why.
+AC2: the builtin zero-dep backend makes route(semantic=True) a real two-stage
+comparison - same candidate ids, reordering observed, same hit-rate; if
+discovery yields nothing, route stays lexical and says so.
 AC3: expand round-trip - tier switch changes the digest (the wire notification is
 asserted in test_mcp_stdio.py).
 AC4: provider races expose the winner's provider + why; explain() names the gates.
@@ -143,29 +145,63 @@ def test_route_exact_name_always_wins():
         assert r["results"][0]["reasons"] == ["exact name match"]
 
 
-def test_route_explains_hits_and_reports_lexical_mode():
+def test_route_explains_hits_and_reports_modes():
     reg = Registry(profile=_empty_profile())
     for tid, desc, tags in [("fs.patch", "apply replacement edits to a file", ["patch", "edit"]),
                             ("fs.move", "rename or move a path", ["move", "rename"]),
                             ("fs.search", "find text in files", ["search", "find"])]:
         reg.register(_man(tid, description=desc, tags=tags), lambda **kw: {"ok": True})
     r = reg.route("rename a symbol in one file", k=5, semantic=True)
-    assert r["mode"] == "lexical" and r["backend"] is None
-    assert r["backends_available"] == 0
-    assert r["note"] and "no semantic backend" in r["note"]
-    assert all(hit.get("reasons") for hit in r["results"]), r["results"]
+    assert r["mode"] == "semantic" and r["backend"] == "lexical-tfidf"
+    assert r["backends_available"] >= 1
+    assert all(hit.get("reasons") and "semantic_score" in hit and "blend" in hit
+               for hit in r["results"]), r["results"]
+    off = reg.route("rename a symbol in one file", k=5, semantic=False)
+    assert off["mode"] == "lexical" and off["backend"] is None
+    assert all("semantic_score" not in hit for hit in off["results"])
     # exact-name path is mode-independent
     assert reg.route("fs.search", k=3)["results"][0]["id"] == "fs.search"
 
 
-def test_route_semantic_on_off_identical_without_backend(eval_toolkit):
-    """AC2, in the only shipped state: no backend installed == no change."""
+def test_route_semantic_reranks_within_lexical_candidates(eval_toolkit):
+    """AC2 with the shipped backend: same candidate ids, reordering observed,
+    same ground-truth hit-rate - the stage is real and changes no outcomes."""
     reg = eval_toolkit.engine.registry
+    reordered = 0
     for task in _suite():
         on = reg.route(task["task"], k=5, semantic=True)
         off = reg.route(task["task"], k=5, semantic=False)
-        assert on["results"] == off["results"], task["id"]
-        assert on["mode"] == "lexical" and on["backend"] is None
+        assert on["mode"] == "semantic" and on["backend"] == "lexical-tfidf"
+        assert off["mode"] == "lexical" and off["backend"] is None
+        # the semantic stage reranks within the lexical candidate set: same ids,
+        # possibly a different order
+        on_ids = [h["id"] for h in on["results"]]
+        off_ids = [h["id"] for h in off["results"]]
+        assert sorted(on_ids) == sorted(off_ids), task["id"]
+        if on_ids != off_ids:
+            reordered += 1
+        # and neither mode loses the ground truth at k=5
+        assert task["target"] in [h["id"] for h in on["results"]], (task["id"], "semantic")
+        assert task["target"] in [h["id"] for h in off["results"]], (task["id"], "lexical")
+    assert reordered > 0, "the semantic stage must actually reorder (else it is a no-op)"
+    # determinism: same call twice, same ranking
+    first = reg.route("rename a symbol in one file", k=8, semantic=True)
+    second = reg.route("rename a symbol in one file", k=8, semantic=True)
+    assert [h["id"] for h in first["results"]] == [h["id"] for h in second["results"]]
+
+
+def test_route_semantic_honest_when_backends_unavailable(monkeypatch):
+    """If discovery yields nothing (an exotic install), semantic=True must say so."""
+    import skeletonkey.core.registry as regmod
+
+    monkeypatch.setattr(regmod, "discover", lambda: ([], [{"name": "x", "error": "boom"}]))
+    reg = Registry(profile=_empty_profile())
+    reg.register(_man("fs.patch", description="apply edits", tags=["patch"]),
+                 lambda **kw: {"ok": True})
+    r = reg.route("patch a file", k=3, semantic=True)
+    assert r["mode"] == "lexical" and r["backend"] is None
+    assert r["note"] and "no semantic backend" in r["note"]
+    assert r["backend_errors"] == [{"name": "x", "error": "boom"}]
 
 
 def test_route_eval_suite_target_hit_rate(eval_toolkit):
