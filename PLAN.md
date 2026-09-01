@@ -607,7 +607,13 @@ site, security pass, Windows CI remain.
   the venv's `site-packages` hidden (ADR-0001's promise, checked). _Shipped:_ the
   `-S` subprocess test proves `toolkit`/`mcp.client`/`live` import with no
   site-packages and leak no third-party package, and that a build importing no
-  remotes never imports the `mcp` extra.
+  remotes never imports the `mcp` extra; hatchling wheel+sdist build and a
+  clean-venv offline install of the wheel was verified locally (`pip wheel`,
+  then `pip install --no-index dist/*.whl`; `sk --version` works);
+  `CHANGELOG.md` + `pyproject`/`version.py` single-source rule recorded.
+  `release.yml` (tag → build → attach) is written in `.github/workflows/`
+  but the branch cannot push `.github/` without the App's `workflows`
+  permission — the release workflow will be live once the user grants it.
 - Diagnostics: `sk doctor` (config layers, roots, probe receipts, gate diffs, ledger
   integrity, spill dir, skill load errors — one JSON blob an operator can paste),
   `sk doctor --fix` limited to safe moves (create state dir, refresh profile). _Shipped:_
@@ -632,6 +638,10 @@ site, security pass, Windows CI remain.
   the provenance table in `docs/security-matrix.md`.
 - Windows CI runner turns `@pytest.mark.win` from skip to real: CLIXML decoding,
   CRLF round-trips, pwsh strict mode, long paths, recycle-bin deletion.
+  _Shipped (pending `.github/` push):_ `ci.yml` matrix is ubuntu+windows ×
+  py3.11+3.13 with windows gating (no more `continue-on-error`); the three
+  `@pytest.mark.win` tests run for real on windows-latest (image ships pwsh
+  and powershell.exe); core-constraint now also runs `test_core_imports.py`.
 
 **Acceptance criteria.** Clean-checkout `pip install -e .[dev]` then `pytest` passes on
 ubuntu-latest and windows-latest, Python 3.11 and 3.13; `sk doctor` output is stable
