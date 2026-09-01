@@ -546,33 +546,48 @@ between them.
    `why` in snapshot receipts, `registry.list` rows and `capabilities.explain` —
    asserted, not claimed.
 
-**What stays in P5b** (the original AC 4/5): multi-server aggregation and the
+**What stays after P5a** (the original AC 4/5): multi-server aggregation and the
 `rg`-absent provider-fallback assertion; plus the semantic land that makes AC2 a real
-two-stage comparison instead of a statement about absence.
+two-stage comparison instead of a statement about absence. All three are P5b, below.
 
-#### P5b — Semantic stage, aggregation (next)
+#### P5b — Semantic stage live, aggregation (shipped when the connector lands)
 
-**Goal.** The embedding stage and multi-server aggregation.
+**Goal.** Turn AC2 into a real two-stage comparison and finish AC4/AC5: a zero-dependency
+semantic stage, honest `fs.search` provider fallback, and the `mcp.client` connector.
 
-**Deliverables.**
+**Deliverables (in order of landing).**
 
-- `semantic.*` extra: pick the backend (model / dependency decision → ADR), register it
-  under the `skeletonkey.semantic` entry-point group, enable with
-  `tools.semantic = true`. `registry.route` already honors the protocol; this landing is
-  the model choice, the package, and eval evidence that reordering changes no outcomes.
-- `mcp.client` connector: other servers' tools appear as `remote.<server>.<tool>` with
-  pass-through envelopes, `risk` inherited, `reversible: false`, `stateful: "host"`;
-  a denied remote call returns the *remote* envelope's error code (never a wrapper);
-  `registry.stats` keeps remote and local rows separate.
-- `fs.search` provider-fallback honesty assertion (original AC5): with `rg` faked
-  absent, the result carries `metrics.provider == "python"` and a `warnings` entry
-  naming the fallback. The behavior is P1/P2; the executable assertion is the work.
+- **Zero-dep semantic backend (ADR-0012, shipped).** A deterministic, pure-stdlib
+  `lexical-tfidf` backend (word + char-bigram TF-IDF cosine) lives in `core/semantic.py`
+  and is registered under the `skeletonkey.semantic` entry-point group so an installed
+  dist discovers it exactly like a third-party backend; a dev checkout resolves it
+  directly. `tools.semantic = true` switches it on; `registry.route` blends normalized
+  lexical + semantic (0.5/0.5, deterministic id tie-break) and reports `mode: "semantic"`,
+  `backend`, and a per-hit `semantic_score`. AC2's property test now runs **both** modes
+  over the eval suite: identical ground-truth hit-rate (25/25 @ k=5), reordering
+  observed — the stage is real and changes no outcomes.
+- **`fs.search` provider-fallback honesty (original AC5, shipped).** With `search.ripgrep`
+  probed but `rg` absent at call time, the auto path falls back to the built-in python
+  walker: `metrics.provider == "python"` and a `warnings` entry naming the fallback.
+  `prefer="ripgrep"` still raises `MISSING_BINARY` — an explicit preference is never
+  silently substituted.
+- **`mcp.client` connector (original AC4, ADR-0013, next).** Servers configured under
+  `[mcp.remotes.<name>]` (`command`/`args` for stdio, `url` for streamable-http) appear as
+  `remote.<name>.<tool>` manifests: risk inherited from remote tool annotations
+  (unannotated ⇒ `write`, so approval still gates), `reversible: false`,
+  `stateful: "host"`, `source: "remote:<name>"`. A failed/denied remote call returns the
+  *remote* envelope's error code un-wrapped (a non-SkeletonKey remote gets `REMOTE`, never
+  `INTERNAL`); `registry.stats` rows carry `source` and `stats(source=...)` keeps remote
+  and local separate. A connection failure at build time is a `load_error` with the
+  reason — never a silent empty set.
 
 **Exit gate.** No host is ever handed a tool that fails because of a gate we could have
 predicted. **Risks.** Rankings can silently deprioritise the correct tool → every
-ranking decision is exposed in `provider_receipt` and asserted in tests.
-**Effort: 10–14 days** (P5a ≈ 3–4 days; P5b is the remainder, the `mcp.client` part
-exploratory).
+ranking decision is exposed in `provider_receipt` and asserted in tests; a remote server
+can lie about its capability (it cannot — pass-through only, no authorization the remote
+does not itself enforce; document that a remote tool is only as trusted as its server).
+**Effort: 10–14 days** (semantic + fallback ≈ 2–3 days; the `mcp.client` part is the rest
+and is exploratory).
 
 ---
 
@@ -802,7 +817,18 @@ packs agents can actually load. The MCP surface moved `tools/list_changed` from 
 we advertised to behaviour a client can rely on. `skills.allow_install` stays false — that
 is P3's decision to make, and §P2 says so in the tool's own `hidden_reason`.
 
-**Step 5a — shipped (P5a, discovery at scale):** a `tier` field on every manifest
+**Step 5b — P5 shipped (semantic stage live + aggregation):** the zero-dep
+`lexical-tfidf` semantic backend (ADR-0012, entry-point registered, `tools.semantic`
+gated) makes `registry.route {semantic: true}` a real two-stage blend with per-hit
+`semantic_score`, and AC2 is asserted both ways over the eval suite (same hit-rate,
+reordering observed); `fs.search` falls back from a vanished `rg` to the python walker
+with `metrics.provider` + a naming `warnings` entry (`prefer` still raises); the
+`mcp.client` connector (ADR-0013) surfaces `[mcp.remotes.<name>]` servers as
+`remote.<name>.<tool>` with risk inherited, `reversible: false`, `stateful: "host"`,
+remote error codes passed through un-wrapped, and `registry.stats(source=...)` keeping
+remote and local separate. `docs/TOOL-CONTRACT.md` §7f is the author-facing contract.
+
+**Step 5 — shipped (P5a, discovery at scale):** a `tier` field on every manifest
 (`core` / `task` / `full`), tier-aware `registry.advertise` with per-tier budgets and a
 session `registry.active_tier` switched by `registry.expand {tier}`; `registry.route
 {task, k, semantic}` — exact-name fast path, lexical ranking with per-hit `reasons`, and
