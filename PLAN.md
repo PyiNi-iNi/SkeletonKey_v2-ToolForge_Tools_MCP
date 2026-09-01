@@ -612,6 +612,11 @@ site, security pass, Windows CI remain.
   integrity, spill dir, skill load errors — one JSON blob an operator can paste),
   `sk doctor --fix` limited to safe moves (create state dir, refresh profile). _Shipped:_
   `skeletonkey/doctor.py` schema v1 + CLI; documented in README.
+- Security pass: `pip-audit` on extras only, sentinel/path property tests, and the
+  executable bypass matrix (`..`, absolute-external, symlink escape, device names,
+  `\\?\`, env injection, CLIXML spoofing, spill-path traversal). _Shipped:_
+  `tests/test_security_matrix.py` (11 tests) + `docs/security-matrix.md`;
+  `pip-audit` clean on the extras/dev tree.
 - Docs site in-repo: this plan, the four contract docs, a "write a skill" tutorial, and
   a "connect to host X" page (Claude Desktop / generic stdio clients / our autopilot).
 - Security pass: dependency audit in CI (`pip-audit` on the extras only, since core has
