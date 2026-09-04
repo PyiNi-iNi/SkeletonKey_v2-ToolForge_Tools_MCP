@@ -51,9 +51,10 @@ tk.engine.call("shell.run", {"script": 'printf "[%s]" "$@"', "dialect": "bash",
 | `live.*` | 11 | Python HMR over a LiveREPL: start/stop, transactional hot-reload (in-place function/class patch, 3-way state merge), repl/state/snapshot, retained 2D+3D scene render, and an HTTP preview panel with an in-page REPL + agent debugger |
 | `policy.grant` | 1 | record an approval grant; returns a receipt, and a self-grant is itself gated |
 | `profile.probe` | 1 | host capability detection with receipts |
+| `sandbox.*` | 4 | isolated scratch workspaces from a skill pack: `create` (dir + template + own venv + git), `runtime` (pin python_version / install packages into its venv), `run` (command inside it, venv on PATH, time/output limits), `status` (inventory / deep inspect + log) |
 | `remote.*` | 0 by default | other MCP servers under `[mcp.remotes.<name>]`, enrolled as `remote.<server>.<tool>` (risk inherited, error codes pass through) |
 
-61 registered, 59 advertised, ~6.4 k tokens of advertisement at the default `full` tier
+65 registered, 63 advertised, ~6.7 k tokens of advertisement at the default `full` tier
 (11 tools / 0.9 k at `core`, 38 / 3.5 k at `task`). Every call returns the same
 envelope and the same error taxonomy: see
 [`docs/TOOL-CONTRACT.md`](docs/TOOL-CONTRACT.md). The two not advertised are
@@ -68,11 +69,13 @@ $ sk live patch --name render --file new_render.py --via-panel   # hot-swap code
 $ sk live reload --force-source hue --via-panel   # hand one name back to the file after REPL experiments
 ```
 
-Two of the 61 are **synthesized from a skill pack**, which is the part a toolset usually makes
+Six of the 65 are **synthesized from skill packs**, which is the part a toolset usually makes
 you code: `skills/shell-crossplatform/tool.toml` declares `shell.quote_check` with an inline
 handler body and `shell.selftest` with `scripts/selftest.sh` (+ a PowerShell sibling), and the
-compiler turns each into a manifest whose handler runs one script through `shell.run`'s
-executor. Arguments bind to argv — never into the script text — and a declaration that would
+`sandbox` pack ships the four `sandbox.*` workspace tools above (shared logic in
+`skills/sandbox/scripts/sandboxlib.py`, thin `handler_*.py` entry scripts). The compiler turns
+each declaration into a manifest whose handler runs one script through `shell.run`'s executor.
+Arguments bind to argv — never into the script text — and a declaration that would
 produce a callable-but-broken tool is a load error visible in `skills.list` instead. An agent
 can write a pack with `fs.write` and install it in the same process:
 

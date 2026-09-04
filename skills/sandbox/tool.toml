@@ -1,0 +1,218 @@
+# The sandbox pack ships four callable tools (docs/SKILLS-SPEC.md "Declarative tools").
+# Each handler is a small Python script that imports scripts/sandboxlib.py (the shared logic)
+# and calls one cmd_* function. Values ride in argv_json - one JSON element - never into the
+# script text, so nothing here is ever spliced into code. (Example CLI text below is written
+# with single quotes so no JSON/TOML escape handling is needed.)
+
+[[tool]]
+id = "sandbox.create"
+title = "Create an isolated workspace (sandbox)"
+description = """Scaffold a fresh, self-contained project directory - a sandbox - under a root you
+choose, named and recorded in .sandbox/manifest.json so later calls can find it. Customize what
+you seed and how it runs: a project template (generic/minimal/python-app/python-lib/node-app),
+extra seed files, an isolated Python runtime (its own .venv, optionally a specific python_version
+and pip packages), and optional git init.
+
+Isolation is of a scratch workspace: its own directory, its own interpreter and site-packages, and
+a clean command environment when you run in it (see sandbox.run). It is not an OS jail. Prefer
+name + root (root defaults to the workspace you are already in) or pass path directly. Teardown
+goes through the journaled fs.delete, never rm -rf."""
+capability = "sandbox.create"
+group = "sandbox"
+risk = "write"
+tags = ["sandbox", "workspace", "scaffold", "isolation"]
+priority = 62
+timeout_s = 600
+idempotent = false
+parallel_safe = true
+args_via = "argv_json"
+expects = "json"
+env_mode = "clean"
+dialect = "python"
+handler_script = "scripts/handler_create.py"
+see_also = ["sandbox.runtime", "sandbox.run", "sandbox.status", "fs.delete"]
+anti_patterns = [
+  "do not rm -rf a sandbox by hand - fs.delete with recursive true is journaled and undoable",
+  "do not create a sandbox inside another sandbox; one task should own one scratch area",
+  "do not install packages into the host interpreter; give the sandbox its own runtime",
+]
+
+input_schema = """
+{
+  "type": "object",
+  "properties": {
+    "name": {"type": "string", "minLength": 1, "description": "Directory name; one safe component [A-Za-z0-9_-]."},
+    "root": {"type": "string", "description": "Directory to place the sandbox under. Relative to the workspace. Default: current workspace root."},
+    "template": {"type": "string", "enum": ["generic", "minimal", "python-app", "python-lib", "node-app"], "description": "Which seed files to write. Default generic."},
+    "description": {"type": "string", "description": "Free-text note recorded in the manifest."},
+    "make_runtime": {"type": "boolean", "description": "Create an isolated .venv now. Default false (implied true if packages is set)."},
+    "python_version": {"type": "string", "description": "Requested interpreter, e.g. 3.11. Falls back to the current interpreter with a note if absent."},
+    "packages": {"type": "array", "items": {"type": "string"}, "description": "pip packages to install into the sandbox own venv (implies a runtime)."},
+    "git": {"type": "boolean", "description": "git init the sandbox (best effort). Default false."},
+    "files": {"type": "object", "description": "Extra relpath to content seed files to write."},
+    "force": {"type": "boolean", "description": "Seed in place even if the dir already exists. Default false."},
+    "dry_run": {"type": "boolean", "description": "Return the plan without writing anything. Default false."}
+  },
+  "required": ["name"],
+  "additionalProperties": false
+}
+"""
+
+[[tool.examples]]
+args = {name = "play", template = "python-app", make_runtime = true}
+note = "a python-app workspace with its own venv, named play"
+
+[[tool.examples]]
+args = {name = "lab", template = "python-lib", packages = ["pytest", "ruff"], git = true}
+note = "a library workspace, isolated runtime with dev deps, git-initialised"
+
+
+[[tool]]
+id = "sandbox.runtime"
+title = "Provision an isolated Python runtime for a sandbox"
+description = """Create (or refresh) the sandbox own .venv, optionally pinned to a requested
+python_version and pre-loaded with pip packages, so its imports and installs never touch the host
+site-packages. Call it after sandbox.create if you did not ask for a runtime, or to add packages
+later. Records the result in the sandbox manifest (runtime.python_version, installed). Pass
+force_recreate to rebuild the venv; install failures (e.g. offline) are reported in
+install_errors, not fatal."""
+capability = "sandbox.runtime"
+group = "sandbox"
+risk = "write"
+tags = ["sandbox", "python", "venv", "packages"]
+priority = 58
+timeout_s = 600
+idempotent = true
+parallel_safe = false
+args_via = "argv_json"
+expects = "json"
+env_mode = "clean"
+dialect = "python"
+handler_script = "scripts/handler_runtime.py"
+see_also = ["sandbox.create", "sandbox.run", "sandbox.status"]
+anti_patterns = [
+  "do not pip install into the shared interpreter to try a package; give the sandbox its own venv",
+]
+
+input_schema = """
+{
+  "type": "object",
+  "properties": {
+    "path": {"type": "string", "description": "The sandbox directory. Use this OR name/root."},
+    "name": {"type": "string", "description": "Sandbox name (with root). Ignored if path is given."},
+    "root": {"type": "string", "description": "Root under which name lives. Default current workspace root."},
+    "python_version": {"type": "string", "description": "Requested interpreter version, e.g. 3.11."},
+    "packages": {"type": "array", "items": {"type": "string"}, "description": "pip packages to install into the isolated venv."},
+    "force_recreate": {"type": "boolean", "description": "Rebuild the venv even if one exists. Default false."},
+    "dry_run": {"type": "boolean", "description": "Return the plan without creating anything."}
+  },
+  "additionalProperties": false
+}
+"""
+
+[[tool.examples]]
+args = {path = "ws/play", packages = ["httpx", "rich"]}
+note = "add two packages to an existing sandbox venv"
+
+
+[[tool]]
+id = "sandbox.run"
+title = "Run a command inside a sandbox"
+description = """Execute a command (argv) with its working directory inside an existing sandbox and,
+by default, its isolated venv first on PATH (so python, pip and installed CLIs resolve to the
+sandbox own runtime), under a cleaned environment. Enforces a timeout (the process tree is killed
+on expiry) and an output cap; on POSIX an optional limits map applies best-effort resource
+rlimits (mem_mb / cpu_s). Every run is appended to the sandbox .sandbox/sandbox.log. Returned keys
+include exit_code, timed_out, truncated, stdout, stderr, duration_ms, used_runtime. This is
+command isolation inside a scratch workspace - not a kernel or network sandbox. Run non-Python
+work by naming the interpreter explicitly, e.g. argv = ['bash', 'script.sh']."""
+capability = "sandbox.run"
+group = "sandbox"
+risk = "write"
+tags = ["sandbox", "exec", "command", "venv"]
+priority = 60
+timeout_s = 600
+idempotent = false
+parallel_safe = false
+args_via = "argv_json"
+expects = "json"
+env_mode = "clean"
+dialect = "python"
+handler_script = "scripts/handler_run.py"
+see_also = ["shell.run", "sandbox.create", "sandbox.status"]
+anti_patterns = [
+  "do not use sandbox.run for work that must run on the host profile - use shell.run",
+  "do not expect OS-level network or memory isolation; only a timeout, output cap and posix rlimits",
+]
+
+input_schema = """
+{
+  "type": "object",
+  "properties": {
+    "path": {"type": "string", "description": "The sandbox directory. Use this OR name/root."},
+    "name": {"type": "string", "description": "Sandbox name (with root). Ignored if path is given."},
+    "root": {"type": "string", "description": "Root under which name lives. Default current workspace root."},
+    "argv": {"type": "array", "items": {"type": "string"}, "minItems": 1, "description": "The command tokens to run inside the sandbox, e.g. [python, -c, print(1)] or [bash, run.sh]. In JSON write normal strings."},
+    "workdir": {"type": "string", "description": "Optional subdirectory of the sandbox to run in."},
+    "use_runtime": {"type": "boolean", "description": "Prepend the sandbox venv bin to PATH. Default true."},
+    "timeout_s": {"type": "number", "minimum": 1, "maximum": 540, "description": "Kill after this many seconds. Default 120."},
+    "max_output_bytes": {"type": "integer", "description": "Per-stream output cap in bytes. Default 200000."},
+    "env": {"type": "object", "description": "Extra environment variables for the child."},
+    "limits": {"type": "object", "description": "POSIX-only best-effort rlimits mem_mb and cpu_s. Ignored on Windows."}
+  },
+  "required": ["argv"],
+  "additionalProperties": false
+}
+"""
+
+[[tool.examples]]
+args = {path = "ws/play", argv = ["pytest", "-q"]}
+note = "run the sandbox test suite with its own interpreter on PATH"
+
+[[tool.examples]]
+args = {path = "ws/play", argv = ["python", "-c", "import sys; print(sys.executable)"]}
+note = "confirm the isolated interpreter is the one on PATH"
+
+
+[[tool]]
+id = "sandbox.status"
+title = "Inspect sandboxes (inventory or one deep view)"
+description = """With a name or path, returns a deep view of one sandbox: manifest metadata,
+whether its isolated runtime exists and its python_version, installed packages, file count and
+size, git flag and the tail of its .sandbox/sandbox.log. With no locator, lists every sandbox
+under root (default the workspace) as a lightweight inventory. Teardown guidance points back at
+the journaled fs.delete."""
+capability = "sandbox.status"
+group = "sandbox"
+risk = "read"
+tags = ["sandbox", "status", "inventory", "inspect"]
+priority = 40
+timeout_s = 60
+idempotent = true
+parallel_safe = true
+args_via = "argv_json"
+expects = "json"
+env_mode = "clean"
+dialect = "python"
+handler_script = "scripts/handler_status.py"
+see_also = ["sandbox.create", "sandbox.runtime", "sandbox.run"]
+
+input_schema = """
+{
+  "type": "object",
+  "properties": {
+    "name": {"type": "string", "description": "Sandbox name. Omit both name and path to list all under root."},
+    "path": {"type": "string", "description": "Exact sandbox directory. Wins over name and root."},
+    "root": {"type": "string", "description": "Root to scan (inventory) or resolve name under. Default current workspace root."}
+  },
+  "additionalProperties": false
+}
+"""
+
+[[tool.examples]]
+args = {}
+note = "list every sandbox in the current workspace"
+
+[[tool.examples]]
+args = {name = "play", root = "ws"}
+note = "deep view of the sandbox named play under ws"

@@ -500,6 +500,33 @@ Other MCP servers join the surface as tools without their own adapter:
   {source: "remote:<server>"}` filters, `stats_by_source` groups, and
   `registry.stats` (no args) returns the grouped view under `by_source`.
 
+## 7g. Sandbox workspaces (`skills/sandbox` pack)
+
+The `sandbox.*` tools are a *skill pack* (source `skill:sandbox`) that creates and manages
+**isolated scratch workspaces**: a named project directory seeded from a template, optionally
+its own Python venv, and commands run inside it with a cleaned environment. They run as
+subprocesses like every skill tool (§7b), so their envelopes are the same; the pack's own JSON
+result carries an inner `ok`/`error` for cases that are not shell failures (a `CONFLICT` on
+creating over a non-empty dir, a `NOT_A_SANDBOX` when a `path` has no manifest, a `BAD_ARGS` on
+an unsafe `name`).
+
+| tool | risk | purpose |
+| --- | --- | --- |
+| `sandbox.create {name, template, make_runtime, packages, ...}` | write | scaffold `<root>/<name>` from a template, record it in `.sandbox/manifest.json` |
+| `sandbox.runtime {path, python_version, packages}` | write | provision/refresh the sandbox's isolated `.venv` (own interpreter + site-packages) |
+| `sandbox.run {path, argv, timeout_s, use_runtime}` | write | run a command with cwd inside the sandbox and its venv first on PATH; hard timeout + output cap |
+| `sandbox.status {path}` / `{root}` | read | deep view of one sandbox, or inventory of every sandbox under `root` |
+
+Result keys of note: `sandbox.create` returns `path`, `files_written`, `runtime`, `git`;
+`sandbox.run` returns `exit_code`, `timed_out`, `truncated`, `stdout`, `stderr`, `duration_ms`,
+`used_runtime`, plus `cwd` (always inside the sandbox). `sandbox.status` returns per-sandbox
+`files`, `bytes`, `runtime.venv_present`/`python_version`, `runs`, and a `log_tail`.
+
+Isolation honesty: these tools isolate a scratch *directory, interpreter and environment* —
+they are not an OS/network sandbox. Each result and the `skills/sandbox` guidance therefore
+route teardown through the journaled `fs.delete {path, recursive: true}` (undoable with
+`fs.undo {undo_token}`), never `rm -rf`.
+
 ## 8. Adding a tool
 
 | Where | How | Advertised? |
