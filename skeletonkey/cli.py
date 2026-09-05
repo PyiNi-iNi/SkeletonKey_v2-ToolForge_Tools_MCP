@@ -173,6 +173,8 @@ def main(argv: list[str] | None = None) -> int:
 
     m = sub.add_parser("mcp", help="run the MCP server")
     m.add_argument("--transport", default="stdio", choices=["stdio", "streamable-http"])
+    m.add_argument("--host", default=None, help="with streamable-http: bind host")
+    m.add_argument("--port", type=int, default=None, help="with streamable-http: bind port")
 
     w = sub.add_parser("wire",
                        help="auto-wire the MCP server into host apps (claude-desktop, cursor, ...)")
@@ -195,6 +197,14 @@ def main(argv: list[str] | None = None) -> int:
     w.add_argument("--allow-jsonc", action="store_true",
                    help="permit rewriting a comments-bearing (JSONC) config as plain JSON")
 
+    d = sub.add_parser("doctor",
+                       help="diagnose this install as one JSON blob (config, roots, probe, live stdio test)")
+    d.add_argument("--config", default=None, help="config file to diagnose (default: the layered load)")
+    d.add_argument("--fix", action="store_true",
+                   help="apply the safe repairs: create state/spill dirs, retire a stale profile cache")
+    d.add_argument("--no-probe", action="store_true",
+                   help="skip the live stdio server test (everything else still runs)")
+
     rp = sub.add_parser("replay", help="re-execute a recorded run in a scratch copy and diff envelopes")
     rp.add_argument("ref", help="path to a run recording, or a task id under <state>/runs/")
     ev = sub.add_parser("eval", help="score a suite of scripted tasks")
@@ -202,16 +212,51 @@ def main(argv: list[str] | None = None) -> int:
                     help="suite file, repeatable (one task per JSON line)")
 
     args = ap.parse_args(argv)
+    if args.cmd == "doctor":
+        # Doctor builds its own scratch-state toolkit: the operator's real state dir is
+        # examined with os-level checks precisely so a broken one is reported, not
+        # silently created by the diagnosis itself.
+        from . import diagnostics
+
+        overrides: dict[str, Any] = {}
+        if args.root:
+            overrides["roots"] = list(args.root)
+        if args.read_only:
+            overrides["policy"] = {"read_only": True}
+        rep = diagnostics.doctor(cwd=args.cwd, config_path=args.config,
+                                 overrides=overrides or None, fix=args.fix,
+                                 probe=not args.no_probe)
+        if args.json:
+            print(compact_json(rep))
+        else:
+            print(pretty_json(rep))
+            for c in rep["checks"]:
+                if c["ok"]:
+                    continue
+                print(f"  FAIL {c['id']}: {c.get('error') or c.get('hint') or 'see check above'}",
+                      file=sys.stderr)
+            if rep["fixes"]:
+                for f in rep["fixes"]:
+                    print(f"  fixed: {f.get('fix')} -> {f.get('path', '')}", file=sys.stderr)
+            print(f"  doctor: {'OK' if rep['ok'] else 'PROBLEMS FOUND'} "
+                  f"({sum(1 for c in rep['checks'] if c['ok'])}/{len(rep['checks'])} checks pass)",
+                  file=sys.stderr)
+        return 0 if rep["ok"] else 1
+
     if args.cmd == "mcp":
         from .mcp.__main__ import main as mcp_main
 
-        rest = ["--transport", "streamable-http" if args.transport == "http" else args.transport]
+        rest = ["--transport", args.transport]
         for r in (args.root or []):
             rest += ["--root", r]
         if args.cwd:
             rest += ["--cwd", args.cwd]
         if args.read_only:
             rest.append("--read-only")
+        if getattr(args, "host", None):
+            rest += ["--host", args.host]
+        if getattr(args, "port", None) is not None:
+            rest += ["--port", str(args.port)]
         return mcp_main(rest)
 
     if args.cmd == "wire":

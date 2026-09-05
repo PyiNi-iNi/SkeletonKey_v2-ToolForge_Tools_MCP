@@ -151,9 +151,17 @@ class RemoteServer:
 
     def _session_ctx(self):
         if self.spec.url:
-            from mcp.client.streamable_http import streamablehttp_client
+            # mcp renamed the client factory between minors (streamablehttp_client ->
+            # streamable_http_client); accept both so a pinned older extra still connects
+            import mcp.client.streamable_http as _http
 
-            return streamablehttp_client(self.spec.url)
+            factory = (getattr(_http, "streamable_http_client", None)
+                       or getattr(_http, "streamablehttp_client", None))
+            if factory is None:
+                raise SkeletonKeyError(E.DEPENDENCY_MISSING,
+                                       "installed mcp package has no streamable-http client",
+                                       details={"server": self.spec.name})
+            return factory(self.spec.url)
         from mcp.client.stdio import StdioServerParameters, stdio_client
 
         return stdio_client(StdioServerParameters(command=self.spec.command,
