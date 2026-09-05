@@ -12,6 +12,26 @@ pip install -e .            # core has zero mandatory dependencies (ADR-0001)
 pip install -e ".[mcp,dev]" # + MCP server + pytest/ruff
 ```
 
+## Drop it into any project
+
+Install with the MCP extra, wire every detected host, and prove it — three commands:
+
+```console
+$ pip install "skeletonkey-toolforge[mcp]"     # or pipx; the core alone has zero deps
+$ sk wire                                      # writes the mcpServers entry into every
+                                               # detected host (merge, backup, idempotent)
+$ sk doctor                                    # live end-to-end proof: starts the real
+                                               # server, lists tools, calls fs.stat
+```
+
+`sk wire --project` drops project-scope configs (`.mcp.json`, `.cursor/mcp.json`,
+`.vscode/mcp.json`) with the sandbox pinned to the project; `sk wire --read-only` exposes
+only the read-only surface; `sk wire --remove` takes back exactly what it wrote. Prefer a
+URL? `sk mcp --transport streamable-http --port 8765` serves the same toolkit to any
+streamable-http client, and `sk wire --transport streamable-http` points URL-capable
+hosts at it. Per-host stanzas, the doctor's schema and the troubleshooting table live in
+[`docs/CONNECT-A-HOST.md`](docs/CONNECT-A-HOST.md).
+
 ## Two ways to drive it
 
 ```bash
@@ -92,6 +112,7 @@ $ sk call skill.my-skill.wordcount '{"path": "notes.txt"}'
 | [`docs/LIVE-IMPL-PLAN.md`](docs/LIVE-IMPL-PLAN.md) | you want the blueprint → repo build order for the live subsystem |
 | [`docs/SHELL-DIALECTS.md`](docs/SHELL-DIALECTS.md) | bash vs pwsh vs python behaviour |
 | [`docs/SKILLS-SPEC.md`](docs/SKILLS-SPEC.md) | you are writing a `SKILL.md` |
+| [`docs/CONNECT-A-HOST.md`](docs/CONNECT-A-HOST.md) | you are wiring a host or debugging an install (`sk wire`, `sk doctor`) |
 | [`docs/SECURITY-MODEL.md`](docs/SECURITY-MODEL.md) | you need to know what is and is *not* enforced |
 | [`docs/adr/`](docs/adr) | you are about to disagree with a decision |
 | [`config/skeletonkey.example.toml`](config/skeletonkey.example.toml) | every knob, with its default |

@@ -615,6 +615,18 @@ and is exploratory).
 - Windows CI runner turns `@pytest.mark.win` from skip to real: CLIXML decoding,
   CRLF round-trips, pwsh strict mode, long paths, recycle-bin deletion.
 
+Shipped in the onboarding slice (ADR-0015): the instant-use path - `sk wire`
+(auto-wire into detected MCP hosts, project scope, url transport, merge-not-rewrite,
+backups, `--check/--dry-run/--remove/--allow-jsonc`), `sk doctor` + `--fix` (stable
+`sk.doctor/1` schema; the `mcp.stdio` check is a live initialize/list/call against the
+real subprocess server), the streamable-http transport made real and wire-tested
+(`sk mcp --transport streamable-http --host/--port`; uvicorn rides on `mcp`'s own
+dependencies), the connect-a-host page (`docs/CONNECT-A-HOST.md`), and ADR-0001's
+zero-dependency core guarantee enforced by `tests/test_core_purity.py` (imports the core
+- and runs both onboarding commands - in a `-S` subprocess with site-packages hidden).
+Still open in P6: tagged releases with wheels/sdist + the pipx story, the security pass
+(audit, sentinel/path property tests, bypass matrix), and the Windows CI runner.
+
 **Acceptance criteria.** Clean-checkout `pip install -e .[dev]` then `pytest` passes on
 ubuntu-latest and windows-latest, Python 3.11 and 3.13; `sk doctor` output is stable
 JSON with a documented schema; every bypass test either passes or is a filed bug with
@@ -767,6 +779,7 @@ silent-ish failure).
 | 0012 | The semantic routing backend is a zero-dependency deterministic scorer (`lexical-tfidf`) | accepted |
 | 0013 | Remote MCP tools are pass-through with inherited risk and un-wrapped errors | accepted |
 | 0014 | Discovery is tiers + receipts: every ranking decision is exposed, the default advertisement is unchanged (register entry; contract in TOOL-CONTRACT §7e) | accepted |
+| 0015 | Onboarding and diagnosis are operator commands (`sk wire`, `sk doctor`), never agent tools | accepted |
 
 `docs/adr/` holds the full text of each, with the options rejected and the observable
 consequence (usually a test id).

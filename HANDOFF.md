@@ -1,12 +1,13 @@
-# HANDOFF — SkeletonKey / ToolForge v2 (P5 + live.* shipped → P6)
+# HANDOFF — SkeletonKey / ToolForge v2 (P6 onboarding slice shipped → P6 rest)
 
-Session `arena/01a05a44-skeletonkey-v2-toolforge-tools` · 2026-09-01 (America/Chicago).
-Written after merging **P5** (this session: discovery at scale + semantic stage + remote
-MCP aggregation) with the **live.\*** subsystem (parallel session `arena/01a05ad1`, merged
-to main as PRs #3/#4) — the tree in `main` now carries both. For the session that starts
-**P6** (distribution + hardening). Read `PLAN.md` for the roadmap, `docs/` for the
-contracts; this file is the *transfer* — state, next steps, and landmines. It supersedes
-both previous handoffs; standing constraints are collected in §7.
+Session `arena/01a06fe5-skeletonkey-v2-toolforge-tools` · 2026-09-05.
+Written after landing the **instant-onboarding slice of P6** on top of merged `main`
+(`7d57e31`, carries P5 + live.*): `sk wire` (auto-wire into MCP hosts), `sk doctor`
+(live-proof diagnostics), the streamable-http transport made real, ADR-0001 enforced by
+test, and the connect-a-host page. For the session that finishes **P6** (releases +
+security pass + Windows CI). Read `PLAN.md` for the roadmap, `docs/` for the contracts;
+this file is the *transfer* — state, next steps, landmines. It supersedes the previous
+handoff; standing constraints are collected in §7.
 
 **Agent / model provenance.** The harness is **Arena.ai Agent Mode** (repo-cloned sandbox,
 bash + file tools, auto-saved turns). Not attributable to a single base model: Arena's
@@ -16,170 +17,194 @@ tree at handoff, not remembered: re-measure before you restate it.
 
 ---
 
-## 1. State on handoff (merged `main`)
+## 1. State on handoff
 
 | | |
 | --- | --- |
-| Branch | `arena/01a05a44-skeletonkey-v2-toolforge-tools` — this session's branch; P5 PR against `main` is being merged (house style: `--merge`, branch kept) |
-| `main` | `a9c9222` (merge PR #4). History: #2 (P3–P4b) → #3/#4 (`live.*`, branch `01a05ad1`) → **#5 = P5** (this branch) |
-| Test suite | **701 passed, 3 skipped, 1 xfailed** in ~67 s; ruff clean (`ruff check .`; examples/live_hmr is per-file-ignored F821 — `canvas` is runtime-injected) |
-| Tools | **61 registered / 59 advertised / 6410 tokens** at default `full` (digest `05c88f0f77b7fd74`); core 11/945 (`94f7da59a9f9937a`), task 38/3482 (`34cd2f31d4af4484`) |
-| Groups | fs 16 · shell 11 · registry 6 · capabilities 1 · skills 5 · pub 9 · live 11 · policy.grant 1 · profile.probe 1 |
-| Gated | `shell.selftest` (skill-declared `advertised = false`), `skills.install` (`skills.allow_install`) |
-| Venv | repo `.venv`: mcp 2.1.1, pytest 9.1.1, ruff, pyyaml; **package installed editable** (`pip install -e .`) — required so remote *child* servers (`python -m skeletonkey.mcp`) import from any cwd. **No watchfiles** (absence is the tested state) |
-| Route | 25/25 @ k=5; semantic stage reorders 13/25 eval tasks, hit-rate intact |
-| Docs | ADR-0001…0011 (0011 = live HMR) + **0012** (semantic), **0013** (remote); TOOL-CONTRACT §7e (P5a), §7f (remote), §3 `REMOTE`; README measured 61/59; skills/fs-safe-refactor/references/discovery.md |
+| Branch | `arena/01a06fe5-skeletonkey-v2-toolforge-tools` — this session's branch; **no PR opened yet** (house flow: open against `main`, `--merge`, keep branch) |
+| `main` | `7d57e31` (merge PR #5 = P5). This branch adds `e571669` (sk wire) and `ef51dc5` (doctor + http + purity) + uncommitted docs/handoff chunk |
+| Test suite | **733 passed, 3 skipped, 1 xfailed in ~57 s**; ruff clean (`ruff check .`) |
+| Tools | **61 registered / 59 advertised / 6410 tokens** at `full`, digest `05c88f0f77b7fd74` — **unchanged** (wire/doctor are operator CLI, deliberately *not* registry tools, ADR-0015) |
+| Venv | repo `.venv`: mcp 2.1.1, pytest 9.1.1, ruff, pyyaml, **watchfiles 1.2.0 present** (`.[dev]` default). Package installed editable (`pip install -e ".[dev]"`) |
+| Doctor | `sk doctor` → `ok: true` in-repo; live `mcp.stdio` probe answers in ~1.5 s (58 tools in the scratch workspace — no skills dirs there) |
+| Docs | ADR-0015 (onboarding is operator-side); `docs/CONNECT-A-HOST.md` (wire/doctor schema + per-host stanzas); PLAN §6 annotated with the shipped slice; README "Drop it into any project" section |
+| CI | still un-landed (`.github/` push rejected by App permissions — unchanged blocker) |
 
-## 2. What the last two sessions actually shipped
+## 2. What this session shipped
 
-**P5 (this session).** (a) Tiers (`core`/`task`/`full`, manifestation only; per-tier
-budgets + honest `budget_drops`; `registry.expand` session switch; digest-driven
-`list_changed` over the wire). (b) Two-stage `registry.route` (exact → lexical with
-`reasons` → semantic), provider receipts in snapshots/`registry.list`/MCP `_meta`/
-`capabilities.explain`; cursor pagination on `registry.list` and MCP `tools/list`. (c)
-Semantic backend `lexical-tfidf` (pure stdlib TF-IDF cosine, entry-point registered,
-gated by `tools.semantic`; blends 50/50 with normalized lexical; deterministic; the
-*only* shipped backend — an embedding extra can be added behind the same protocol).
-(d) `fs.search` provider-fallback honesty (vanished `rg` → python walker with
-`metrics.provider` + a naming warning; `prefer` still raises `MISSING_BINARY`). (e)
-`mcp.client` connector (ADR-0013): `[mcp.remotes.<name>]` → `remote.<server>.<tool>`,
-risk inherited (unannotated ⇒ `write`), `reversible: false`/`stateful: "host"`, remote
-error codes verbatim (foreign → `REMOTE`), connect/list failures are `load_errors` +
-build report, stats rows carry `source` + `stats_by_source()`.
+**`sk wire` — auto-wire (the "drop into any project" command).** `skeletonkey/wire.py`
+(stdlib-only, instant, no Toolkit build): detects claude-desktop / claude-code / cursor /
+vscode(+Insiders/VSCodium) / windsurf configs per platform, writes the `skeletonkey`
+entry (`sys.executable -m skeletonkey.mcp`) with merge-not-rewrite semantics: foreign
+servers and keys preserved, atomic write + one-generation `.sk-wire.bak` backup,
+second run = `already`, `--remove` takes out exactly ours and refuses a hand-written
+entry with the same name. JSONC configs (VS Code) are answered `needs-manual` with the
+exact stanza to paste unless `--allow-jsonc`. `--project` writes `.mcp.json` /
+`.cursor/mcp.json` / `.vscode/mcp.json` with `--root <project>` pinned and **never falls
+back to the user's home config** (hosts without a project scope are skipped).
+`--transport streamable-http` writes url stanzas for hosts that support them and refuses
+claude-desktop with the reason. `--check`/`--dry-run` write nothing; `--json` machine
+report (`sk.wire/1`).
 
-**live.\*** (parallel session). Stdlib-only Python HMR: in-place `__code__`/method
-patch (identity + globals survive), transactional whole-file reload (parse + scratch-exec
-first; `__hmr_export_state__`/`__hmr_import_state__` hooks; `__live_keep__`, `__live_
-registries__`), per-name 3-way state merge (base/live/fresh), settrace wall-clock leash,
-watched same-tree dep hot-patch; retained scene graph → SVG/`mesh3d`/`cube3d` renderers;
-HTTP preview panel (`/`, `/view3d`, `/agents`) with in-page REPL + agent debugger via
-`POST /api/control` and `POST /repl` (`live.panel_repl = false` makes pages read-only;
-default bind loopback); `sk live <action> --via-panel` HTTP client mode. 11 tools:
-`live.start/stop/status/reload/patch/repl/state/snapshot/render/scene/serve`.
+**`sk doctor` — diagnostics with a live proof (P6 deliverable).** `skeletonkey/
+diagnostics.py`: fixed-order checks — meta, config layers, roots writability, state dirs
+(**fresh workspace = healthy**; *partial* state is the reported smell), tools
+(registered/advertised/digest/gated/load-errors), skills, profile receipts, journal,
+ledger (`Ledger.verify()` on the real file), **`mcp.stdio`: a live end-to-end probe**
+(spawns the real server on a scratch workspace; initialize → tools/list → `fs.stat` on a
+file it wrote; reader *threads* not `select`, so it runs on Windows), and a read-only
+`wire` scan (which hosts are installed/wired). `--fix` = only the safe repairs (create
+state/spill/journal dirs, retire stale profile cache), each reported. Diagnosis never
+creates the operator's state as a side effect: the introspection build uses a **scratch
+state dir**; assertable in `test_doctor.py`. Exit code mirrors report `ok`.
 
-## 3. What is NOT done (and why)
+**streamable-http transport made real.** `skeletonkey/mcp/__main__.py` was a
+`pragma: no cover` sketch that **crashed** (uvicorn.run inside asyncio.run). Now:
+`serve_http()` runs *outside* `asyncio.run` (uvicorn owns the loop), `--host/--port`
+args, listening banner on stderr. `sk mcp` forwards host/port. Wire-tested with the SDK
+client over real HTTP (`tests/test_mcp_http.py`): initialize → list → `fs.stat` envelope
+in `structured_content` → gates hold over http (`skills.install` absent) → unknown tool
+is a tool error. No new dependency: `mcp` already requires uvicorn/starlette.
 
-1. **P6 not started** (PLAN §6): wheel/sdist releases + `pipx` story, `sk doctor` +
-   `--fix`, in-repo docs site (write-a-skill, connect-a-host), security pass (dependency
-   audit, sentinel/path property + bypass test matrix), **Windows CI runner** (turns
-   `@pytest.mark.win` skips into real checks).
-2. **`ci.yml` still un-landed.** GitHub App lacks the `workflows` permission — any push
-   touching `.github/` is rejected by design. Unblock: grant the App, or have the user
-   push `.github/workflows/ci.yml` (it is written and untracked in the checkout). Until
-   then the local repro is `ruff check . && pytest -q -m "not slow"`.
-3. **L4 live queue open** (docs/LIVE-IMPL-PLAN.md): (a) cross-package dep closure, (b)
-   panel scene-edits written back to source via journaled `fs.patch`, (c) per-viewer 3D
-   camera channels, (d) watchfiles parity tests (`skipif`; keep watchfiles absent), (e)
-   perf-budget slow-marker test.
-4. **Windows-only surfaces untested anywhere** (no win runner): `live.*` on `\\?\`/CRLF;
-   store CHMOD 0600's NT semantics; pwsh strict mode round-trips.
-5. Optional quick wins not taken: publish task in `tests/eval/suite.jsonl` + one replay
-   fixture; store `expiry`; `registry.explain_all` (whole-surface gates in one call).
+**Two honest drive-by fixes.** (a) `tests/test_skill_synthesis.py` watcher test hung the
+whole suite whenever watchfiles was installed (the `.[dev]` default!): it entered a real
+`awatch` loop with no `stop_after`. Fixed by pinning `watch.available → False` — the test
+is about the cannot-run *report*, which is now deterministic in both states.
+(b) `mcp/client.py` imported `streamablehttp_client`, which mcp 2.1.1 renamed to
+`streamable_http_client` — http remotes would have crashed at connect; now accepts both
+spellings.
+
+**ADR-0001 enforced, not asserted (P6 deliverable).** `tests/test_core_purity.py`:
+subprocess with `-S` + PYTHONPATH=repo-only imports the core and runs `sk wire --check`
+and `sk doctor --no-probe`; fails if mcp/pydantic/watchfiles/jsonschema/yaml/uvicorn/
+starlette/httpx/anyio is loaded or even importable.
+
+**Docs.** `docs/CONNECT-A-HOST.md` (per-host stanzas, wire flags, http exposure, doctor
+schema table, troubleshooting — passes the docs police); README "Drop it into any
+project" section + docs-table row; PLAN §6 shipped-slice annotation; ADR-0015
+("onboarding is an operator command, never an agent tool": a wire writes outside the
+sandbox by definition and reads other apps' config blocks, so it must never be a
+capability the agent holds).
+
+## 3. What is NOT done (P6 rest, in order)
+
+1. **PR + merge** this branch into `main` (house flow: `gh pr create`, then `--merge`).
+2. **Tagged releases**: wheels + sdist built in CI, GitHub release page, `pipx` story in
+   README/CONNECT. Version is still `0.1.0`; semver the bump (`0.2.0` fits — no envelope
+   change, new CLI surface). sdist include-list already carries skills/docs/config.
+3. **Security pass**: `pip-audit` on the extras only; property tests for the sentinel
+   parser and path normalization; the red-team bypass matrix (`..`, absolute-external,
+   symlink escape, device names, `\\?\`, env injection, CLIXML spoofing, spill-path
+   traversal) as executable tests.
+4. **Windows CI runner** (needs the App `workflows` permission; same blocker as
+   `ci.yml` itself). Turns `@pytest.mark.win` skips into real checks. New surfaces that
+   will meet Windows for the first time: wire's `%APPDATA%` paths (unit-tested via the
+   `env` parameter only), doctor's thread-based probe, http transport.
+5. Small honesty wins still open from last session: publish task in `tests/eval/suite.jsonl`
+   + replay fixture; store `expiry`; `registry.explain_all`.
 
 ## 4. Next steps (in order)
 
-1. Confirm the P5 PR merged cleanly on `main` (`gh pr view --mergeable`, then `git
-   ls-remote origin refs/heads/main`), then pull/rebase the next session's branch onto
-   it.
-2. Land `ci.yml` (permission or manual push) — same blocker; it gates nothing until then.
-3. **P6** per PLAN §6. First sub-step that needs no network/permission: `sk doctor` +
-   the zero-dep core-guarantee test (import `skeletonkey.core` with `site-packages`
-   hidden), then the security bypass matrix, then packaging/docs; Windows CI last (needs
-   the App permission anyway).
-4. If P6 stalls: L4(a) cross-package closure (acceptance ids in LIVE-IMPL-PLAN §L4) or
-   the tiny honesty wins in §3.5.
+1. Open the PR for this branch, confirm mergeable, merge (`--merge`, keep branch), pull
+   `main` into the next session's branch.
+2. Land `ci.yml` (still permission-blocked; the local repro is `ruff check . && pytest -q`).
+3. Packaging: `python -m build`, install the wheel in a fresh venv, `sk wire` +
+   `sk doctor` from it (the full loop works from an editable install today; prove it
+   from a wheel), then tag + release.
+4. Security pass, then Windows CI (both P6; acceptance criteria in PLAN §6).
 
 ## 5. How things run here (operational)
 
 ```bash
-python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"   # mcp+watch+dev; the sandbox
-#                         reinstall includes mcp for test_mcp_stdio.py and -e for remote children
-.venv/bin/pytest tests/ -q                       # 701 passed, 3 skipped, 1 xfailed
-.venv/bin/ruff check .                           # clean (examples/live_hmr F821 ignored)
-.venv/bin/python -m skeletonkey.cli live demo --host 0.0.0.0 --port 8000
-.venv/bin/python -m skeletonkey.cli live repl 'hue = "#f2cc60"' --via-panel --port 8000
+python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"   # sandbox recycles wipe .venv
+.venv/bin/pytest tests/ -q                       # 733 passed, 3 skipped, 1 xfailed, ~57s
+.venv/bin/ruff check .                           # clean
+.venv/bin/sk doctor                              # ok: true, live stdio probe ~1.5s
+.venv/bin/sk wire --project                      # writes .mcp.json etc. in cwd
+.venv/bin/python -m skeletonkey.mcp --transport streamable-http --port 8765
 ```
 
-`sk` global flags (`--root`, `--json`, `--read-only`…) go **before** the subcommand
-(argparse aborts otherwise). Sandbox recycles: `.venv` and `.git` reset mid-session —
-recreate the venv, `git fetch origin refs/heads/<branch>:refs/remotes/origin/tip`, and
-restore the branch with `git reset --mixed origin/tip` (files reappear as a patchset and
-hash-match the remote tip; the delta is only new work).
+`sk` global flags (`--root`, `--json`, `--read-only`, `--cwd`) go **before** the
+subcommand (argparse aborts otherwise) — `sk wire` subcommand flags (`--project`,
+`--check`, `--remove`…) go after it. Sandbox recycles: `.venv` and `.git` reset
+mid-session — recreate the venv, fetch the branch tip, `git reset --mixed` to it; push
+early, the remote is the only durable record.
 
-## 6. Ideas (honest, prioritized — none are decided)
+## 6. Ideas (honest, none decided)
 
-- `registry.explain_all`: whole-surface gates + receipts in one projection (the
-  200-tool world debuggable from a prompt). Small, same data.
-- `route` → compact "tool shortlist" block for the next prompt (UX decision for the
-  autopilot loop; data already carries reasons).
-- Remote tools are `full`-tier and count toward caps; decide whether trusted servers can
-  opt into `core`/`task` tiers.
-- Do **not** build `pub.run_plan` (a loop concern, not a tool) or a mini-interpreter in
-  any tool. Still true after two sessions of prompting.
+- `sk wire --all --yes` non-interactive mode for provisioning scripts (today every run
+  is already non-interactive; a batch "wire + doctor + report" one-shot could compose
+  the two instead of adding a third command).
+- Doctor as a **tool** was rejected (ADR-0015) but a *sanitized* projection (no host
+  configs, no paths outside roots) could still let the autopilot ask "is my engine
+  healthy?" — `registry.stats` may already cover most of it; check before building.
+- `sk export openai-tools` (P7 bridging): the manifest is the single definition; same
+  `wire`-style operator command shape would fit.
+- The http transport has no auth by design (loopback default); an operator-grade
+  reverse-proxy example (caddy/nginx block) would fit CONNECT-A-HOST.md.
 
 ## 7. Standing constraints (carried, reaffirmed)
 
 - **Licensing/identity frozen:** Apache-2.0, authorship "Dime", README title + tagline
   unchanged. No relicense/retitle/author-tidying without the owner.
-- **Python 3.11+, zero mandatory deps** (ADR-0001) — a test imports `skeletonkey.core`
-  with `site-packages` hidden; `mcp` and `watchfiles` are extras; `mcp.client` imports
-  `mcp` lazily so a no-remotes build never pays it.
-- **Windows + Linux + macOS first-class; PowerShell not optional.** Every claim backed by
-  a rendered-payload assertion or a `win`-tagged self-skipping test.
+- **Python 3.11+, zero mandatory deps** (ADR-0001) — now *enforced* by
+  `tests/test_core_purity.py`; the onboarding commands (`sk wire`, `sk doctor
+  --no-probe`) must stay stdlib-only too.
+- **Windows + Linux + macOS first-class; PowerShell not optional.** New code paths use
+  threads not `select` (doctor probe), `env`-parameterized path resolution (wire tests
+  never touch a real home), and rendered-payload assertions for pwsh.
 - **Primary consumer is the bespoke autopilot loop; MCP surface ships and stays honest.**
-  No silent reordering (rankings/gates/receipts are data); a remote server's error code
-  is never re-wrapped.
-- **House rule for new tools:** TOOL-CONTRACT section (or extension), skill-guidance
-  entry, **wire-level** test. Spec-first + 3-ish chunks + explicit `git add`; `.github/`
-  untracked.
+  No silent reordering; a remote server's error code is never re-wrapped; wire/doctor
+  reports are data with a versioned schema (`sk.wire/1`, `sk.doctor/1`).
+- **House rule for new tools:** TOOL-CONTRACT section, skill-guidance entry, wire-level
+  test. `sk wire`/`sk doctor` are CLI subcommands, deliberately NOT registry tools
+  (ADR-0015) — the BURST table and TOOL-CONTRACT were correctly not touched. Spec-first
+  + 3-ish chunks + explicit `git add`; `.github/` untracked.
 
-## 8. Landmines (measured; old ones still bite)
+## 8. Landmines (measured this session; old ones still bite)
 
-- **Sandbox recycle mid-session** (hit twice): venv + `.git` reset; remote is the only
-  durable record — push early. Recovery in §5.
-- **mcp 2.1.1 lowlevel:** `tools/list` params model is `PaginatedRequestParams` directly
-  (not a `ListToolsRequest` wrapper — registering the wrapper makes the cursor silently
-  never arrive); result `meta` serializes as `_meta`; check `mcp_types` snake/camel fields
-  (`read_only_hint`, `input_schema`, `is_error`).
-- **RemoteServer keep-alive:** the worker thread IS the event loop — use
-  `asyncio.sleep(0.25)`, never a threading `Event.wait` (that froze every
-  `run_coroutine_threadsafe` call this session).
-- **Drop-in contract is `TOOL`/`TOOLS`/`register()`** (not `TOOL_SPECS`).
-- **`engine.call` returns a failure `ToolResult` for UNKNOWN_TOOL** — assert
-  `r.error.code`, don't `pytest.raises`.
-- **`test_policy_property.py` BURST table** names every mutating tool — adding one
-  without a row fails the suite (live.* added theirs; keep it in sync).
-- **`tests/test_docs.py` is the docs police** for `docs/*.md`, README, skills: every
-  `` `tool.id {args}` `` must name real args, every `` `section.key` `` a real config
-  field, every error-code row a real code. Namespaces now include `live.*` and `remote.*`.
-  PLAN.md is deliberately exempt.
-- **pyc staleness in-session:** editing `skeletonkey/live/*.py` then importing within the
-  same second can serve stale bytecode (mtime granularity); clear `__pycache__` and retry.
-- **Managed/demo files:** `examples/live_hmr/orbital.py` is a *mirror* of
-  `skeletonkey/live/demos.py` (a test enforces sync) — edit `demos.py`, not the example;
-  `canvas` is runtime-injected (F821 ignored there by design).
-- `SkeletonKeyError.err.code` is the string `"BAD_ARGS"`; `registry.all()` is a method
-  returning manifests; `AdSnapshot` has `.tokens`/`.digest` (no `.tokens_estimate`);
-  skill inject cap for `fs-safe-refactor` ≈ 3995 tokens (detail goes in `references/`);
-  remote tests need the package installed editable.
+- **mcp 2.1.1 client result models are snake_case**: `init.server_info`,
+  `res.is_error`, `res.structured_content` (the handoff's camel-case warning applies to
+  the *client* side too now). The http client factory is `streamable_http_client`
+  (renamed from `streamablehttp_client`); `client.py` accepts both.
+- **uvicorn cannot nest in asyncio.run** — that was the streamable-http crash; keep
+  `serve_http` outside the loop. If you ever add an async HTTP server path, same rule.
+- **streamable-http endpoint path is `/mcp`** (SDK default) — the banner, the url
+  stanza and the test all assume it.
+- **The suite hangs if `watch.available()` is real and watchfiles is installed** — the
+  watcher test is pinned now; do not un-pin it without adding a `stop_after`.
+- **`sk doctor` state semantics:** fresh (never-ran) workspace is *healthy*; partial
+  state (state dir exists, spill/journal missing) is the failure. Don't "fix" the fresh
+  case — the wire→doctor first-run flow depends on it.
+- **`sk wire` must never write a real user config from tests** — every test goes through
+  the `env` parameter; project mode skips hosts without project paths precisely so a
+  `--project` run cannot fall back to `$HOME`. Keep it that way.
+- **pyc staleness in-session** (hit again this session): after editing a module, a
+  same-second import can serve stale bytecode — clear `__pycache__` and retry.
+- `SkeletonKeyError.err.code` is the string `"BAD_ARGS"`; `registry.all()` is a method;
+  `AdSnapshot` has `.tokens`/`.digest`; remote tests need the package editable;
+  doctor's scratch build re-probes the profile each run (fine, ~0.5s).
 - Old unchanged: `E` namespace class; `_ledger` swallows exceptions; legacy
   `deny: ["**"]`; path denies need `tool(**/glob)`; `fs.glob` dotfile behavior;
-  `ReadResult.sha256` 16 chars; `req.meta` plain dict + positional progress args; replay
-  task_id match; `cmd | head` exit code; pytest from repo root.
+  `ReadResult.sha256` 16 chars; `req.meta` plain dict + positional progress args;
+  replay task_id match; `cmd | head` exit code; pytest from repo root; lowlevel
+  `tools/list` params model is `PaginatedRequestParams`; result `meta` serializes as
+  `_meta`; `test_policy_property.py` BURST table must name every mutating tool;
+  `test_docs.py` is the docs police (CONFIG_RE has **no** file-extension escape — a
+  backticked `mcp.json` fails; write such filenames without backticks);
+  `examples/live_hmr/orbital.py` mirrors `skeletonkey/live/demos.py`; skill inject cap
+  for fs-safe-refactor ≈ 3995 tokens.
 
 ## 9. Where things live (pointers, not contents)
 
-- `PLAN.md` — §5 P5a/P5b (shipped), §6 P6, risk register; ADR index rows 0010–0014.
-- `docs/TOOL-CONTRACT.md` — §3 errors, §7e (discovery), §7f (remote), §8 checklist.
-- `docs/adr/0011-live-hmr-…`, `0012-semantic-backend.md`, `0013-remote-tools-passthrough.md`.
-- `skeletonkey/core/{registry,semantic,config,errors}.py`; `skeletonkey/mcp/client.py`
-  (remotes); `skeletonkey/mcp/adapter.py` (tier + pagination + `_meta` receipts);
-  `skeletonkey/fsx/search.py` (fallback); `skeletonkey/tools/builtin.py` (route/expand/
-  explain/stats + search handler); `skeletonkey/live/*` (HMR subsystem).
-- Tests: `test_discovery.py` (P5a ACs + AC2 both modes), `test_semantic.py`,
-  `test_remotes.py` + `remote_helpers.py`, `test_mcp_stdio.py` (wire: P5a + remote),
-  `test_live.py` (live.*), `test_tools_builtin.py` (search fallback),
-  `tests/eval/suite.jsonl` (25 tasks, `target` ground truth).
-- `skills/fs-safe-refactor/references/discovery.md`; `config/skeletonkey.example.toml`
-  (`[advertise]`, `tools.semantic`, `[mcp.remotes.<name>]` sample);
-  `docs/LIVE-HMR.md`, `docs/LIVE-IMPL-PLAN.md` (live queue).
+- `skeletonkey/wire.py` — host catalogue (`HostSpec`, `hosts()`), merge engine
+  (`wire()`), read-only scan (`status_rows()`); JSONC stripping in `_strip_jsonc`.
+- `skeletonkey/diagnostics.py` — `doctor()` (fixed check order, scratch toolkit),
+  `probe_stdio()` (thread-pumped JSON-RPC, `_ProbeFailure` carries stderr tails).
+- `skeletonkey/mcp/__main__.py` — `amain` (stdio) vs `serve_http` (loop ownership).
+- Tests: `test_wire.py` (19), `test_doctor.py` (10), `test_mcp_http.py` (1, real SDK
+  client), `test_core_purity.py` (2, `-S` subprocess).
+- Docs: `docs/CONNECT-A-HOST.md`; `docs/adr/0015-onboarding-is-an-operator-command.md`;
+  PLAN §6 (shipped-slice annotation) + §9 ADR index row 0015.
+- `tests/test_skill_synthesis.py::test_watcher_reports_why_it_cannot_run…` — the pinned
+  watcher test (see landmines).
