@@ -18,6 +18,20 @@ from .core.config import Config
 from .core.util import compact_json, pretty_json
 
 
+def _host_alias(name: str) -> str:
+    """Accept the names people actually type: an id, a lowercase title, or a prefix."""
+    from . import wire as wire_mod
+
+    n = name.strip().lower().replace(" ", "-")
+    if n in wire_mod.HOSTS_BY_ID:
+        return n
+    for spec in wire_mod.hosts():
+        if spec.title.lower().replace(" ", "-").replace("/", "-").startswith(n) or \
+           n in (spec.id, spec.title.lower()):
+            return spec.id
+    return n  # unknown; wire.wire reports it
+
+
 def _emit(result: Any, *, json_out: bool, raw_key: str | None = None) -> int:
     if json_out:
         print(compact_json(result.to_dict(max_bytes=None)))
@@ -160,6 +174,27 @@ def main(argv: list[str] | None = None) -> int:
     m = sub.add_parser("mcp", help="run the MCP server")
     m.add_argument("--transport", default="stdio", choices=["stdio", "streamable-http"])
 
+    w = sub.add_parser("wire",
+                       help="auto-wire the MCP server into host apps (claude-desktop, cursor, ...)")
+    w.add_argument("hosts", nargs="*", help="host ids (default: every detected host)")
+    w.add_argument("--project", action="store_true",
+                   help="write the project-scope config in --cwd (e.g. .mcp.json) instead of the user's")
+    w.add_argument("--transport", default="stdio", choices=["stdio", "streamable-http", "http"],
+                   help="stdio writes a command stanza; streamable-http writes a url stanza")
+    w.add_argument("--port", type=int, default=None,
+                   help="with --transport streamable-http (default: mcp.port, 8765)")
+    w.add_argument("--bind", default="127.0.0.1", help="host part of the url stanza")
+    w.add_argument("--url", default=None, help="full url override for streamable-http")
+    w.add_argument("--python", default=None, help="interpreter for the command stanza")
+    w.add_argument("--root", action="append", help="pin a filesystem root (repeatable)")
+    w.add_argument("--read-only", action="store_true", help="wire the read-only surface")
+    w.add_argument("--name", default="skeletonkey", help="entry name in the host's server map")
+    w.add_argument("--remove", action="store_true", help="remove our entries (never a hand-written one)")
+    w.add_argument("--check", action="store_true", help="report what would change; write nothing")
+    w.add_argument("--dry-run", action="store_true", help="same plan as a real run, writes nothing")
+    w.add_argument("--allow-jsonc", action="store_true",
+                   help="permit rewriting a comments-bearing (JSONC) config as plain JSON")
+
     rp = sub.add_parser("replay", help="re-execute a recorded run in a scratch copy and diff envelopes")
     rp.add_argument("ref", help="path to a run recording, or a task id under <state>/runs/")
     ev = sub.add_parser("eval", help="score a suite of scripted tasks")
@@ -170,7 +205,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "mcp":
         from .mcp.__main__ import main as mcp_main
 
-        rest = ["--transport", args.transport]
+        rest = ["--transport", "streamable-http" if args.transport == "http" else args.transport]
         for r in (args.root or []):
             rest += ["--root", r]
         if args.cwd:
@@ -178,6 +213,47 @@ def main(argv: list[str] | None = None) -> int:
         if args.read_only:
             rest.append("--read-only")
         return mcp_main(rest)
+
+    if args.cmd == "wire":
+        # Deliberately before any Toolkit build: wiring is an operator action over host
+        # config files, stdlib-only, instant - even before the [mcp] extra is installed.
+        from . import wire as wire_mod
+
+        if args.port is not None:
+            port = args.port
+        else:
+            try:
+                port = Config.load(cwd=args.cwd).mcp.port
+            except Exception:
+                port = 8765
+        report = wire_mod.wire(
+            host_ids=[_host_alias(h) for h in args.hosts] or None,
+            scope="project" if args.project else "user", cwd=args.cwd,
+            transport="http" if args.transport in ("http", "streamable-http") else "stdio",
+            port=port, bind=args.bind, python=args.python,
+            roots=(list(args.root) if args.root else None), read_only=args.read_only,
+            name=args.name,
+            url=args.url, remove=args.remove, check_only=args.check, dry_run=args.dry_run,
+            allow_jsonc=args.allow_jsonc)
+        if args.json:
+            print(compact_json(report))
+        else:
+            for r in report["hosts"]:
+                mark = {"wired": "wired  ", "updated": "updated", "already": "already",
+                        "removed": "removed", "dry-run": "plan   ", "checked": "plan   ",
+                        "skipped": "skip   ", "needs-manual": "MANUAL ", "error": "ERROR  ",
+                        }.get(r.get("status"), r.get("status", "?") + " " * 7)
+                line = f"  {mark} {r['host']:<15} {r.get('path', '')}"
+                extra = r.get("reason") or r.get("error") or ""
+                if extra:
+                    line += f"  - {extra}"
+                print(line)
+                if r.get("status") == "needs-manual" and r.get("stanza"):
+                    print("    paste:", pretty_json(r["stanza"]))
+            n = sum(1 for r in report["hosts"] if r.get("status") in ("wired", "updated", "removed"))
+            print(f"  {n} host(s) changed; "
+                  f"{'restart the host to pick up the new tools' if n else 'nothing written'}")
+        return 0 if report["ok"] else 1
 
     overrides: dict[str, Any] = {}
     if args.root:

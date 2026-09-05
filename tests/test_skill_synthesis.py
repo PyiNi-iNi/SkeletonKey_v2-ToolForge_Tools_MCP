@@ -593,8 +593,14 @@ def test_quote_check_switches_rule_sets_by_dialect(repo_toolkit):
 
 
 # --------------------------------------------------------------------- hot reload + windows path
-def test_watcher_reports_why_it_cannot_run_instead_of_crashing(tmp_path, skillws):
-    """PLAN P2 acceptance 5: no new mandatory dependency, and its absence is a reported state."""
+def test_watcher_reports_why_it_cannot_run_instead_of_crashing(tmp_path, skillws, monkeypatch):
+    """PLAN P2 acceptance 5: no new mandatory dependency, and its absence is a reported state.
+
+    `watch.available` is pinned to False so the test exercises the cannot-run *report* it is
+    named for in every environment - with the `[watch]` extra installed (the `.[dev]` default)
+    the unpinned call enters a real `awatch` loop with no `stop_after`, which is a hang, not a
+    report. The live-watcher behaviour has its own subject; this one stays deterministic.
+    """
     import asyncio
 
     from skeletonkey.skills import watch
@@ -604,11 +610,11 @@ def test_watcher_reports_why_it_cannot_run_instead_of_crashing(tmp_path, skillws
         st = watch.status(tk)
         assert st["requested"] is False and st["dirs"] == [str(skillws / "skills")]
         assert isinstance(watch.available(), bool)
+        monkeypatch.setattr(watch, "available", lambda: False)
         out = asyncio.run(watch.watch_skills(tk, None))
         assert out["watching"] is False
-        if not watch.available():
-            assert out["reason"] == "watchfiles is not installed"
-            assert "[watch]" in out["install"]
+        assert out["reason"] == "watchfiles is not installed"
+        assert "[watch]" in out["install"]
     finally:
         tk.close()
 
