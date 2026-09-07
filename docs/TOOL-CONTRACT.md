@@ -397,8 +397,9 @@ agent *see* them again. The contract, enforced by code and tested at the wire:
   `ready_to_publish`. Files that policy denies are *skipped with a note*, not a
   fatal error — a protected file is a statement that the agent may not touch it.
 - **`pub.inject` is a two-pass write with no partial publishes.** Pass 1 reads
-  every file and plans every replacement; if any marker's store id is missing,
-  it raises `ENOENT` (listing the missing ids) **before a single byte is
+  every file and plans every replacement; if any marker's store id is missing *or
+  expired*, it raises `ENOENT` (listing the missing ids, with the expired subset
+  named separately in `details.expired`) **before a single byte is
   written**. Pass 2 writes only changed files through `fs.write` with
   `expect_sha`, so each write is conflict-detected and journaled. `dry_run`
   returns the plan and writes nothing. `bindings` maps a marker id to a
@@ -528,5 +529,8 @@ Checklist for every new tool:
 
 `ToolManifest.version` is part of the cache key and the advertisement `digest`; bump it
 on any schema or semantic change. `manifest.version` bumps with the *tool*;
+`skeletonkey.__version__` with the package; the envelope gained no breaking change since
+0.1.0 and must not gain one without a `docs/adr/` entry.
+ `manifest.version` bumps with the *tool*;
 `skeletonkey.__version__` with the package; the envelope gained no breaking change since
 0.1.0 and must not gain one without a `docs/adr/` entry.

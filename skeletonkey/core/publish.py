@@ -117,12 +117,25 @@ class PublishStore:
     def _entries(self) -> dict[str, Any]:
         return self._data["entries"]
 
-    def put(self, id_: str, kind: str, value: str, note: str = "") -> dict[str, Any]:
-        """Insert or update an entry. Returns metadata only — never the value."""
+    def put(self, id_: str, kind: str, value: str, note: str = "",
+            expires_in_s: int | None = None) -> dict[str, Any]:
+        """Insert or update an entry. Returns metadata only — never the value.
+
+        ``expires_in_s`` sets a deadline (epoch seconds from now) after which
+        the entry refuses injection; ``None`` (the default) means no deadline,
+        and re-storing an id without it *clears* the old deadline — a rotated
+        credential carries a fresh lifetime, never the previous one's. A value
+        of 0 or less stores an already-expired entry: visible in listings,
+        never injectable.
+        """
         validate_id(id_)
         validate_kind(kind)
         if not isinstance(value, str) or not value:
             raise SkeletonKeyError(E.BAD_ARGS, "store value must be a non-empty string")
+        if expires_in_s is not None and (isinstance(expires_in_s, bool)
+                                         or not isinstance(expires_in_s, int)):
+            raise SkeletonKeyError(E.BAD_ARGS, "expires_in_s must be an integer number of seconds",
+                                   details={"expires_in_s": expires_in_s})
         now = _utcnow()
         existing = self._entries.get(id_)
         entry = {
@@ -131,10 +144,27 @@ class PublishStore:
             "value": value,
             "created": (existing or {}).get("created", now),
             "updated": now,
+            "expiry": (time.time() + expires_in_s) if expires_in_s is not None else None,
         }
         self._entries[id_] = entry
         self._save()
         return self.meta(id_)
+
+    def expired(self, id_: str) -> bool:
+        """True when the entry exists and its deadline has lapsed.
+
+        A missing id is *missing*, not expired — the two failures get different
+        advice, so they stay different answers.
+        """
+        entry = self._entries.get(id_)
+        if entry is None:
+            return False
+        expiry = entry.get("expiry")
+        return expiry is not None and float(expiry) <= time.time()
+
+    def usable(self, id_: str) -> bool:
+        """Present in the store and not past its deadline: injectable."""
+        return self.has(id_) and not self.expired(id_)
 
     def meta(self, id_: str) -> dict[str, Any]:
         """Metadata for one entry. The value appears only as a short mask."""
@@ -143,12 +173,18 @@ class PublishStore:
         if entry is None:
             raise SkeletonKeyError(E.ENOENT, f"no store entry {id_!r}",
                                    details={"ids": self.ids()})
+        expiry = entry.get("expiry")
+        is_expired = expiry is not None and float(expiry) <= time.time()
         return {
             "id": id_,
             "kind": entry.get("kind", "other"),
             "note": entry.get("note", ""),
             "created": entry.get("created", ""),
             "updated": entry.get("updated", ""),
+            "expiry": expiry,
+            "expired": is_expired,
+            "expires_in_s": (None if expiry is None
+                             else max(0, round(float(expiry) - time.time()))),
             "value_masked": _mask(entry.get("value", "")),
         }
 
@@ -167,12 +203,21 @@ class PublishStore:
         return id_ in self._entries
 
     def value(self, id_: str) -> str:
-        """Raw value. Internal use only — never exposed by a tool."""
+        """Raw value. Internal use only — never exposed by a tool.
+
+        Refuses expired entries as defense in depth: callers check ``usable()``
+        first, but a value past its deadline must never leave the store even
+        when a caller forgets.
+        """
         validate_id(id_)
         entry = self._entries.get(id_)
         if entry is None:
             raise SkeletonKeyError(E.ENOENT, f"no store entry {id_!r}",
                                    details={"ids": self.ids()})
+        if self.expired(id_):
+            raise SkeletonKeyError(E.ENOENT, f"store entry {id_!r} is expired",
+                                   details={"id": id_, "expired": True,
+                                            "hint": "rotate it: pub.store_put the same id with a fresh value"})
         return str(entry.get("value", ""))
 
     def delete(self, id_: str) -> dict[str, Any]:
@@ -206,13 +251,14 @@ class Marker:
     line: int        # 1-based
     column: int      # 1-based
     id: str          # the store id the marker refers to
-    bound: bool      # store has an entry for the id
+    bound: bool      # store has a *usable* (present, unexpired) entry for the id
     marker: str = field(repr=False, default="")  # the literal text
+    expired: bool = False  # the id exists but its deadline lapsed
 
     def to_dict(self) -> dict[str, Any]:
+        status = "bound" if self.bound else ("expired" if self.expired else "missing")
         return {"file": self.file, "line": self.line, "column": self.column,
-                "id": self.id, "bound": self.bound,
-                "status": "bound" if self.bound else "missing"}
+                "id": self.id, "bound": self.bound, "status": status}
 
 
 def find_markers_in_text(text: str, file: str, store: PublishStore | None) -> list[Marker]:
@@ -220,9 +266,11 @@ def find_markers_in_text(text: str, file: str, store: PublishStore | None) -> li
     for line_no, line in enumerate(text.split("\n"), start=1):
         for m in MARKER_RE.finditer(line):
             id_ = m.group(1)
+            usable = store.usable(id_) if store is not None else False
             markers.append(Marker(
                 file=file, line=line_no, column=m.start() + 1, id=id_,
-                bound=(store.has(id_) if store is not None else False),
+                bound=usable,
+                expired=(store is not None and not usable and store.expired(id_)),
                 marker=m.group(0)))
     return markers
 
@@ -232,17 +280,20 @@ def replace_markers(text: str, store: PublishStore,
     """Replace every marker in ``text``.
 
     Returns ``(new_text, markers, missing_ids)``. ``missing_ids`` lists (sorted,
-    unique) store ids that a marker refers to but the store does not have —
-    callers must refuse to write when it is non-empty. ``bindings`` maps a
-    marker id to a *different* store id for the lookup ("maps to stored
-    credentials"). ``file`` is echoed into the marker locations for reporting.
+    unique) marker ids with no *usable* entry — absent from the store, or bound
+    to an expired one (expired text is left untouched exactly like missing
+    text). Callers must refuse to write when it is non-empty; the markers carry
+    ``status`` (bound/missing/expired) so the refusal can say which is which.
+    ``bindings`` maps a marker id to a *different* store id for the lookup
+    ("maps to stored credentials"). ``file`` is echoed into the marker
+    locations for reporting.
     """
     missing: set[str] = set()
 
     def _sub(m: re.Match[str]) -> str:
         id_ = m.group(1)
         source = (bindings or {}).get(id_, id_)
-        if not store.has(source):
+        if not store.usable(source):
             missing.add(id_)
             return m.group(0)  # leave untouched; caller decides to abort
         return store.value(source)

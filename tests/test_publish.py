@@ -92,6 +92,36 @@ def test_store_update_keeps_created_and_moves_updated(tmp_path):
     assert s.value("a") == "v2"
 
 
+def test_store_expiry_lapses_and_rotation_clears_it(tmp_path):
+    import time
+
+    s = PublishStore(tmp_path / "st.json")
+    before = time.time()
+    s.put("short.lived", "token", "v", expires_in_s=3600)
+    m = s.meta("short.lived")
+    assert m["expired"] is False
+    assert before + 3600 <= m["expiry"] <= time.time() + 3600
+    assert 3590 <= m["expires_in_s"] <= 3600
+    assert s.usable("short.lived") and not s.expired("short.lived")
+
+    # 0 or negative: stored already-expired - visible, never injectable
+    s.put("dead", "token", "v", expires_in_s=0)
+    assert s.meta("dead")["expired"] is True
+    assert not s.usable("dead")
+    with pytest.raises(SkeletonKeyError):
+        s.value("dead")
+
+    # rotation (same id, fresh value, no deadline) clears the old deadline
+    s.put("dead", "token", "v2")
+    m2 = s.meta("dead")
+    assert m2["expired"] is False and m2["expiry"] is None
+    assert s.value("dead") == "v2"
+
+    # a non-integer deadline is a usage error, not a silent default
+    with pytest.raises(SkeletonKeyError):
+        s.put("bad", "token", "v", expires_in_s="tomorrow")
+
+
 def test_store_delete_is_irreversible_and_reports_so(tmp_path):
     s = PublishStore(tmp_path / "st.json")
     s.put("a", "token", "v")
@@ -232,6 +262,43 @@ def test_inject_refuses_unbound_markers_and_writes_nothing(pub_toolkit, workspac
     # no partial publish: NEITHER file changed
     assert f1.read_text() == "A={{PUB.pypi.token}}\n"
     assert f2.read_text() == "B={{PUB.ghost.id}}\n"
+
+
+def test_placeholders_reports_expired_as_its_own_status(pub_toolkit, workspace):
+    eng = pub_toolkit.engine
+    call(eng, "pub.store_put", id="old.token", kind="token", value="v", expires_in_s=0)
+    (workspace / "exp.env").write_text("A={{PUB.old.token}}\n", encoding="utf-8")
+    r = call(eng, "pub.placeholders", path="exp.env")
+    assert r.ok
+    mark = next(m for m in r.data["markers"] if m["id"] == "old.token")
+    assert mark["status"] == "expired" and mark["bound"] is False
+    assert r.data["ready_to_publish"] is False
+
+
+def test_inject_refuses_expired_entries_and_names_them(pub_toolkit, workspace):
+    eng = pub_toolkit.engine
+    call(eng, "pub.store_put", id="old.token", kind="token", value="v", expires_in_s=0)
+    f = workspace / "exp.env"
+    f.write_text("A={{PUB.old.token}}\nB={{PUB.ghost.id}}\n", encoding="utf-8")
+    r = call(eng, "pub.inject", path="exp.env")
+    assert not r.ok and r.error.code == "ENOENT"
+    assert r.error.details["expired"] == ["old.token"]
+    assert sorted(r.error.details["missing"]) == ["ghost.id", "old.token"]
+    assert f.read_text() == "A={{PUB.old.token}}\nB={{PUB.ghost.id}}\n", "no partial publish"
+    # the dry run names the expired subset too, and still writes nothing
+    dry = call(eng, "pub.inject", path="exp.env", dry_run=True)
+    assert dry.ok and dry.data["expired_ids"] == ["old.token"]
+
+
+def test_expired_entry_rotates_by_reput_then_injects(pub_toolkit, workspace):
+    eng = pub_toolkit.engine
+    call(eng, "pub.store_put", id="rot.token", kind="token", value="old", expires_in_s=0)
+    f = workspace / "rot.env"
+    f.write_text("T={{PUB.rot.token}}\n", encoding="utf-8")
+    assert not call(eng, "pub.inject", path="rot.env").ok
+    call(eng, "pub.store_put", id="rot.token", kind="token", value="new")
+    r = call(eng, "pub.inject", path="rot.env")
+    assert r.ok and f.read_text() == "T=new\n"
 
 
 def test_inject_dry_run_reports_the_plan_without_writing(pub_toolkit, workspace):
