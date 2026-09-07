@@ -27,6 +27,13 @@ provider won and why. Two honest answers the explain tool will give:
   tool it saw before. `registry.list` reports `tier`/`active_tier` plus the
   receipts.
 
+**Everything withheld, in one call.** `registry.explain_all {}` lists every gated
+tool with its reason (gate failure, tier withhold, tier-budget drop, or the tool's
+own opt-out), gated rows first. `registry.explain_all {tier: "core"}` previews what
+a smaller tier would hide without switching to it; `include_advertised: true` appends
+the shown rows. Use it when more than one tool is missing — or when you want the
+receipt before you call `registry.expand`.
+
 **Remote tools** — a configured `[mcp.remotes.<server>]` shows up as
 `remote.<server>.<tool>` with `source: "remote:<server>"` and honest risk
 (unannotated ⇒ `write`, so approval gates it). The remote's error code passes

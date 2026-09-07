@@ -632,6 +632,29 @@ _spec(
                   "required": ["capability"], "additionalProperties": False},
 )
 
+_spec(
+    id="registry.explain_all", title="Explain every gate in the advertisement",
+    description="Every tool withheld from the advertised set, with the reason: gate failures "
+                "(platform, requirement, read_only, disabled), tier withholds, tier-budget drops, "
+                "and tools that opted out of advertisement themselves. Gated rows sort first; pass "
+                "include_advertised=true to see the shown rows too. This is the whole-surface answer "
+                "to 'why didn't I see this tool?' - capabilities.explain goes deep on one capability.",
+    capability="registry.explain", risk="none", typical_latency_ms=8,
+    tags=["registry", "explain", "gate", "receipt", "discovery", "why", "tier", "advertise"],
+    tier="core",
+    see_also=["capabilities.explain", "registry.list", "registry.describe"],
+    examples=[{"args": {}}, {"args": {"tier": "core"}}, {"args": {"include_advertised": True}}],
+    input_schema={"type": "object",
+                  "properties": {"tier": {"type": ["string", "null"], "default": None,
+                                        "description": "Query a tier without switching to it; omit for the "
+                                                     "session's active tier."},
+                                 "include_advertised": {"type": "boolean", "default": False,
+                                                       "description": "Append the advertised rows after the gated ones."},
+                                 "group": {"type": "string",
+                                          "description": "Limit rows to one tool group (fs, shell, ...)."}},
+                  "additionalProperties": False},
+)
+
 
 _spec(
     id="shell.quote", title="Quote values for a dialect",
@@ -1141,6 +1164,23 @@ def register(reg: Any, *, engine: Any, shells: Any, fs: Any, journal: Any, skill
     def capabilities_explain(capability: str, k: int = 50) -> dict[str, Any]:
         return engine.registry.explain(capability, k=int(k))
 
+    def registry_explain_all(tier: str | None = None, include_advertised: bool = False,
+                             group: str | None = None) -> dict[str, Any]:
+        if tier is not None and tier not in ("core", "task", "full"):
+            raise SkeletonKeyError(E.BAD_ARGS, f"unknown tier {tier!r}",
+                                   details={"tier": tier, "tiers": ["core", "task", "full"],
+                                            "hint": "omit for the session's active tier"})
+        # the same budgets registry.list answers with: this tool explains the
+        # snapshot the host sees, not a hypothetical unbudgeted one
+        query_tier = tier or engine.registry.active_tier
+        if query_tier == "full":
+            return engine.registry.explain_all(
+                tier=tier, include_advertised=bool(include_advertised), group=group,
+                token_budget=engine.config.mcp.advertise_max_tools * 200)
+        return engine.registry.explain_all(
+            tier=tier, include_advertised=bool(include_advertised), group=group,
+            tier_budgets=engine.config.advertise.budgets())
+
     def registry_search(query: str, limit: int = 8, include_gated: bool = False, group: str | None = None,
                         max_risk: str | None = None) -> dict[str, Any]:
         hits = engine.registry.search(query, limit=int(limit), include_gated=include_gated, group=group,
@@ -1453,6 +1493,7 @@ def register(reg: Any, *, engine: Any, shells: Any, fs: Any, journal: Any, skill
                      ("registry.describe", registry_describe), ("registry.stats", registry_stats),
                      ("registry.route", registry_route), ("registry.expand", registry_expand),
                      ("capabilities.explain", capabilities_explain),
+                     ("registry.explain_all", registry_explain_all),
                      ("policy.grant", policy_grant)]:
         add(name, fn)
     for name, fn in [("pub.store_put", pub_store_put), ("pub.store_list", pub_store_list),

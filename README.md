@@ -64,7 +64,7 @@ tk.engine.call("shell.run", {"script": 'printf "[%s]" "$@"', "dialect": "bash",
 | --- | --- | --- |
 | `fs.*` | 16 | read/write/patch/search/list/glob/stat/sniff/move/delete/mkdir/chmod + journal_list, undo, redo, undo_task |
 | `shell.*` | 11 | run (with `argv`)/quote/quote_check/available/jobs/job_wait/job_kill/job_watch/sessions/session_reset/selftest; bash, sh, zsh, fish, pwsh, powershell 5.1+7, python |
-| `registry.*` | 6 | describe/list/search/stats/route/expand — the agent's view of its own capabilities, ranked for a task (`route`) and tiered (`expand`) |
+| `registry.*` | 7 | describe/list/search/stats/route/expand/explain_all — the agent's view of its own capabilities, ranked for a task (`route`), tiered (`expand`), and with every gate explained (`explain_all`) |
 | `capabilities.*` | 1 | explain — why a capability is gated here, with the provider receipt |
 | `skills.*` | 5 | list/load/match/install/uninstall — progressive disclosure, plus a skill that ships a script becoming a callable tool |
 | `pub.*` | 9 | publishing: write-only credential store (store_put/store_list/store_delete), `{{PUB.<id>}}` placeholder scan + journaled injection (placeholders/inject), platform/payment/packaging knowledge (platforms/payments/packaging), AI-executable release test plans (testers) |
@@ -73,8 +73,8 @@ tk.engine.call("shell.run", {"script": 'printf "[%s]" "$@"', "dialect": "bash",
 | `profile.probe` | 1 | host capability detection with receipts |
 | `remote.*` | 0 by default | other MCP servers under `[mcp.remotes.<name>]`, enrolled as `remote.<server>.<tool>` (risk inherited, error codes pass through) |
 
-61 registered, 59 advertised, ~6.4 k tokens of advertisement at the default `full` tier
-(11 tools / 0.9 k at `core`, 38 / 3.5 k at `task`). Every call returns the same
+62 registered, 60 advertised, ~6.6 k tokens of advertisement at the default `full` tier
+(12 tools / 1.1 k at `core`, 39 / 3.6 k at `task`). Every call returns the same
 envelope and the same error taxonomy: see
 [`docs/TOOL-CONTRACT.md`](docs/TOOL-CONTRACT.md). The two not advertised are
 `shell.selftest` (declared `advertised = false` by its skill) and `skills.install`
@@ -88,7 +88,7 @@ $ sk live patch --name render --file new_render.py --via-panel   # hot-swap code
 $ sk live reload --force-source hue --via-panel   # hand one name back to the file after REPL experiments
 ```
 
-Two of the 61 are **synthesized from a skill pack**, which is the part a toolset usually makes
+Two of the 62 are **synthesized from a skill pack**, which is the part a toolset usually makes
 you code: `skills/shell-crossplatform/tool.toml` declares `shell.quote_check` with an inline
 handler body and `shell.selftest` with `scripts/selftest.sh` (+ a PowerShell sibling), and the
 compiler turns each into a manifest whose handler runs one script through `shell.run`'s

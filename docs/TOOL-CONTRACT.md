@@ -452,6 +452,10 @@ guess.
   claiming the capability (or the capability of a given tool id) with each one's gate
   reasons, score, tier, live stats, the winner and why — a missing or unknown capability
   is a `BAD_ARGS` with `near` suggestions, never empty silence.
+- **`registry.explain_all {tier?, include_advertised?, group?}`** is the whole-surface
+  version: one row per registered tool (gated first) with its tier, gate reasons/unmet
+  requirements, tier-budget drop reason, and the opt-out reason when the tool hides
+  itself. `tier` queries without switching; `group` limits to one tool group.
 - **Pagination is opaque by position.** `registry.list` and MCP `tools/list` accept
   `cursor` / `page_size` (server default 100) and return `next_cursor`/`nextCursor` only
   when more rows exist; a malformed cursor falls back to page 0 (documented, tested); a
