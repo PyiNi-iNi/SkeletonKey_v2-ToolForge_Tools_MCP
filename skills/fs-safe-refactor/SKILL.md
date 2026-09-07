@@ -10,7 +10,7 @@ version: "1"
 tags: [filesystem, refactor, safety, undo]
 priority: 65
 requires: [fs]
-allowed-tools: [fs.read, fs.write, fs.patch, fs.search, fs.glob, fs.list, fs.stat, fs.move, fs.delete, fs.mkdir, fs.chmod, fs.undo, fs.redo, fs.undo_task, fs.journal_list, policy.grant, registry.route]
+allowed-tools: [fs.read, fs.write, fs.patch, fs.search, fs.glob, fs.list, fs.stat, fs.move, fs.delete, fs.mkdir, fs.chmod, fs.undo, fs.redo, fs.undo_task, fs.journal_list, policy.grant, registry.route, registry.explain_all]
 ---
 
 # Safe filesystem changes

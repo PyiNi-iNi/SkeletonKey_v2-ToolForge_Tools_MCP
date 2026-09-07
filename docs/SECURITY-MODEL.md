@@ -306,3 +306,21 @@ does not mean "nobody else can read this".
 | `pub.inject` with an unbound marker writes **no** file (no partial publish) | `test_publish.py::test_inject_refuses_unbound_markers_and_writes_nothing` |
 | `pub.inject` is journaled and reverts via `fs.undo_task` (per-call scope) | `test_publish.py::test_inject_writes_through_the_journal_and_undoes` |
 | policy-denied file (e.g. `.env`) is skipped with a note, not a fatal error | `test_publish.py` (workspace fixture carries a denied `.env`) |
+| sentinel split is lossless, first-match-wins, last-value-wins, never raises | `test_redteam.py::test_sentinel_split_is_lossless_and_first_match_wins`, `::test_sentinel_values_come_from_the_last_own_token_line`, `::test_sentinel_rc_done_parsing_is_total`, `::test_sentinel_ignores_malformed_tokens`, `::test_sentinel_parse_never_raises_on_hostile_text` |
+| 2000 hostile path shapes: allow ⇒ contained, deny ⇒ policy code, nothing else escapes | `test_redteam.py::test_random_path_shapes_never_escape_and_never_crash` |
+| device boundary is exactly the Win32 list (COM1 denied, COM10 allowed) | `test_redteam.py::test_device_name_boundary_single_digit_only` |
+| `\\?\` rewrite fires only past 250 chars and never changes containment | `test_redteam.py::test_long_prefix_rewrite_only_fires_past_250_chars` |
+| newline in an env value is data (sibling stays unset); NUL ⇒ `BAD_ARGS`, never `INTERNAL` | `test_redteam.py::test_env_value_with_newline_cannot_inject_a_sibling_variable`, `::test_env_nul_is_a_usage_error_never_internal` |
+| clean env passes exactly `SKELETONKEY_*`; blob decode never raises, drops bad names | `test_redteam.py::test_clean_mode_keeps_only_exact_skeletonkey_prefix`, `::test_env_blob_decode_never_raises_and_drops_bad_names` |
+| CLIXML spoof never raises, loses no plain text, attributes error bodies as data | `test_redteam.py::test_clixml_spoof_never_raises_and_loses_no_plain_text`, `::test_clixml_spoofed_error_stream_is_attributed_as_data` |
+| spill filenames derive from a hex run id: hostile tool ids stay inside the spill dir | `test_redteam.py::test_spill_path_cannot_escape_the_spill_dir` |
+
+## Supply chain
+
+The package ships **zero third-party runtime dependencies** (stdlib only), so the
+audit surface is the build tooling, not the code. `pip-audit`, run 2026-09-07
+against the dev venv after upgrading it, reports **no known vulnerabilities**;
+the only pre-upgrade findings were the venv's own stale `pip`/`setuptools`
+(PYSEC-2026-2875/2876/3721, PYSEC-2025-49, PYSEC-2026-1918/3447), which no project
+change can fix. Re-run `pip-audit` before each tagged release and record the
+date here.

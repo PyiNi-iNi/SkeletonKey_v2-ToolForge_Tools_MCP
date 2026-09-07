@@ -187,6 +187,14 @@ profile_ttl_s = 3600
 keep_snapshots = 200
 redact = true                      # secrets masked in the ledger's previews
 
+# ------------------------------------------------------------------ publish
+# Publish flow (docs/TOOL-CONTRACT.md §7): the credential store lives OUTSIDE
+# the workspace on purpose — the fs sandbox is the wall that keeps fs.* tools
+# away from it. Expiry is per-entry (expires_in_s on store_put); an expired
+# entry refuses at inject time until it is rotated with a fresh store_put.
+[publish]
+# store_path = ""                # empty = <user config dir>/skeletonkey/publish/store.json
+
 # ------------------------------------------------------------- live HMR / REPL
 # The live.* group (docs/LIVE-HMR.md): python hot-reload + LiveREPL + preview
 # panel. start/repl/patch execute code, so they are risk=write like shell.run

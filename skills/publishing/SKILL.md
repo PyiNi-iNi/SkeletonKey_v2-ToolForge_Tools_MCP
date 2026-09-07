@@ -37,6 +37,10 @@ pub.store_list {}                # metadata + a short mask only
   a command, or a note. To change a credential: `pub.store_put` the same id again
   (rotation); `pub.store_delete` is irreversible (the store is outside the
   journal).
+- A credential with a known lifetime gets `expires_in_s` (seconds from now):
+  past the deadline it scans as `expired` and `pub.inject` refuses it until you
+  rotate (same id, fresh value). Re-storing without `expires_in_s` clears the
+  old deadline.
 
 ## 2. Markers carry the shape, the store carries the value
 

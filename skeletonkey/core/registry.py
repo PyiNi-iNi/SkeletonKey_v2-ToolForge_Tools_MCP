@@ -621,6 +621,50 @@ class Registry:
                 "gated_out": [r["id"] for r in rows if not r["advertised"]],
                 "winner": winner, "tools": rows[:k]}
 
+    def explain_all(self, *, tier: str | None = None, include_advertised: bool = False,
+                    group: str | None = None, tier_budgets: dict[str, dict[str, int]] | None = None,
+                    token_budget: int | None = None, max_tools: int | None = None) -> dict[str, Any]:
+        """Every gate in one answer: what is withheld from this tier, and why.
+
+        The companion to ``explain()`` (one capability, deep) and
+        ``registry.list {include_gated}`` (one page, shallow): one row per
+        registered tool with its tier, its gate reasons/unmet requirements, its
+        budget-drop reason when the tier cap trimmed it, and the hidden reason
+        when the tool opted out of advertisement itself. Gated rows sort first —
+        "what am I missing" reads top-down — then advertised rows when asked.
+
+        The budget parameters mirror ``advertise()`` so callers answer against
+        the same snapshot the host sees: the engine passes the live ``[advertise]``
+        caps (or the full-tier token budget) exactly like ``registry.list`` does,
+        or a trimmed tool would show here as advertised while the list hides it.
+        """
+        snap = self.advertise(tier=tier or self.active_tier, tier_budgets=tier_budgets,
+                              token_budget=token_budget, max_tools=max_tools)
+        names = set(snap.names)
+        tools = [m for m in self.all() if not group or m.group == group]
+        gated: list[dict[str, Any]] = []
+        shown: list[dict[str, Any]] = []
+        for man in tools:
+            is_adv = man.id in names
+            if is_adv and not include_advertised:
+                continue
+            gate = snap.gates.get(man.id) or self.gate(man)
+            row: dict[str, Any] = {"id": man.id, "tier": man.tier, "advertised": is_adv,
+                                   "gate": gate.to_dict()}
+            if man.id in snap.budget_drops:
+                row["budget_drop"] = snap.budget_drops[man.id]
+            if not man.advertised and man.hidden_reason:
+                row["hidden_reason"] = man.hidden_reason
+            (shown if is_adv else gated).append(row)
+        gated.sort(key=lambda r: r["id"])
+        shown.sort(key=lambda r: r["id"])
+        return {"tier": snap.tier, "digest": snap.digest, "active_tier": self.active_tier,
+                "registered": len(tools),
+                "advertised": sum(1 for m in tools if m.id in names),
+                "gated_out": len(gated),
+                **({"group": group} if group else {}),
+                "rows": gated + shown}
+
     # ---------------------------------------------------------------- drop-ins
     def load_dir(self, path: str, *, source: str = "dropin", replace: bool = False) -> dict[str, Any]:
         """Import `*.py` files from a directory; each may expose TOOL(S)/register().

@@ -268,6 +268,98 @@ def test_explain_names_gates_and_winner():
     assert exc.value.err.code == "BAD_ARGS"
 
 
+def test_explain_all_lists_every_gate_gated_first():
+    p = _empty_profile()
+    reg = Registry(profile=p)
+    reg.register(_man("a.shown", tier="core"), lambda **kw: {"ok": True})
+    reg.register(_man("a.gated", tier="core", reqs=[Requirement("binary", "nope")]),
+                 lambda **kw: {"ok": True})
+    reg.register(_man("a.full_only", tier="full"), lambda **kw: {"ok": True})
+    out = reg.explain_all()
+    assert out["tier"] == "full" and out["registered"] == 3
+    assert out["advertised"] == 2 and out["gated_out"] == 1
+    assert [r["id"] for r in out["rows"]] == ["a.gated"]
+    row = out["rows"][0]
+    assert row["advertised"] is False and row["tier"] == "core"
+    assert row["gate"]["available"] is False and row["gate"]["unmet"]
+    # advertised rows are appended after the gated ones when asked, id-sorted
+    wide = reg.explain_all(include_advertised=True)
+    assert [r["id"] for r in wide["rows"]] == ["a.gated", "a.full_only", "a.shown"]
+    # querying a smaller tier previews its withholds without switching to it
+    core = reg.explain_all(tier="core")
+    assert core["tier"] == "core" and reg.active_tier == "full"
+    assert {r["id"] for r in core["rows"]} == {"a.gated", "a.full_only"}
+    withheld = next(r for r in core["rows"] if r["id"] == "a.full_only")
+    assert "tier core" in withheld["gate"]["reasons"][0]
+    with pytest.raises(SkeletonKeyError) as exc:
+        reg.explain_all(tier="quantum")
+    assert exc.value.err.code == "BAD_ARGS"
+
+
+def test_explain_all_group_filter_and_budget_drops():
+    reg = Registry(profile=_empty_profile())
+    for tid, group in [("fs.a", "fs"), ("shell.b", "shell")]:
+        reg.register(ToolManifest(id=tid, title=tid, description=f"{tid} does things",
+                                  capability=tid, group=group, tier="task"),
+                     lambda **kw: {"ok": True})
+    fs_only = reg.explain_all(tier="core", group="fs")
+    assert fs_only["group"] == "fs" and fs_only["registered"] == 1
+    assert [r["id"] for r in fs_only["rows"]] == ["fs.a"]
+    assert "group" not in reg.explain_all()
+    # a tier-budget trim names the reason on the row instead of going quiet: a
+    # dropped tool passes its gate (available) but is not in the snapshot, so
+    # the budget_drop field is the only honest answer to "why didn't I see it"
+    for i in range(6):
+        reg.register(_man(f"z{i:02d}", tier="task"), lambda **kw: {"ok": True})
+    trimmed = reg.explain_all(tier="task", tier_budgets={"task": {"tools": 3, "tokens": 0}})
+    drops = [r for r in trimmed["rows"] if "budget_drop" in r]
+    assert drops, "a 3-tool cap over 8 task tools must trim"
+    assert all(d["budget_drop"] == "max_tools 3" for d in drops)
+    assert all(d["advertised"] is False and d["gate"]["available"] is True for d in drops)
+
+
+def test_explain_all_through_the_engine_names_the_real_gates(toolkit):
+    eng = toolkit.engine
+    listed = eng.call("registry.list", {})
+    assert listed.ok
+    r = eng.call("registry.explain_all", {})
+    assert r.ok
+    d = r.data
+    # the same snapshot the host sees: same digest, same advertised count
+    assert d["digest"] == listed.data["digest"]
+    assert d["registered"] == len(eng.registry.all())
+    assert d["advertised"] == listed.data["total"]
+    assert d["advertised"] + d["gated_out"] == d["registered"]
+    rows = {row["id"]: row for row in d["rows"]}
+    assert "skills.install" in rows and "allow_install" in rows["skills.install"]["hidden_reason"]
+    if eng.registry.has("shell.selftest"):
+        # skill-synthesized tools only exist when the repo skills dirs load
+        assert "shell.selftest" in rows and rows["shell.selftest"]["hidden_reason"]
+    # group filter narrows rows and counts; a bad tier is BAD_ARGS, not silence
+    g = eng.call("registry.explain_all", {"group": "fs", "include_advertised": True})
+    assert g.ok and g.data["group"] == "fs"
+    assert g.data["rows"] and all(row["id"].startswith("fs.") for row in g.data["rows"])
+    assert g.data["registered"] == len(eng.registry.by_group("fs"))
+    bad = eng.call("registry.explain_all", {"tier": "quantum"})
+    assert not bad.ok and bad.error.code == "BAD_ARGS"
+
+
+def test_explain_all_budget_drops_named_through_the_engine(tmp_path):
+    cfg = Config.load(cwd=str(tmp_path), overrides={
+        "roots": [str(tmp_path)], "state": {"dir": str(tmp_path / ".sk")},
+        "log_level": "ERROR",
+        "advertise": {"task_max_tools": 2, "task_max_tokens": 0}})
+    tk = build(config=cfg)
+    try:
+        r = tk.engine.call("registry.explain_all", {"tier": "task"})
+        assert r.ok
+        drops = [row for row in r.data["rows"] if "budget_drop" in row]
+        assert drops, "a 2-tool cap must trim the task tier"
+        assert all("max_tools 2" in row["budget_drop"] for row in drops)
+    finally:
+        tk.close()
+
+
 # ---------------------------------------------------------------- wiring
 def test_expand_and_list_tiers_through_the_engine(toolkit):
     eng = toolkit.engine

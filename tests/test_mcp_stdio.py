@@ -857,6 +857,24 @@ def test_publish_store_and_inject_over_the_wire(tmp_path):
         c.close()
 
 
+def test_registry_explain_all_over_the_wire(client):
+    res = client.request("tools/call", {"name": "registry.explain_all", "arguments": {}})
+    assert res["isError"] is False, res
+    d = _payload(res)["data"]
+    assert d["tier"] == "full" and d["digest"]
+    assert d["advertised"] + d["gated_out"] == d["registered"]
+    rows = {row["id"]: row for row in d["rows"]}
+    assert "skills.install" in rows and "allow_install" in rows["skills.install"]["hidden_reason"]
+    # a tier query previews withholds without switching the session tier
+    core = client.request("tools/call", {"name": "registry.explain_all",
+                                         "arguments": {"tier": "core"}})
+    assert core["isError"] is False, core
+    dc = _payload(core)["data"]
+    assert dc["tier"] == "core" and "fs.patch" in {r["id"] for r in dc["rows"]}
+    again = client.request("tools/call", {"name": "registry.explain_all", "arguments": {}})
+    assert _payload(again)["data"]["tier"] == "full", "a tier query must not switch the session"
+
+
 # ------------------------------------------------------------------ P5a wire
 def test_wire_expand_notifies_and_moves_the_surface(tmp_path):
     """AC3 over the wire: expand -> tools/list_changed -> the new tier's list.
