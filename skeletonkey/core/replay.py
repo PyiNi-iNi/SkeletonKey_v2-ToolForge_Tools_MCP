@@ -34,11 +34,13 @@ from typing import Any
 from .config import Config
 from .util import compact_json
 
-# dropped anywhere in the tree: identity, wall time (incl. file mtimes - a
-# replayed write happens at a different instant), and wire-payload size
+# dropped anywhere in the tree: identity, wall time (incl. file mtimes and the
+# publish store's created/updated stamps - a replayed write happens at a
+# different instant), and wire-payload size
 VOLATILE_KEYS = frozenset({
     "run_id", "trace_id", "ts", "started", "elapsed_s", "wall_s",
     "duration_ms", "est_tokens", "bytes_out", "mtime", "atime",
+    "created", "updated",
 })
 
 # journal tokens are per-call identities (und_<12hex>), like run_id: rewrite the
@@ -195,7 +197,10 @@ def replay(recording: str | os.PathLike, *, auto_approve: bool = True) -> dict[s
     state = os.path.join(scratch, "state")
     # copy2 preserves mtime: fs.stat-style data survives the move intact
     shutil.copytree(src_ws, ws)
-    overrides: dict[str, Any] = {"roots": [ws], "state": {"dir": state}, "log_level": "ERROR"}
+    # the publish store is user-level by default: pin it to the scratch state or
+    # a replayed pub.store_put would write the operator's real credential store
+    overrides: dict[str, Any] = {"roots": [ws], "state": {"dir": state}, "log_level": "ERROR",
+                                 "publish": {"store_path": os.path.join(state, "publish-store.json")}}
     if auto_approve:
         # unattended: every risk class, exactly as the SKELETONKEY_AUTO_APPROVE mode
         overrides["policy"] = dict(_UNATTENDED_POLICY)
@@ -336,6 +341,8 @@ def eval_suite(suite_paths: list[str | os.PathLike]) -> dict[str, Any]:
         cfg = Config.load(cwd=scratch, overrides={
             "roots": [ws], "state": {"dir": state},
             "policy": dict(_UNATTENDED_POLICY), "log_level": "ERROR",
+            # eval tasks must never touch the operator's real credential store
+            "publish": {"store_path": os.path.join(state, "publish-store.json")},
         })
         tk = build(config=cfg)
         try:

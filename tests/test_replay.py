@@ -140,6 +140,46 @@ def test_replay_stateful_tools_are_compared_on_ok_and_error_code(tmp_path):
     assert report["ok"], "stateful data may differ; ok + error code is the contract"
 
 
+def test_replay_reproduces_a_publish_run_with_an_isolated_store(tmp_path):
+    """The publish replay fixture: store, scan, dry-run, inject, read.
+
+    Both sides pin the publish store to scratch: the recording run must not
+    touch the operator's real credential store, and the replay gets a fresh one
+    (its store_put writes there, so the injected bytes still match).
+    """
+    ws = tmp_path / "pub"
+    (ws / "deploy").mkdir(parents=True)
+    (ws / "deploy" / "app.env").write_text("TOKEN={{PUB.deploy.token}}\n", encoding="utf-8")
+    cfg = Config.load(cwd=str(ws), overrides={
+        "roots": [str(ws)], "state": {"dir": str(ws / ".sk")},
+        "publish": {"store_path": str(tmp_path / "store.json")},
+        "policy": {"auto_approve": ["none", "read", "write", "destructive"],
+                   "confirm_destructive": False},
+        "log_level": "ERROR"})
+    tk = build(config=cfg)
+    rec_path = tmp_path / "publish.jsonl"
+    ctx = CallContext.from_config(cfg, task_id="publish-1")
+    steps = [
+        ("pub.store_put", {"id": "deploy.token", "kind": "token", "value": "s3cret-value"}),
+        ("pub.placeholders", {"path": "deploy"}),
+        ("pub.inject", {"path": "deploy", "dry_run": True}),
+        ("pub.inject", {"path": "deploy"}),
+        ("fs.read", {"path": "deploy/app.env"}),
+    ]
+    with RunRecorder(rec_path, meta={"task_id": "publish-1", "workspace": str(ws),
+                                     "state_dir": str(ws / ".sk")}) as rec:
+        for tool, args in steps:
+            res = tk.engine.call(tool, args, ctx=ctx)
+            assert res.ok, res.error
+            rec.record(tool, args, res)
+    tk.close()
+
+    report = replay(rec_path)
+    assert report["ok"], report
+    assert [s["tool"] for s in report["steps"]] == [t for t, _ in steps]
+    assert report["ledger_rows"] == 5 and report["ledger_one_row_per_call"]
+
+
 def test_normalize_is_explicit_and_not_fuzzy():
     roots = [("/ws", "<WS>"), ("/ws/.sk", "<STATE>")]
     obj = {"run_id": "r1", "ts": 1.0, "path": "/ws/src/a.py",
