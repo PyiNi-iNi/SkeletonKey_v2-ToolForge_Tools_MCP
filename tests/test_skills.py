@@ -240,11 +240,14 @@ def test_repo_ships_the_two_documented_skills():
         assert skill.body.startswith("# "), f"{name} should open with a heading"
 
 
-def test_repo_skill_bodies_do_not_promise_tools_that_do_not_exist():
+def test_repo_skill_bodies_do_not_promise_tools_that_do_not_exist(tmp_path):
     """Skill guidance is load-bearing: every `fs.*`/`shell.*` it names must be real."""
     from skeletonkey.toolkit import build
 
-    tk = build()
+    # only the registry is needed; build in a temp cwd so no engine state lands
+    # in the repo working tree, with the repo's skills (and their tool.toml
+    # drop-ins) pointed at explicitly - they are what this test checks
+    tk = build(cwd=str(tmp_path), overrides={"skills": {"dirs": [REPO_SKILLS]}})
     known = {m.id for m in tk.engine.registry.all()}
     import re
 

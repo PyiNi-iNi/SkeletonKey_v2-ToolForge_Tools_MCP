@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import dataclasses
 import re
+import shutil
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -91,8 +93,16 @@ def toolkit():
     from skeletonkey.core.config import Config
     from skeletonkey.toolkit import build
 
-    cfg = Config.load(cwd=str(REPO), overrides={"log_level": "ERROR"})
-    return build(config=cfg), cfg
+    # State redirected off the repo: the suite never leaves engine state in the
+    # working tree (the conftest contract) - a partial .sk left behind makes
+    # `sk doctor` report the repo as unhealthy.
+    state_dir = tempfile.mkdtemp(prefix="sk-docs-state-")
+    cfg = Config.load(cwd=str(REPO), overrides={
+        "log_level": "ERROR",
+        "state": {"dir": state_dir},
+    })
+    yield build(config=cfg), cfg
+    shutil.rmtree(state_dir, ignore_errors=True)
 
 
 def _docs() -> list[tuple[str, str]]:

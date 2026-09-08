@@ -437,8 +437,11 @@ def test_prompts_expose_bootstrap_and_skills(client):
     assert "block" in body["skills"], "matched skill text is the point of the prompt"
 
 
-def test_skill_prompts_are_readable_only_when_the_skill_pack_is_on_the_path():
-    c = spawn(REPO, "--read-only")
+def test_skill_prompts_are_readable_only_when_the_skill_pack_is_on_the_path(tmp_path):
+    # cwd must stay the repo (the skill pack lives under skills/), but the
+    # server's state goes to a temp dir - the suite never leaves engine state
+    # in the working tree.
+    c = spawn(REPO, "--read-only", env={"SKELETONKEY_STATE_DIR": str(tmp_path / ".sk")})
     try:
         c.start()
         prompts = {p["name"] for p in c.request("prompts/list", {})["prompts"]}
