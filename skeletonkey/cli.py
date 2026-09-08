@@ -126,6 +126,50 @@ def main(argv: list[str] | None = None) -> int:
     sk.add_argument("--keep-files", action="store_true",
                     help="with uninstall: unregister the tools but leave the directory")
 
+    # P5: Projects command
+    pr = sub.add_parser("projects", help="list/describe/enable/disable external projects")
+    pr.add_argument("action", choices=["list", "describe", "enable", "disable", "scan", "stats"],
+                   nargs="?", default="list")
+    pr.add_argument("name", nargs="?", default="",
+                   help="project name (describe, enable, disable)")
+    pr.add_argument("--type", default=None,
+                   choices=["skill", "tool-pack", "python-package", "mcp-server", "all"],
+                   help="filter by project type")
+    pr.add_argument("--enabled", action="store_true",
+                   help="with list: show only enabled projects")
+    pr.add_argument("--disabled", action="store_true",
+                   help="with list: show only disabled projects")
+    pr.add_argument("--refresh", action="store_true",
+                   help="with list: refresh the project index before listing")
+    pr.add_argument("--all", action="store_true",
+                   help="with list: show all details")
+
+    # P5.1: Integrations command
+    in_ = sub.add_parser("integrations", help="list/describe/enable/disable/load/unload integrations")
+    in_.add_argument("action", choices=["list", "describe", "enable", "disable", "load", "unload", "health", "stats"],
+                    nargs="?", default="list")
+    in_.add_argument("name", nargs="?", default="",
+                    help="integration name (describe, enable, disable, load, unload, health)")
+    in_.add_argument("--type", default=None,
+                    choices=["sdk", "api", "client-library", "api-generator", "framework", "toolchain", "cli", "runtime", "protocol-binding", "codegen", "platform-devkit", "3d-modeling", "billing-payment", "database", "agent-harness", "all"],
+                    help="filter by integration type")
+    in_.add_argument("--category", default=None,
+                    choices=["cloud", "database", "ai-ml", "web", "mobile", "desktop", "serverless", "devtools", "monitoring", "security", "payment", "3d-graphics", "collaboration", "storage", "networking", "messaging", "analytics", "other"],
+                    help="filter by integration category")
+    in_.add_argument("--platform", default=None,
+                    choices=["cross-platform", "aws", "gcp", "azure", "vercel", "supabase", "firebase", "cloudflare", "netlify", "render", "flyio", "railway", "heroku", "digitalocean", "linux", "windows", "macos", "ios", "android", "web-browser", "nodejs", "python", "java", "go", "rust", "csharp", "php", "ruby"],
+                    help="filter by target platform")
+    in_.add_argument("--enabled", action="store_true",
+                    help="with list: show only enabled integrations")
+    in_.add_argument("--disabled", action="store_true",
+                    help="with list: show only disabled integrations")
+    in_.add_argument("--loaded", action="store_true",
+                    help="with list: show only loaded integrations")
+    in_.add_argument("--all", action="store_true",
+                    help="with list: show all details")
+    in_.add_argument("--health", action="store_true",
+                    help="with list: include health status")
+
     pb = sub.add_parser("pub", help="publishing: credential store, placeholder injection, platform knowledge")
     pb.add_argument("action", choices=["list", "put", "delete", "placeholders", "inject",
                                        "platforms", "payments", "packaging", "testers"])
@@ -438,6 +482,378 @@ def _dispatch(args: argparse.Namespace, tk: Any, call: Any, cfg: Config) -> int:
                                                    "remove_files": not args.keep_files}),
                          json_out=args.json)
         return _emit(call("skills.load", {"name": args.arg or ""}), json_out=args.json, raw_key="injection")
+
+    # P5: Projects command handling
+    if cmd == "projects":
+        json_out = getattr(args, "json", False)
+        if args.action == "list":
+            if args.refresh and tk.projects:
+                tk.projects.refresh()
+            projects = tk.projects.list_projects(
+                type_filter=args.type,
+                enabled_only=args.enabled if args.enabled else (None if not args.disabled else False),
+                name_pattern=None
+            ) if tk.projects else []
+            if json_out:
+                print(compact_json([p.to_dict() for p in projects]))
+            elif args.all:
+                for p in projects:
+                    print(f"\n{p.name}:")
+                    for k, v in p.to_dict().items():
+                        print(f"  {k}: {v}")
+            else:
+                for p in projects:
+                    status = "✓" if p.enabled else "○"
+                    print(f"  {status} {p.name:20} {p.type:15} {p.description[:40] if p.description else '-'}")
+                if projects:
+                    print(f"\n  Total: {len(projects)} projects")
+            return 0
+        if args.action == "describe":
+            if not args.name:
+                print("usage: sk projects describe <project-name>", file=sys.stderr)
+                return 2
+            if not tk.projects:
+                print("Project indexer not available", file=sys.stderr)
+                return 1
+            project = tk.projects.get_project(args.name)
+            if not project:
+                print(f"Project not found: {args.name}", file=sys.stderr)
+                return 1
+            if json_out:
+                print(compact_json(project.to_dict()))
+            else:
+                print(f"Name: {project.name}")
+                print(f"Path: {project.path}")
+                print(f"Type: {project.type}")
+                print(f"Enabled: {project.enabled}")
+                print(f"Description: {project.description}")
+                print(f"Version: {project.version}")
+                print(f"Tools: {len(project.tools)}")
+                if project.tools:
+                    print(f"  {', '.join(project.tools[:10])}{'...' if len(project.tools) > 10 else ''}")
+                print(f"Health: {project.health}")
+                if project.health_message:
+                    print(f"Health Message: {project.health_message}")
+                if project.metadata:
+                    print(f"Metadata: {compact_json(project.metadata)}")
+            return 0
+        if args.action == "enable":
+            if not args.name:
+                print("usage: sk projects enable <project-name>", file=sys.stderr)
+                return 2
+            if not tk.projects:
+                print("Project indexer not available", file=sys.stderr)
+                return 1
+            project = tk.projects.enable_project(args.name)
+            if project:
+                if json_out:
+                    print(compact_json(project.to_dict()))
+                else:
+                    print(f"Enabled project: {project.name}")
+                return 0
+            else:
+                print(f"Project not found: {args.name}", file=sys.stderr)
+                return 1
+        if args.action == "disable":
+            if not args.name:
+                print("usage: sk projects disable <project-name>", file=sys.stderr)
+                return 2
+            if not tk.projects:
+                print("Project indexer not available", file=sys.stderr)
+                return 1
+            project = tk.projects.disable_project(args.name)
+            if project:
+                if json_out:
+                    print(compact_json(project.to_dict()))
+                else:
+                    print(f"Disabled project: {project.name}")
+                return 0
+            else:
+                print(f"Project not found: {args.name}", file=sys.stderr)
+                return 1
+        if args.action == "scan":
+            if not tk.projects:
+                print("Project indexer not available", file=sys.stderr)
+                return 1
+            result = tk.projects.refresh()
+            if json_out:
+                print(compact_json(result))
+            else:
+                print(f"Scanned {result['old_count']} -> {result['new_count']} projects")
+                if result['delta'] > 0:
+                    print(f"  Added: {result['delta']} new projects")
+                elif result['delta'] < 0:
+                    print(f"  Removed: {-result['delta']} projects")
+            return 0
+        if args.action == "stats":
+            if not tk.projects:
+                print("Project indexer not available", file=sys.stderr)
+                return 1
+            stats = tk.projects.get_statistics()
+            if json_out:
+                print(compact_json(stats))
+            else:
+                print(f"Total Projects: {stats['total_projects']}")
+                print(f"Enabled: {stats['enabled_projects']}")
+                print(f"Disabled: {stats['disabled_projects']}")
+                print(f"Total Tools: {stats['total_tools']}")
+                print(f"\nBy Type:")
+                for ptype, count in sorted(stats['by_type'].items()):
+                    print(f"  {ptype}: {count}")
+                print(f"\nBy Health:")
+                for health, count in sorted(stats['by_health'].items()):
+                    print(f"  {health}: {count}")
+            return 0
+
+    # P5.1: Integrations command handling
+    if cmd == "integrations":
+        json_out = getattr(args, "json", False)
+        if args.action == "list":
+            if not tk.integrations:
+                print("Integration manager not available", file=sys.stderr)
+                return 1
+            
+            # Get filter parameters
+            type_filter = getattr(args, "type", None)
+            category_filter = getattr(args, "category", None)
+            platform_filter = getattr(args, "platform", None)
+            
+            # Convert string filters to enum values
+            from skeletonkey.integrations import IntegrationType, IntegrationCategory, IntegrationPlatform
+            
+            type_enum = None
+            if type_filter and type_filter != "all":
+                try:
+                    type_enum = IntegrationType(type_filter)
+                except ValueError:
+                    print(f"Invalid integration type: {type_filter}", file=sys.stderr)
+                    return 1
+            
+            category_enum = None
+            if category_filter and category_filter != "all":
+                try:
+                    category_enum = IntegrationCategory(category_filter)
+                except ValueError:
+                    print(f"Invalid integration category: {category_filter}", file=sys.stderr)
+                    return 1
+            
+            platform_enum = None
+            if platform_filter and platform_filter != "all":
+                try:
+                    platform_enum = IntegrationPlatform(platform_filter)
+                except ValueError:
+                    print(f"Invalid integration platform: {platform_filter}", file=sys.stderr)
+                    return 1
+            
+            integrations = tk.integrations.list_integrations(
+                type_filter=type_enum,
+                category_filter=category_enum,
+                platform_filter=platform_enum,
+                enabled_only=args.enabled if args.enabled else (None if not args.disabled else False),
+            )
+            
+            if json_out:
+                print(compact_json([i.to_dict() for i in integrations]))
+            elif args.all:
+                for i in integrations:
+                    print(f"\n{i.name}:")
+                    for k, v in i.to_dict().items():
+                        print(f"  {k}: {v}")
+            else:
+                for i in integrations:
+                    status = "✓" if i.name in tk.integrations._enabled_integrations else "○"
+                    loaded = "🔥" if i.name in tk.integrations._instances else " "
+                    print(f"  {status}{loaded} {i.name:25} {i.integration_type.value:20} {i.description[:40] if i.description else '-'}")
+                if integrations:
+                    print(f"\n  Total: {len(integrations)} integrations")
+            return 0
+        
+        if args.action == "describe":
+            if not args.name:
+                print("usage: sk integrations describe <integration-name>", file=sys.stderr)
+                return 2
+            if not tk.integrations:
+                print("Integration manager not available", file=sys.stderr)
+                return 1
+            
+            info = tk.integrations.registry.get_integration_info(args.name)
+            if not info:
+                print(f"Integration not found: {args.name}", file=sys.stderr)
+                return 1
+            
+            if json_out:
+                print(compact_json(info.to_dict()))
+            else:
+                print(f"Name: {info.name}")
+                print(f"Title: {info.title}")
+                print(f"Version: {info.version}")
+                print(f"Type: {info.integration_type.value}")
+                print(f"Category: {info.category.value}")
+                if info.platform:
+                    print(f"Platform: {info.platform.value}")
+                print(f"Description: {info.description}")
+                if info.author:
+                    print(f"Author: {info.author}")
+                if info.license:
+                    print(f"License: {info.license}")
+                if info.keywords:
+                    print(f"Keywords: {', '.join(info.keywords)}")
+                if info.dependencies:
+                    print(f"Dependencies: {len(info.dependencies)}")
+                    for dep in info.dependencies:
+                        print(f"  - {dep.name}{' (optional)' if dep.optional else ''}")
+                if info.capabilities:
+                    print(f"Capabilities: {len(info.capabilities)}")
+                    for cap in info.capabilities:
+                        print(f"  - {cap.name} (required: {cap.required})")
+                
+                # Check if loaded
+                instance = tk.integrations.get_integration(args.name)
+                if instance:
+                    print(f"\nStatus: {instance.status.value}")
+                    if instance.health != "unknown":
+                        print(f"Health: {instance.health}")
+                        if instance.health_message:
+                            print(f"Health Message: {instance.health_message}")
+            return 0
+        
+        if args.action == "enable":
+            if not args.name:
+                print("usage: sk integrations enable <integration-name>", file=sys.stderr)
+                return 2
+            if not tk.integrations:
+                print("Integration manager not available", file=sys.stderr)
+                return 1
+            
+            success = tk.integrations.enable_integration(args.name)
+            if success:
+                if json_out:
+                    info = tk.integrations.registry.get_integration_info(args.name)
+                    print(compact_json(info.to_dict() if info else {}))
+                else:
+                    print(f"Enabled integration: {args.name}")
+                return 0
+            else:
+                print(f"Failed to enable integration: {args.name}", file=sys.stderr)
+                return 1
+        
+        if args.action == "disable":
+            if not args.name:
+                print("usage: sk integrations disable <integration-name>", file=sys.stderr)
+                return 2
+            if not tk.integrations:
+                print("Integration manager not available", file=sys.stderr)
+                return 1
+            
+            success = tk.integrations.disable_integration(args.name)
+            if success:
+                if json_out:
+                    info = tk.integrations.registry.get_integration_info(args.name)
+                    print(compact_json(info.to_dict() if info else {}))
+                else:
+                    print(f"Disabled integration: {args.name}")
+                return 0
+            else:
+                print(f"Failed to disable integration: {args.name}", file=sys.stderr)
+                return 1
+        
+        if args.action == "load":
+            if not args.name:
+                print("usage: sk integrations load <integration-name>", file=sys.stderr)
+                return 2
+            if not tk.integrations:
+                print("Integration manager not available", file=sys.stderr)
+                return 1
+            
+            instance = tk.integrations.load_integration(args.name)
+            if instance:
+                if json_out:
+                    print(compact_json(instance.to_dict()))
+                else:
+                    print(f"Loaded integration: {args.name} (v{instance.info.version})")
+                return 0
+            else:
+                print(f"Failed to load integration: {args.name}", file=sys.stderr)
+                return 1
+        
+        if args.action == "unload":
+            if not args.name:
+                print("usage: sk integrations unload <integration-name>", file=sys.stderr)
+                return 2
+            if not tk.integrations:
+                print("Integration manager not available", file=sys.stderr)
+                return 1
+            
+            success = tk.integrations.unload_integration(args.name)
+            if success:
+                if json_out:
+                    print(compact_json({"unloaded": args.name, "success": True}))
+                else:
+                    print(f"Unloaded integration: {args.name}")
+                return 0
+            else:
+                print(f"Failed to unload integration: {args.name}", file=sys.stderr)
+                return 1
+        
+        if args.action == "health":
+            if not args.name:
+                # Check all integrations
+                if not tk.integrations:
+                    print("Integration manager not available", file=sys.stderr)
+                    return 1
+                
+                results = tk.integrations.check_all_health()
+                if json_out:
+                    print(compact_json(results))
+                else:
+                    for result in results:
+                        status = "✓" if result["health"] == "healthy" else "✗"
+                        print(f"  {status} {result['name']}: {result['health']}")
+                        if result.get("message"):
+                            print(f"      {result['message']}")
+                return 0
+            else:
+                if not tk.integrations:
+                    print("Integration manager not available", file=sys.stderr)
+                    return 1
+                
+                result = tk.integrations.check_health(args.name)
+                if json_out:
+                    print(compact_json(result))
+                else:
+                    status = "✓" if result["health"] == "healthy" else "✗"
+                    print(f"  {status} {args.name}: {result['health']}")
+                    if result.get("message"):
+                        print(f"      {result['message']}")
+                return 0
+        
+        if args.action == "stats":
+            if not tk.integrations:
+                print("Integration manager not available", file=sys.stderr)
+                return 1
+            
+            stats = tk.integrations.get_statistics()
+            if json_out:
+                print(compact_json(stats))
+            else:
+                print(f"Total Integrations: {stats['total_integrations']}")
+                print(f"Loaded: {stats['loaded_integrations']}")
+                print(f"Enabled: {stats['enabled_integrations']}")
+                print(f"Disabled: {stats['disabled_integrations']}")
+                
+                print(f"\nBy Type:")
+                for itype, count in sorted(stats['by_type'].items()):
+                    print(f"  {itype}: {count}")
+                
+                print(f"\nBy Category:")
+                for category, count in sorted(stats['by_category'].items()):
+                    print(f"  {category}: {count}")
+                
+                if stats['by_platform']:
+                    print(f"\nBy Platform:")
+                    for platform, count in sorted(stats['by_platform'].items()):
+                        print(f"  {platform}: {count}")
+            return 0
     if cmd == "pub":
         a, arg = args.action, (args.arg or "")
         if a == "list":
