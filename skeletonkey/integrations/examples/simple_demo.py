@@ -11,7 +11,6 @@ from typing import Any
 
 from .. import (
     Integration,
-    IntegrationCapability,
     IntegrationCategory,
     IntegrationConfig,
     IntegrationType,
@@ -73,11 +72,14 @@ class SimpleDemoIntegration(Integration):
         """Get the list of tools provided by this integration."""
         return [
             {
-                "id": "simple.echo",
-                "name": "Echo",
+                "id": "simple-demo.echo",
+                "title": "Echo",
                 "description": "Repeat back the input",
-                "category": "utilities",
-                "parameters": {
+                "capability": "simple-demo.echo",
+                "risk": "read",
+                "tier": "task",
+                "tags": ["demo", "echo", "simple"],
+                "input_schema": {
                     "type": "object",
                     "properties": {
                         "message": {
@@ -89,11 +91,14 @@ class SimpleDemoIntegration(Integration):
                 },
             },
             {
-                "id": "simple.greet",
-                "name": "Greet",
+                "id": "simple-demo.greet",
+                "title": "Greet",
                 "description": "Say hello with a custom greeting",
-                "category": "utilities",
-                "parameters": {
+                "capability": "simple-demo.greet",
+                "risk": "read",
+                "tier": "task",
+                "tags": ["demo", "greet", "simple"],
+                "input_schema": {
                     "type": "object",
                     "properties": {
                         "name": {
@@ -102,15 +107,17 @@ class SimpleDemoIntegration(Integration):
                             "default": "World",
                         },
                     },
-                    "required": [],
                 },
             },
             {
-                "id": "simple.add",
-                "name": "Add Numbers",
+                "id": "simple-demo.add",
+                "title": "Add Numbers",
                 "description": "Add two numbers together",
-                "category": "utilities",
-                "parameters": {
+                "capability": "simple-demo.add",
+                "risk": "read",
+                "tier": "task",
+                "tags": ["demo", "add", "math", "simple"],
+                "input_schema": {
                     "type": "object",
                     "properties": {
                         "a": {
@@ -126,6 +133,18 @@ class SimpleDemoIntegration(Integration):
                 },
             },
         ]
+    
+    def tool_echo(self, message: str) -> dict[str, Any]:
+        """Echo back a message."""
+        return {"message": message, "length": len(message)}
+    
+    def tool_greet(self, name: str = "World") -> dict[str, Any]:
+        """Greet a person."""
+        return {"greeting": f"{self._greeting}, {name}!"}
+    
+    def tool_add(self, a: float, b: float) -> dict[str, Any]:
+        """Add two numbers."""
+        return {"result": a + b, "a": a, "b": b}
     
     def get_config_schema(self) -> dict[str, Any] | None:
         """Get the configuration schema for this integration."""

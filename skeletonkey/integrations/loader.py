@@ -19,13 +19,27 @@ import logging
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 # Type checking imports
 if TYPE_CHECKING:
-    from . import Integration, IntegrationConfig, IntegrationInfo, IntegrationInstance
+    pass
 
 logger = logging.getLogger(__name__)
+
+
+def _dep_name(dep: Any) -> str:
+    """Read a dependency/conflict name from a dataclass or a dict."""
+    if isinstance(dep, dict):
+        return str(dep.get("name", ""))
+    return str(getattr(dep, "name", dep) or "")
+
+
+def _dep_optional(dep: Any) -> bool:
+    """Read the ``optional`` flag from a dependency dataclass or dict."""
+    if isinstance(dep, dict):
+        return bool(dep.get("optional", False))
+    return bool(getattr(dep, "optional", False))
 
 
 def _get_integration_class():
@@ -50,6 +64,12 @@ def _get_integration_instance_class():
     """Lazy import of IntegrationInstance."""
     from . import IntegrationInstance
     return IntegrationInstance
+
+
+def _get_integration_status_class():
+    """Lazy import of IntegrationStatus."""
+    from . import IntegrationStatus
+    return IntegrationStatus
 
 
 def _get_registry():
@@ -193,20 +213,26 @@ class IntegrationLoader:
             
             # Initialize the instance
             try:
-                instance.load()
+                initialized = instance.initialize()
             except Exception as e:
                 return LoadResult(
                     success=False,
                     errors=[f"Failed to initialize {name}: {e}"],
                     dependencies_loaded=deps_loaded,
                 )
+            if not initialized:
+                return LoadResult(
+                    success=False,
+                    errors=[f"Integration {name} reported initialization failure"],
+                    dependencies_loaded=deps_loaded,
+                )
             
             # Create integration instance wrapper
             integration_instance = IntegrationInstance(
-                name=name,
                 info=info,
                 instance=instance,
                 config=integration_config,
+                status=_get_integration_status_class().LOADED,
             )
             
             # Store the loaded instance
@@ -215,7 +241,8 @@ class IntegrationLoader:
             
             # Run health check
             try:
-                instance.health_check()
+                integration_instance.health, integration_instance.health_message = \
+                    instance.check_health()
             except Exception as e:
                 integration_instance.health = "unhealthy"
                 integration_instance.health_message = str(e)
@@ -247,7 +274,7 @@ class IntegrationLoader:
     
     def _get_integration_info(self, name: str) -> Any:
         """Get integration info, trying multiple sources."""
-        IntegrationInfo = _get_integration_info_class()
+        _get_integration_info_class()
         
         # Try registry first
         info = self.registry.get_integration_info(name)
@@ -309,49 +336,46 @@ class IntegrationLoader:
         )
     
     def _load_dependencies(self, name: str, info: Any) -> tuple[list[str], list[str]]:
-        """Load all dependencies for an integration."""
-        loaded = []
-        errors = []
+        """Verify the integration's declared dependencies are importable.
+
+        Dependencies are third-party *packages* (``requests``, ``psycopg2``,
+        ``stripe``...), not SkeletonKey integrations, so they are checked for
+        importability rather than loaded through this loader. Optional
+        dependencies are recorded when present and ignored when absent.
+        """
+        loaded: list[str] = []
+        errors: list[str] = []
         
         for dep in getattr(info, 'dependencies', []):
-            if not dep.get('optional', False):
-                # Load required dependency
-                result = self.load(dep.get('name', ''))
-                if result.success:
-                    loaded.append(dep.get('name', ''))
-                else:
-                    errors.extend(result.errors)
-                    errors.append(f"Failed to load dependency {dep.get('name', '')} for {name}")
-            else:
-                # Try to load optional dependency
-                try:
-                    result = self.load(dep.get('name', ''))
-                    if result.success:
-                        loaded.append(dep.get('name', ''))
-                except Exception:
-                    pass  # Optional dependency, ignore errors
+            dep_name = _dep_name(dep)
+            if not dep_name:
+                continue
+            if importlib.util.find_spec(dep_name) is not None:
+                loaded.append(dep_name)
+            elif not _dep_optional(dep):
+                errors.append(f"Missing required dependency {dep_name} for {name}")
         
         return loaded, errors
     
     def _check_conflicts(self, name: str, info: Any) -> list[str]:
         """Check for conflicts with already loaded integrations."""
         errors = []
+        own_conflicts = {_dep_name(c) for c in getattr(info, 'conflicts', [])}
         
         for loaded_name, loaded_instance in self._loaded.items():
             loaded_info = loaded_instance.info
             
             # Check for conflicts
-            for conflict in getattr(info, 'conflicts', []):
-                if conflict.get('name') == loaded_name:
-                    errors.append(
-                        f"Conflict: {name} conflicts with already loaded integration {loaded_name}: {conflict.get('reason', '')}"
-                    )
+            if loaded_name in own_conflicts:
+                errors.append(
+                    f"Conflict: {name} conflicts with already loaded integration {loaded_name}"
+                )
             
             # Check reverse conflicts
             for conflict in getattr(loaded_info, 'conflicts', []):
-                if conflict.get('name') == name:
+                if _dep_name(conflict) == name:
                     errors.append(
-                        f"Conflict: {loaded_name} conflicts with {name}: {conflict.get('reason', '')}"
+                        f"Conflict: {loaded_name} conflicts with {name}"
                     )
         
         return errors
@@ -371,8 +395,8 @@ class IntegrationLoader:
         instance = self._loaded[name]
         
         try:
-            # Call unload on the integration
-            instance.instance.unload()
+            # Clean up the integration instance
+            instance.instance.cleanup()
             
             # Remove from loaded
             del self._loaded[name]
@@ -494,13 +518,12 @@ class IntegrationLoader:
                 success=False,
                 errors=[f"No integration found in directory {path}"],
             )
-        elif path.is_file():
+        if path.is_file():
             return self._load_from_file(path)
-        else:
-            return LoadResult(
-                success=False,
-                errors=[f"Path does not exist: {path}"],
-            )
+        return LoadResult(
+            success=False,
+            errors=[f"Path does not exist: {path}"],
+        )
     
     def _load_from_file(self, path: Path) -> LoadResult:
         """Load an integration from a Python file."""
@@ -577,7 +600,7 @@ class IntegrationLoader:
         by_category = {}
         by_platform = {}
         
-        for name, instance in self._loaded.items():
+        for _name, instance in self._loaded.items():
             info = instance.info
             
             # Count by type

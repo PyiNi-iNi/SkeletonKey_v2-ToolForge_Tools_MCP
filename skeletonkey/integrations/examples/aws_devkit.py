@@ -143,9 +143,8 @@ class AWSDevKitIntegration(Integration):
     
     def _get_service(self, service_name: str) -> Any:
         """Get or create a boto3 service client."""
-        if service_name not in self._services:
-            if self._boto3_client:
-                self._services[service_name] = self._boto3_client.client(service_name)
+        if service_name not in self._services and self._boto3_client:
+            self._services[service_name] = self._boto3_client.client(service_name)
         return self._services.get(service_name)
     
     def get_tools(self) -> list[dict[str, Any]]:

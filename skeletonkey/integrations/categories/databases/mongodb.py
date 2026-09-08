@@ -15,9 +15,7 @@ Install with: pip install pymongo
 
 from __future__ import annotations
 
-import json
 import logging
-from dataclasses import dataclass, field
 from typing import Any
 
 from skeletonkey.integrations import (
@@ -26,10 +24,7 @@ from skeletonkey.integrations import (
     IntegrationCategory,
     IntegrationConfig,
     IntegrationDependency,
-    IntegrationHealthCheck,
-    IntegrationInfo,
     IntegrationPlatform,
-    IntegrationSandbox,
     IntegrationType,
     register_integration,
 )
@@ -413,14 +408,13 @@ class MongoDBIntegration(Integration):
                     "inserted_ids": list(result.inserted_ids),
                     "count": len(result.inserted_ids),
                 }
-            else:
-                result = col.insert_one(document)
-                return {
-                    "inserted_id": str(result.inserted_id),
-                    "count": 1,
-                }
+            result = col.insert_one(document)
+            return {
+                "inserted_id": str(result.inserted_id),
+                "count": 1,
+            }
         except Exception as e:
-            raise Exception(f"Insert failed: {e}")
+            raise Exception(f"Insert failed: {e}") from e
     
     def tool_find(
         self,
@@ -458,7 +452,7 @@ class MongoDBIntegration(Integration):
                 "count": len(results),
             }
         except Exception as e:
-            raise Exception(f"Find failed: {e}")
+            raise Exception(f"Find failed: {e}") from e
     
     def tool_find_one(
         self,
@@ -482,7 +476,7 @@ class MongoDBIntegration(Integration):
                 "found": result is not None,
             }
         except Exception as e:
-            raise Exception(f"Find one failed: {e}")
+            raise Exception(f"Find one failed: {e}") from e
     
     def tool_update(
         self,
@@ -503,15 +497,14 @@ class MongoDBIntegration(Integration):
                     "modified_count": result.modified_count,
                     "upserted_id": str(result.upserted_id) if result.upserted_id else None,
                 }
-            else:
-                result = col.update_one(filter or {}, update, upsert=upsert)
-                return {
-                    "matched_count": result.matched_count,
-                    "modified_count": result.modified_count,
-                    "upserted_id": str(result.upserted_id) if result.upserted_id else None,
-                }
+            result = col.update_one(filter or {}, update, upsert=upsert)
+            return {
+                "matched_count": result.matched_count,
+                "modified_count": result.modified_count,
+                "upserted_id": str(result.upserted_id) if result.upserted_id else None,
+            }
         except Exception as e:
-            raise Exception(f"Update failed: {e}")
+            raise Exception(f"Update failed: {e}") from e
     
     def tool_delete(
         self,
@@ -528,13 +521,12 @@ class MongoDBIntegration(Integration):
                 return {
                     "deleted_count": result.deleted_count,
                 }
-            else:
-                result = col.delete_one(filter or {})
-                return {
-                    "deleted_count": result.deleted_count,
-                }
+            result = col.delete_one(filter or {})
+            return {
+                "deleted_count": result.deleted_count,
+            }
         except Exception as e:
-            raise Exception(f"Delete failed: {e}")
+            raise Exception(f"Delete failed: {e}") from e
     
     def tool_count(
         self,
@@ -549,7 +541,7 @@ class MongoDBIntegration(Integration):
                 "count": count,
             }
         except Exception as e:
-            raise Exception(f"Count failed: {e}")
+            raise Exception(f"Count failed: {e}") from e
     
     def tool_aggregate(
         self,
@@ -580,7 +572,7 @@ class MongoDBIntegration(Integration):
                 "count": len(results),
             }
         except Exception as e:
-            raise Exception(f"Aggregate failed: {e}")
+            raise Exception(f"Aggregate failed: {e}") from e
     
     def tool_collections(
         self,
@@ -599,7 +591,7 @@ class MongoDBIntegration(Integration):
                 "count": len(names),
             }
         except Exception as e:
-            raise Exception(f"Failed to list collections: {e}")
+            raise Exception(f"Failed to list collections: {e}") from e
     
     def tool_create_index(
         self,
@@ -621,7 +613,7 @@ class MongoDBIntegration(Integration):
                 "created": True,
             }
         except Exception as e:
-            raise Exception(f"Failed to create index: {e}")
+            raise Exception(f"Failed to create index: {e}") from e
     
     def tool_drop(
         self,
@@ -637,4 +629,4 @@ class MongoDBIntegration(Integration):
                 "dropped": True,
             }
         except Exception as e:
-            raise Exception(f"Failed to drop collection: {e}")
+            raise Exception(f"Failed to drop collection: {e}") from e

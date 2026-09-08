@@ -15,9 +15,8 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import sqlite3
-from dataclasses import dataclass, field
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -26,11 +25,7 @@ from skeletonkey.integrations import (
     IntegrationCapability,
     IntegrationCategory,
     IntegrationConfig,
-    IntegrationDependency,
-    IntegrationHealthCheck,
-    IntegrationInfo,
     IntegrationPlatform,
-    IntegrationSandbox,
     IntegrationType,
     register_integration,
 )
@@ -79,6 +74,9 @@ class SQLiteIntegration(Integration):
         self._database_path: str | None = None
         self._in_memory: bool = False
         self._initialized = False
+        # The engine dispatches tool handlers on a thread pool, so a shared
+        # connection must be created thread-safe and serialized on a lock.
+        self._lock = threading.RLock()
     
     def initialize(self) -> bool:
         """Initialize the SQLite integration."""
@@ -125,13 +123,14 @@ class SQLiteIntegration(Integration):
     
     def cleanup(self) -> None:
         """Clean up the SQLite integration."""
-        if self._connection:
-            try:
-                self._connection.close()
-                self._connection = None
-                logger.info("SQLite connection closed")
-            except Exception as e:
-                logger.error(f"Error closing SQLite connection: {e}")
+        with self._lock:
+            if self._connection:
+                try:
+                    self._connection.close()
+                    self._connection = None
+                    logger.info("SQLite connection closed")
+                except Exception as e:
+                    logger.error(f"Error closing SQLite connection: {e}")
         self._initialized = False
     
     def _connect(self) -> None:
@@ -140,9 +139,9 @@ class SQLiteIntegration(Integration):
             return
         
         if self._in_memory:
-            self._connection = sqlite3.connect(":memory:")
+            self._connection = sqlite3.connect(":memory:", check_same_thread=False)
         else:
-            self._connection = sqlite3.connect(self._database_path)
+            self._connection = sqlite3.connect(self._database_path, check_same_thread=False)
         
         # Set row factory to return dicts
         self._connection.row_factory = sqlite3.Row
@@ -153,28 +152,29 @@ class SQLiteIntegration(Integration):
         params: tuple | list | dict | None = None,
         commit: bool = False,
     ) -> sqlite3.Cursor:
-        """Execute a SQL statement."""
-        if not self._connection:
-            self._connect()
-        
-        cursor = self._connection.cursor()
-        
-        try:
-            if params:
-                if isinstance(params, dict):
-                    cursor.execute(sql, params)
+        """Execute a SQL statement (serialized on the integration lock)."""
+        with self._lock:
+            if not self._connection:
+                self._connect()
+            
+            cursor = self._connection.cursor()
+            
+            try:
+                if params:
+                    if isinstance(params, dict):
+                        cursor.execute(sql, params)
+                    else:
+                        cursor.execute(sql, params)
                 else:
-                    cursor.execute(sql, params)
-            else:
-                cursor.execute(sql)
-            
-            if commit:
-                self._connection.commit()
-            
-            return cursor
-        except Exception as e:
-            self._connection.rollback()
-            raise e
+                    cursor.execute(sql)
+                
+                if commit:
+                    self._connection.commit()
+                
+                return cursor
+            except Exception as e:
+                self._connection.rollback()
+                raise e from e
     
     def check_health(self) -> tuple[str, str]:
         """Check the health of the SQLite integration."""
@@ -188,8 +188,7 @@ class SQLiteIntegration(Integration):
             
             if result and result[0] == 1:
                 return ("healthy", "SQLite database is accessible")
-            else:
-                return ("unhealthy", "SQLite query test failed")
+            return ("unhealthy", "SQLite query test failed")
         except Exception as e:
             return ("unhealthy", f"Health check failed: {e}")
     
@@ -455,7 +454,8 @@ class SQLiteIntegration(Integration):
             cursor = self._execute(sql, params, commit=commit)
             
             if fetch:
-                rows = cursor.fetchall()
+                with self._lock:
+                    rows = cursor.fetchall()
                 result = {
                     "rows": [dict(row) for row in rows] if rows else [],
                     "row_count": len(rows) if rows else 0,
@@ -468,7 +468,7 @@ class SQLiteIntegration(Integration):
             
             return result
         except Exception as e:
-            raise Exception(f"SQL execution failed: {e}")
+            raise Exception(f"SQL execution failed: {e}") from e
     
     def tool_query(
         self,
@@ -499,7 +499,7 @@ class SQLiteIntegration(Integration):
                 "count": len(result),
             }
         except Exception as e:
-            raise Exception(f"Query failed: {e}")
+            raise Exception(f"Query failed: {e}") from e
     
     def tool_create_table(
         self,
@@ -520,7 +520,7 @@ class SQLiteIntegration(Integration):
                 "created": True,
             }
         except Exception as e:
-            raise Exception(f"Failed to create table: {e}")
+            raise Exception(f"Failed to create table: {e}") from e
     
     def tool_insert(
         self,
@@ -542,13 +542,15 @@ class SQLiteIntegration(Integration):
                     sql = f"INSERT INTO {table} ({', '.join(columns)}) VALUES ({placeholders})"
                     params_list = [tuple(row[col] for col in columns) for row in data]
                     
-                    cursor = self._connection.cursor()
-                    cursor.executemany(sql, params_list)
-                    self._connection.commit()
+                    with self._lock:
+                        cursor = self._connection.cursor()
+                        cursor.executemany(sql, params_list)
+                        self._connection.commit()
+                        lastrowid = cursor.lastrowid
                     
                     return {
                         "inserted": len(data),
-                        "row_ids": list(cursor.lastrowid + i for i in range(len(data))) if return_id else None,
+                        "row_ids": [lastrowid + i for i in range(len(data))] if return_id else None,
                     }
             else:
                 # Single insert
@@ -564,7 +566,7 @@ class SQLiteIntegration(Integration):
                 
                 return result
         except Exception as e:
-            raise Exception(f"Insert failed: {e}")
+            raise Exception(f"Insert failed: {e}") from e
     
     def tool_select(
         self,
@@ -625,7 +627,7 @@ class SQLiteIntegration(Integration):
                 "count": len(result),
             }
         except Exception as e:
-            raise Exception(f"Select failed: {e}")
+            raise Exception(f"Select failed: {e}") from e
     
     def tool_update(
         self,
@@ -637,7 +639,7 @@ class SQLiteIntegration(Integration):
         """Update data in a table."""
         try:
             # Build UPDATE statement
-            sets = [f"{col} = ?" for col in data.keys()]
+            sets = [f"{col} = ?" for col in data]
             sql = f"UPDATE {table} SET {', '.join(sets)}"
             
             params: list = list(data.values())
@@ -663,7 +665,7 @@ class SQLiteIntegration(Integration):
             
             return result
         except Exception as e:
-            raise Exception(f"Update failed: {e}")
+            raise Exception(f"Update failed: {e}") from e
     
     def tool_delete(
         self,
@@ -699,7 +701,7 @@ class SQLiteIntegration(Integration):
             
             return result
         except Exception as e:
-            raise Exception(f"Delete failed: {e}")
+            raise Exception(f"Delete failed: {e}") from e
     
     def tool_transaction(
         self,
@@ -744,7 +746,7 @@ class SQLiteIntegration(Integration):
             }
         except Exception as e:
             self._connection.rollback()
-            raise Exception(f"Transaction failed: {e}")
+            raise Exception(f"Transaction failed: {e}") from e
     
     def tool_tables(
         self,
@@ -767,7 +769,7 @@ class SQLiteIntegration(Integration):
                 "count": len(tables),
             }
         except Exception as e:
-            raise Exception(f"Failed to list tables: {e}")
+            raise Exception(f"Failed to list tables: {e}") from e
     
     def tool_schema(
         self,
@@ -795,4 +797,4 @@ class SQLiteIntegration(Integration):
                 "column_count": len(columns),
             }
         except Exception as e:
-            raise Exception(f"Failed to get schema: {e}")
+            raise Exception(f"Failed to get schema: {e}") from e

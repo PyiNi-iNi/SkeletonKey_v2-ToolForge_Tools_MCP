@@ -6,7 +6,6 @@ tools for interacting with RESTful APIs.
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any
 
@@ -108,8 +107,7 @@ class RESTAPIIntegration(Integration):
                         response = await self._client.get(health_endpoint, timeout=5.0)
                         if response.status_code < 400:
                             return ("healthy", f"Health check passed: {response.status_code}")
-                        else:
-                            return ("unhealthy", f"Health check failed: {response.status_code}")
+                        return ("unhealthy", f"Health check failed: {response.status_code}")
                     except Exception as e:
                         return ("unhealthy", f"Health check error: {e}")
                 
@@ -341,9 +339,8 @@ class RESTAPIIntegration(Integration):
         if auth_type == "bearer" and not auth.get("token"):
             return (False, "Bearer authentication requires a token")
         
-        if auth_type == "basic":
-            if not auth.get("username") or not auth.get("password"):
-                return (False, "Basic authentication requires username and password")
+        if auth_type == "basic" and (not auth.get("username") or not auth.get("password")):
+            return (False, "Basic authentication requires username and password")
         
         if auth_type == "api-key" and not auth.get("api_key"):
             return (False, "API key authentication requires an api_key")

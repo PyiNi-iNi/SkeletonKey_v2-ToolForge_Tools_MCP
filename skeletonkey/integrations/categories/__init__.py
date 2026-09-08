@@ -48,6 +48,12 @@ try:
 except ImportError:
     pass
 
+# DevTools integrations
+try:
+    from . import devtools  # noqa: F401
+except ImportError:
+    pass
+
 # Framework integrations
 try:
     from . import frameworks  # noqa: F401

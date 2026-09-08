@@ -62,7 +62,7 @@ def register_integration_tools(
         if not _manager:
             return {"error": "Integration manager not available"}
         
-        from ..integrations import IntegrationType, IntegrationCategory, IntegrationPlatform
+        from ..integrations import IntegrationCategory, IntegrationPlatform, IntegrationType
         
         # Convert string filters to enums
         type_enum = None
@@ -354,13 +354,12 @@ def register_integration_tools(
         if name:
             result = _manager.check_health(name)
             return result
-        else:
-            results = _manager.check_all_health()
-            return {
-                "results": results,
-                "healthy_count": sum(1 for r in results if r["health"] == "healthy"),
-                "unhealthy_count": sum(1 for r in results if r["health"] != "healthy"),
-            }
+        results = _manager.check_all_health()
+        return {
+            "results": results,
+            "healthy_count": sum(1 for r in results if r["health"] == "healthy"),
+            "unhealthy_count": sum(1 for r in results if r["health"] != "healthy"),
+        }
     
     try:
         registry.register(ToolManifest(
@@ -428,7 +427,7 @@ def register_integration_tools(
                 "name": name,
                 "config": config,
             }
-        elif set:
+        if set:
             # Update configuration in the config store
             integrations_config = getattr(_manager.config, 'integrations', None)
             if not integrations_config:
@@ -443,8 +442,7 @@ def register_integration_tools(
                 "config": set,
                 "updated": True,
             }
-        else:
-            return {"error": "Either get or set must be true"}
+        return {"error": "Either get or set must be true"}
     
     try:
         registry.register(ToolManifest(
@@ -493,7 +491,7 @@ def register_integration_tools(
                 "secrets": secret_list,
                 "count": len(secrets),
             }
-        elif action == "get":
+        if action == "get":
             if not name or not key:
                 return {"error": "name and key are required for get"}
             secret = _manager.get_secret(key, integration=name)
@@ -504,23 +502,22 @@ def register_integration_tools(
                     "source": secret.source,
                 }
             return {"error": f"Secret not found: {key}"}
-        elif action == "set":
+        if action == "set":
             if not name or not key or not value:
                 return {"error": "name, key, and value are required for set"}
             success = _manager.set_secret(key, value, integration=name)
             return {"success": success}
-        elif action == "delete":
+        if action == "delete":
             if not name or not key:
                 return {"error": "name and key are required for delete"}
             success = _manager.delete_secret(key, integration=name)
             return {"success": success}
-        elif action == "has":
+        if action == "has":
             if not name or not key:
                 return {"error": "name and key are required for has"}
             has = _manager.has_secret(key, integration=name)
             return {"has": has}
-        else:
-            return {"error": f"Unknown action: {action}"}
+        return {"error": f"Unknown action: {action}"}
     
     try:
         registry.register(ToolManifest(
@@ -777,5 +774,52 @@ def register_integration_tools(
         report["registered"].append("integrations.packs.updates")
     except Exception as e:
         report["errors"].append(f"integrations.packs.updates: {e}")
+    
+    # P5.5: Validation Tools
+    
+    # Tool: integrations.validate
+    def tool_integrations_validate(
+        name: str | None = None,
+        include_health: bool = False,
+    ) -> dict[str, Any]:
+        """Validate integrations: metadata, tool handlers, schemas, dependencies."""
+        from ..integrations.validation import validate_integration, validate_registry
+        
+        if name:
+            rep = validate_integration(name, include_health=include_health)
+            return rep.to_dict()
+        
+        reports = validate_registry()
+        return {
+            "integrations": [r.to_dict() for r in reports],
+            "count": len(reports),
+            "valid": all(r.valid for r in reports),
+            "error_count": sum(len(r.errors) for r in reports),
+            "warning_count": sum(len(r.warnings) for r in reports),
+        }
+    
+    try:
+        registry.register(ToolManifest(
+            id="integrations.validate",
+            title="Validate Integrations",
+            description="Validate integrations: metadata, tool handlers, schemas, dependencies",
+            capability="integrations.validate",
+            risk="none",
+            typical_latency_ms=20,
+            tier="task",
+            tags=["integrations", "validate", "test", "diagnostics"],
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Validate a specific integration by name"},
+                    "include_health": {"type": "boolean", "default": False,
+                                       "description": "Also run each integration's check_health()"},
+                },
+                "additionalProperties": False,
+            },
+        ), tool_integrations_validate)
+        report["registered"].append("integrations.validate")
+    except Exception as e:
+        report["errors"].append(f"integrations.validate: {e}")
     
     return report

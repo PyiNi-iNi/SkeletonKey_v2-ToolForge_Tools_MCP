@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass, field
 from typing import Any
 
 from skeletonkey.integrations import (
@@ -25,10 +24,7 @@ from skeletonkey.integrations import (
     IntegrationCategory,
     IntegrationConfig,
     IntegrationDependency,
-    IntegrationHealthCheck,
-    IntegrationInfo,
     IntegrationPlatform,
-    IntegrationSandbox,
     IntegrationType,
     register_integration,
 )
@@ -101,7 +97,7 @@ class PostgreSQLIntegration(Integration):
                     raise ImportError(
                         "psycopg2 or psycopg2-binary is required for PostgreSQL integration. "
                         "Install with: pip install psycopg2-binary"
-                    )
+                    ) from None
             
             # Connect to database
             self._connect()
@@ -208,7 +204,7 @@ class PostgreSQLIntegration(Integration):
             return cursor
         except Exception as e:
             self._connection.rollback()
-            raise e
+            raise e from e
     
     def check_health(self) -> tuple[str, str]:
         """Check the health of the PostgreSQL integration."""
@@ -222,8 +218,7 @@ class PostgreSQLIntegration(Integration):
             
             if result and result[0] == 1:
                 return ("healthy", "PostgreSQL database is accessible")
-            else:
-                return ("unhealthy", "PostgreSQL query test failed")
+            return ("unhealthy", "PostgreSQL query test failed")
         except Exception as e:
             return ("unhealthy", f"Health check failed: {e}")
     
@@ -364,7 +359,7 @@ class PostgreSQLIntegration(Integration):
                 col_names = [desc[0] for desc in cursor.description] if cursor.description else []
                 result = {
                     "columns": col_names,
-                    "rows": [dict(zip(col_names, row)) for row in rows] if rows else [],
+                    "rows": [dict(zip(col_names, row, strict=False)) for row in rows] if rows else [],
                     "row_count": len(rows) if rows else 0,
                 }
             else:
@@ -375,7 +370,7 @@ class PostgreSQLIntegration(Integration):
             
             return result
         except Exception as e:
-            raise Exception(f"SQL execution failed: {e}")
+            raise Exception(f"SQL execution failed: {e}") from e
     
     def tool_query(
         self,
@@ -395,11 +390,11 @@ class PostgreSQLIntegration(Integration):
             col_names = [desc[0] for desc in cursor.description] if cursor.description else []
             
             if format == "dict":
-                result = [dict(zip(col_names, row)) for row in rows]
+                result = [dict(zip(col_names, row, strict=False)) for row in rows]
             elif format == "list":
                 result = [list(row) for row in rows]
             elif format == "json":
-                result = [json.loads(json.dumps(dict(zip(col_names, row)))) for row in rows]
+                result = [json.loads(json.dumps(dict(zip(col_names, row, strict=False)))) for row in rows]
             else:  # raw
                 result = [tuple(row) for row in rows]
             
@@ -409,7 +404,7 @@ class PostgreSQLIntegration(Integration):
                 "count": len(result),
             }
         except Exception as e:
-            raise Exception(f"Query failed: {e}")
+            raise Exception(f"Query failed: {e}") from e
     
     def tool_tables(
         self,
@@ -448,7 +443,7 @@ class PostgreSQLIntegration(Integration):
                 "count": len(tables),
             }
         except Exception as e:
-            raise Exception(f"Failed to list tables: {e}")
+            raise Exception(f"Failed to list tables: {e}") from e
     
     def tool_schema(
         self,
@@ -484,7 +479,7 @@ class PostgreSQLIntegration(Integration):
                 "column_count": len(columns),
             }
         except Exception as e:
-            raise Exception(f"Failed to get schema: {e}")
+            raise Exception(f"Failed to get schema: {e}") from e
     
     def tool_transaction(
         self,
@@ -514,7 +509,7 @@ class PostgreSQLIntegration(Integration):
                     results.append({
                         "sql": sql,
                         "columns": col_names,
-                        "rows": [dict(zip(col_names, row)) for row in rows],
+                        "rows": [dict(zip(col_names, row, strict=False)) for row in rows],
                         "row_count": len(rows),
                     })
                 else:
@@ -531,4 +526,4 @@ class PostgreSQLIntegration(Integration):
             }
         except Exception as e:
             self._connection.rollback()
-            raise Exception(f"Transaction failed: {e}")
+            raise Exception(f"Transaction failed: {e}") from e

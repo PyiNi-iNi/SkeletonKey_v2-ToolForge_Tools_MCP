@@ -12,12 +12,11 @@ Date: 2026-09-07
 
 from __future__ import annotations
 
-import os
 import json
 import logging
+import os
 from dataclasses import dataclass, field
 from typing import Any
-from pathlib import Path
 
 from .errors import E, SkeletonKeyError
 
@@ -283,7 +282,7 @@ class ProjectIndexer:
         
         # Read SKILL.md for metadata
         try:
-            with open(skill_file, "r", encoding="utf-8") as f:
+            with open(skill_file, encoding="utf-8") as f:
                 content = f.read()
                 # Extract frontmatter if present
                 if content.startswith("---"):
@@ -318,7 +317,7 @@ class ProjectIndexer:
             # tomli not installed, try to parse as JSON or skip
             try:
                 import json
-                with open(tool_file, "r", encoding="utf-8") as f:
+                with open(tool_file, encoding="utf-8") as f:
                     tool_config = json.load(f)
                     if "tools" in tool_config:
                         for tool in tool_config["tools"]:
@@ -369,7 +368,7 @@ class ProjectIndexer:
             # tomli not installed, try to parse as JSON or skip
             try:
                 import json
-                with open(tool_file, "r", encoding="utf-8") as f:
+                with open(tool_file, encoding="utf-8") as f:
                     tool_config = json.load(f)
                     
                     if "name" in tool_config:
@@ -435,7 +434,7 @@ class ProjectIndexer:
         # Try setup.py as fallback
         if not description:
             try:
-                with open(setup_file, "r", encoding="utf-8") as f:
+                with open(setup_file, encoding="utf-8") as f:
                     content = f.read()
                     # Simple extraction (very basic)
                     for line in content.split("\n"):
@@ -471,7 +470,7 @@ class ProjectIndexer:
             config_path = os.path.join(path, config_file)
             if os.path.exists(config_path):
                 try:
-                    with open(config_path, "r", encoding="utf-8") as f:
+                    with open(config_path, encoding="utf-8") as f:
                         config = json.load(f)
                     break
                 except (OSError, json.JSONDecodeError):
@@ -575,7 +574,7 @@ class ProjectIndexer:
             self._scan()
         
         # Try exact match first
-        for key, project in self._projects.items():
+        for _key, project in self._projects.items():
             if project.name == name:
                 return project
         
@@ -583,7 +582,7 @@ class ProjectIndexer:
         matches = [p for p in self._projects.values() if name.lower() in p.name.lower()]
         if len(matches) == 1:
             return matches[0]
-        elif len(matches) > 1:
+        if len(matches) > 1:
             raise SkeletonKeyError(
                 E.AMBIGUOUS_MATCH,
                 f"Multiple projects match '{name}'",
@@ -700,16 +699,15 @@ class ProjectIndexer:
         # Default health check based on project type
         if project.type == PROJECT_TYPE_SKILL:
             return self._check_skill_health(project)
-        elif project.type == PROJECT_TYPE_PYTHON_PACKAGE:
+        if project.type == PROJECT_TYPE_PYTHON_PACKAGE:
             return self._check_package_health(project)
-        elif project.type == PROJECT_TYPE_MCP_SERVER:
+        if project.type == PROJECT_TYPE_MCP_SERVER:
             return self._check_mcp_health(project)
-        else:
-            return {
-                "project": project.name,
-                "health": "healthy",
-                "message": "Project exists and is accessible",
-            }
+        return {
+            "project": project.name,
+            "health": "healthy",
+            "message": "Project exists and is accessible",
+        }
     
     def _check_skill_health(self, project: ProjectInfo) -> dict[str, Any]:
         """Check health of a skill project."""
@@ -723,7 +721,7 @@ class ProjectIndexer:
             }
         
         try:
-            with open(skill_file, "r", encoding="utf-8") as f:
+            with open(skill_file, encoding="utf-8") as f:
                 content = f.read()
                 if not content.strip():
                     return {
@@ -808,7 +806,7 @@ class ProjectIndexer:
             }
         
         try:
-            with open(config_path, "r", encoding="utf-8") as f:
+            with open(config_path, encoding="utf-8") as f:
                 config = json.load(f)
                 if not config:
                     return {
@@ -937,19 +935,19 @@ def get_project_info(path: str) -> ProjectInfo | None:
 
 # --------------------------------------------------------------------------- Exports
 __all__ = [
-    "ProjectInfo",
-    "ProjectIndexer",
-    "scan_projects",
-    "get_project_info",
+    "PROJECT_MARKERS",
+    "PROJECT_TYPE_DROPIN",
+    "PROJECT_TYPE_ENTRYPOINT",
+    "PROJECT_TYPE_MCP_SERVER",
+    "PROJECT_TYPE_PYTHON_PACKAGE",
+    "PROJECT_TYPE_REMOTE",
     # Type constants
     "PROJECT_TYPE_SKILL",
     "PROJECT_TYPE_TOOL_PACK",
-    "PROJECT_TYPE_PYTHON_PACKAGE",
-    "PROJECT_TYPE_MCP_SERVER",
-    "PROJECT_TYPE_DROPIN",
-    "PROJECT_TYPE_ENTRYPOINT",
-    "PROJECT_TYPE_REMOTE",
     "PROJECT_TYPE_UNKNOWN",
     "VALID_PROJECT_TYPES",
-    "PROJECT_MARKERS",
+    "ProjectIndexer",
+    "ProjectInfo",
+    "get_project_info",
+    "scan_projects",
 ]
