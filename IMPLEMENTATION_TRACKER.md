@@ -417,8 +417,11 @@ This document tracks the implementation progress of comprehensive integration su
 - [x] Opt-in recursive runtime output secret scanning via `scan_output_secrets`
 - [x] Redaction coverage for live integration tool results
 
+**Delivered in this slice:**
+- [x] End-to-end local pack upgrade test covering v1 → v2 replacement and persisted state
+
 **Next:**
-- [ ] End-to-end pack upgrade migration tests
+- [ ] Cross-SDK / OS compatibility matrix
 
 ## Configuration Reference
 
