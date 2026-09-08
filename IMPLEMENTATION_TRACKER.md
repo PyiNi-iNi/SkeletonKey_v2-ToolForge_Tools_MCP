@@ -404,11 +404,12 @@ This document tracks the implementation progress of comprehensive integration su
 
 **Delivered in this slice:**
 - [x] `RestIntegration` — stdlib transport, URL/query construction, JSON decoding, timeout and remote error normalization, provider hooks, envelopes, and pagination helper
+- [x] GitHub and Stripe migrated onto the shared base without changing wire behavior
+- [x] Existing GitHub/Stripe stub-server tests pass through the shared transport
+- [x] `DemoREST` test fixture generated from the base (`tests/test_rest_integration.py`)
 
 **Next:**
-- [ ] Extract GitHub and Stripe onto the shared base without changing wire behavior
-- [ ] Prove both providers against their existing stub-server tests
-- [ ] Add a third provider/fixture generated from the base
+- [ ] Add provider-specific retry/rate-limit policy only where an integration requires it
 
 ## Configuration Reference
 
