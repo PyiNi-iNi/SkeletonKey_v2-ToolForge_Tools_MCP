@@ -1660,6 +1660,7 @@ __all__ = [
     'IntegrationPlatform',
     # Registry
     'IntegrationRegistry',
+    'RestIntegration',
     'IntegrationSandbox',
     'IntegrationStatus',
     # Enums
@@ -1715,3 +1716,6 @@ from .validation import (  # noqa: E402
     validate_integration,
     validate_registry,
 )
+
+# Reusable stdlib REST transport (imported after the base classes to avoid a cycle).
+from .rest import RestIntegration  # noqa: E402
