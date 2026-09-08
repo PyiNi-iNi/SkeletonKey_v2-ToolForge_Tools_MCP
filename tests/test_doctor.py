@@ -58,6 +58,44 @@ def test_probe_reports_a_dead_server_with_the_reason():
     assert "exited early" in rep["error"]
 
 
+def test_doctor_surfaces_a_failing_probe_instead_of_crashing(tmp_path, monkeypatch):
+    # Regression: a failing probe's rep carries an `error` key; doctor() once
+    # expanded it into **row AND passed error= error explicitly, so the
+    # duplicate kwarg raised TypeError exactly when the probe failed -
+    # masking the very stderr tail the doctor exists to surface.
+    fake = {"ok": False, "workspace": "/tmp/sk-doctor-probe-x",
+            "error": "fs.stat missing from tools/list",
+            "stderr_tail": "Traceback (most recent call last):\n  File ...\nBoomError: no"}
+
+    def probe(**_kw):
+        return dict(fake)
+
+    monkeypatch.setattr(diagnostics, "probe_stdio", probe)
+    rep = diagnostics.doctor(cwd=ws(tmp_path), env=dict(os.environ))
+    assert rep["ok"] is False, json.dumps(rep, indent=1)[:2000]
+    assert [c["id"] for c in rep["checks"]] == EXPECTED_ORDER     # all checks still ran
+    live = next(c for c in rep["checks"] if c["id"] == "mcp.stdio")
+    assert live["ok"] is False
+    assert live["error"] == "fs.stat missing from tools/list"
+    assert "BoomError: no" in live["stderr_tail"]
+    for other in (c for c in rep["checks"] if c["id"] != "mcp.stdio"):
+        assert other["ok"] is True, other["id"]
+
+
+def test_doctor_surfaces_a_real_dead_python_probe(tmp_path, monkeypatch):
+    # Same contract through the real probe failure path (real rep shape).
+    dead = "NUL:" if os.name == "nt" else "/bin/false"
+    if not os.path.exists(dead.rstrip(":")):
+        pytest.skip("no dead-binary stand-in on this platform")
+    real = diagnostics.probe_stdio
+    monkeypatch.setattr(diagnostics, "probe_stdio",
+                        lambda python=None, **kw: real(python=dead, **kw))
+    rep = diagnostics.doctor(cwd=ws(tmp_path), env=dict(os.environ))
+    live = next(c for c in rep["checks"] if c["id"] == "mcp.stdio")
+    assert rep["ok"] is False and live["ok"] is False
+    assert "exited early" in live["error"]
+
+
 def test_fresh_workspace_state_is_healthy_not_a_failure(tmp_path):
     rep = diagnostics.doctor(cwd=ws(tmp_path), probe=False)
     st = next(c for c in rep["checks"] if c["id"] == "state")

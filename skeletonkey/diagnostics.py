@@ -172,7 +172,10 @@ def doctor(*, cwd: str | None = None, config_path: str | None = None,
         if probe:
             rep = probe_stdio(python=sys.executable, timeout=probe_timeout, env=env)
             error = rep.get("error")
-            row = {k: v for k, v in rep.items() if k != "ok"}
+            # `row` must not keep `error`: it is passed explicitly below, and a
+            # failing probe's rep carries it - a duplicate kwarg here raised
+            # TypeError exactly when the probe failed, masking the stderr tail.
+            row = {k: v for k, v in rep.items() if k not in ("ok", "error")}
             add("mcp.stdio", bool(rep.get("ok")), error=error, **row)
         else:
             add("mcp.stdio", True, skipped=True, reason="--no-probe")
