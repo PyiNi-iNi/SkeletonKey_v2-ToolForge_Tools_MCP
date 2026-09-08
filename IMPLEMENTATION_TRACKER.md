@@ -354,17 +354,30 @@ This document tracks the implementation progress of comprehensive integration su
 ---
 
 ### Phase P5.5: Integration Testing & Validation
-**Status:** 🟡 PLANNED
+**Status:** 🟢 SHIPPED (core harness; three items deferred below)
 
-**Planned Deliverables:**
-- [ ] Integration test framework
-- [ ] Integration validation utilities
-- [ ] Integration health check system
-- [ ] Integration performance benchmarking
-- [ ] Integration security scanning
-- [ ] Integration compatibility testing
-- [ ] Integration upgrade testing
-- [ ] Integration dependency testing
+**Delivered:**
+- [x] Integration test framework — `tests/test_integration_validation.py` +
+      P5.3 loader tests (`tests/test_integration_loader.py`), stub-server wire tests
+- [x] Integration validation utilities — `skeletonkey/integrations/validation.py`
+      + `integrations.validate` engine tool
+- [x] Integration health check system — `check_health()` + opt-in `include_health`
+      harness check
+- [x] Integration performance benchmarking — `benchmark_integration()`
+- [x] Integration security scanning — static source scan for secret-looking
+      literals (`secrets` code; reuses the redaction table, warnings)
+- [x] Integration compatibility testing — `metadata["min_engine"]` semver gate
+      (`compatibility` code, numeric-core comparison)
+- [x] Integration dependency testing — `dependency_status()` + required/optional
+      load gating (tested)
+
+**Deferred (explicitly, to P5.6/P6):**
+- [ ] Runtime secret scanning of live tool *output* (needs a side-effect-gated
+      live harness; static source scan shipped instead)
+- [ ] Cross-SDK / OS compatibility matrix (needs the gated SDKs installed and
+      the Windows CI runner)
+- [ ] Pack upgrade testing (install vN -> vN+1 state migration; the
+      `upgrade_pack` API exists and reload is now coherent, but untested end to end)
 
 ---
 
