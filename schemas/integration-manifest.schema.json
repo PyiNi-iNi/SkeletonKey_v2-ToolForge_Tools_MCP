@@ -1,0 +1,388 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://skeletonkey.ai/schemas/integration-manifest/v1.0.0.json",
+  "title": "SkeletonKey Integration Manifest",
+  "description": "Schema for defining SkeletonKey integrations including SDKs, APIs, frameworks, and platform devkits",
+  "version": "1.0.0",
+  "type": "object",
+  "required": ["name", "version", "type", "integration"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "format": "uri",
+      "description": "JSON Schema URI for validation"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100,
+      "pattern": "^[a-zA-Z][a-zA-Z0-9-_.]*$",
+      "description": "Unique name of the integration (kebab-case or snake_case recommended)"
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "description": "Human-readable title of the integration"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9]+)?$",
+      "description": "Semantic version of the integration (e.g., 1.0.0, 2.1.0-beta)"
+    },
+    "description": {
+      "type": "string",
+      "maxLength": 5000,
+      "description": "Detailed description of what the integration provides"
+    },
+    "type": {
+      "type": "string",
+      "enum": [
+        "sdk",
+        "api",
+        "client-library",
+        "api-generator",
+        "framework",
+        "toolchain",
+        "cli",
+        "runtime",
+        "protocol-binding",
+        "codegen",
+        "platform-devkit",
+        "3d-modeling",
+        "billing-payment",
+        "database",
+        "agent-harness",
+        "integration-pack"
+      ],
+      "description": "Category of the integration"
+    },
+    "category": {
+      "type": "string",
+      "enum": [
+        "cloud",
+        "database",
+        "ai-ml",
+        "web",
+        "mobile",
+        "desktop",
+        "serverless",
+        "devtools",
+        "monitoring",
+        "security",
+        "payment",
+        "3d-graphics",
+        "collaboration",
+        "storage",
+        "networking",
+        "messaging",
+        "analytics",
+        "other"
+      ],
+      "description": "High-level category for grouping integrations"
+    },
+    "platform": {
+      "type": "string",
+      "enum": [
+        "cross-platform",
+        "aws",
+        "gcp",
+        "azure",
+        "vercel",
+        "supabase",
+        "firebase",
+        "cloudflare",
+        "netlify",
+        "render",
+        "flyio",
+        "railway",
+        "heroku",
+        "digitalocean",
+        "linux",
+        "windows",
+        "macos",
+        "ios",
+        "android",
+        "web-browser",
+        "nodejs",
+        "python",
+        "java",
+        "go",
+        "rust",
+        "csharp",
+        "php",
+        "ruby"
+      ],
+      "description": "Target platform for the integration"
+    },
+    "author": {
+      "type": "object",
+      "properties": {
+        "name": {"type": "string"},
+        "email": {"type": "string", "format": "email"},
+        "url": {"type": "string", "format": "uri"}
+      },
+      "required": ["name"],
+      "additionalProperties": false
+    },
+    "license": {
+      "type": "string",
+      "enum": ["MIT", "Apache-2.0", "GPL-3.0", "BSD-2-Clause", "BSD-3-Clause", "LGPL-3.0", "AGPL-3.0", "Unlicense", "Proprietary"]
+    },
+    "homepage": {
+      "type": "string",
+      "format": "uri",
+      "description": "Homepage URL for the integration"
+    },
+    "repository": {
+      "type": "string",
+      "format": "uri",
+      "description": "Source code repository URL"
+    },
+    "documentation": {
+      "type": "string",
+      "format": "uri",
+      "description": "Link to integration documentation"
+    },
+    "keywords": {
+      "type": "array",
+      "items": {"type": "string", "maxLength": 50},
+      "maxItems": 20,
+      "description": "Tags for searching and categorization"
+    },
+    "dependencies": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9]+)?$"
+      },
+      "description": "Other integrations this one depends on with version requirements"
+    },
+    "conflicts": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Integration names that conflict with this one"
+    },
+    "integration": {
+      "type": "object",
+      "required": ["entry"],
+      "additionalProperties": false,
+      "properties": {
+        "entry": {
+          "type": "string",
+          "description": "Main entry point for the integration (module path or command)"
+        },
+        "module": {
+          "type": "string",
+          "description": "Python module name if applicable"
+        },
+        "class": {
+          "type": "string",
+          "description": "Main class name if applicable"
+        },
+        "config_schema": {
+          "type": "string",
+          "description": "JSON Schema URI for integration configuration"
+        },
+        "default_config": {
+          "type": "object",
+          "description": "Default configuration values"
+        },
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "read",
+              "write",
+              "execute",
+              "network",
+              "filesystem",
+              "shell",
+              "browser",
+              "gui",
+              "audio",
+              "video",
+              "gpu",
+              "database",
+              "payment",
+              "authentication"
+            ]
+          },
+          "description": "Capabilities required by this integration"
+        },
+        "permissions": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "boolean"
+          },
+          "description": "Fine-grained permissions for the integration"
+        },
+        "sandbox": {
+          "type": "object",
+          "properties": {
+            "enabled": {"type": "boolean", "default": true},
+            "filesystem_isolation": {"type": "boolean", "default": false},
+            "network_isolation": {"type": "boolean", "default": false},
+            "resource_limits": {
+              "type": "object",
+              "properties": {
+                "memory_mb": {"type": "integer", "minimum": 1},
+                "cpu_cores": {"type": "integer", "minimum": 1},
+                "timeout_seconds": {"type": "integer", "minimum": 1}
+              }
+            }
+          }
+        },
+        "health_check": {
+          "type": "object",
+          "properties": {
+            "enabled": {"type": "boolean", "default": true},
+            "interval_seconds": {"type": "integer", "minimum": 1, "default": 60},
+            "command": {"type": "string"},
+            "url": {"type": "string", "format": "uri"}
+          }
+        }
+      }
+    },
+    "config": {
+      "type": "object",
+      "description": "Configuration schema for the integration",
+      "additionalProperties": true
+    },
+    "tools": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "name", "description"],
+        "properties": {
+          "id": {"type": "string", "pattern": "^[a-zA-Z][a-zA-Z0-9_.-]*$"},
+          "name": {"type": "string"},
+          "description": {"type": "string"},
+          "category": {"type": "string"},
+          "parameters": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "properties": {
+                "type": {"type": "string", "enum": ["string", "number", "integer", "boolean", "array", "object"]},
+                "description": {"type": "string"},
+                "required": {"type": "boolean"},
+                "default": {},
+                "enum": {"type": "array"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "resources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["type", "path"],
+        "properties": {
+          "type": {"type": "string", "enum": ["script", "binary", "config", "template", "asset"]},
+          "path": {"type": "string"},
+          "encoding": {"type": "string", "enum": ["utf-8", "base64", "binary"]},
+          "compression": {"type": "string", "enum": ["none", "gzip", "zip", "tar", "tar.gz"]}
+        }
+      }
+    },
+    "installation": {
+      "type": "object",
+      "properties": {
+        "method": {
+          "type": "string",
+          "enum": ["pip", "npm", "yarn", "pnpm", "go-get", "cargo", "maven", "gradle", "composer", "gem", "manual", "builtin"]
+        },
+        "package": {"type": "string"},
+        "command": {"type": "string"},
+        "requirements": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
+        "post_install": {
+          "type": "array",
+          "items": {"type": "string"}
+        }
+      }
+    },
+    "uninstallation": {
+      "type": "object",
+      "properties": {
+        "command": {"type": "string"},
+        "cleanup_files": {
+          "type": "array",
+          "items": {"type": "string"}
+        }
+      }
+    },
+    "environment": {
+      "type": "object",
+      "properties": {
+        "variables": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "description": {"type": "string"},
+              "required": {"type": "boolean"},
+              "secret": {"type": "boolean"}
+            }
+          }
+        },
+        "python_version": {
+          "type": "string",
+          "pattern": "^[23]\.[0-9]+(\.[0-9]+)?$"
+        },
+        "os": {
+          "type": "array",
+          "items": {"type": "string", "enum": ["linux", "windows", "macos", "any"]}
+        },
+        "architecture": {
+          "type": "array",
+          "items": {"type": "string", "enum": ["x86_64", "arm64", "arm", "any"]}
+        }
+      }
+    },
+    "metadata": {
+      "type": "object",
+      "properties": {
+        "created_at": {"type": "string", "format": "date-time"},
+        "updated_at": {"type": "string", "format": "date-time"},
+        "maturity": {
+          "type": "string",
+          "enum": ["experimental", "alpha", "beta", "stable", "deprecated"]
+        },
+        "popularity": {"type": "integer", "minimum": 0},
+        "rating": {"type": "number", "minimum": 0, "maximum": 5},
+        "downloads": {"type": "integer", "minimum": 0}
+      }
+    },
+    "examples": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "title": {"type": "string"},
+          "description": {"type": "string"},
+          "code": {"type": "string"},
+          "language": {"type": "string"}
+        }
+      }
+    },
+    "tests": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {"type": "string"},
+          "command": {"type": "string"},
+          "expected_output": {"type": "string"}
+        }
+      }
+    }
+  }
+}

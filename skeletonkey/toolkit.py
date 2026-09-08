@@ -19,12 +19,14 @@ from .core.config import Config, _user_dir
 from .core.engine import Engine
 from .core.ledger import Ledger
 from .core.profile import CapabilityProfile, Prober
+from .core.projects import ProjectIndexer
 from .core.publish import PublishStore
 from .core.registry import Registry
 from .fsx.journal import FsJournal
 from .fsx.ops import Fs
 from .fsx.sandbox import PathSandbox, SandboxPolicy
 from .fsx.search import SearchBackend
+from .integrations import IntegrationManager
 from .shells.base import ShellRunner
 from .shells.execute import run_script
 from .skills.loader import SkillLoader
@@ -45,6 +47,8 @@ class Toolkit:
     ledger: Ledger | None = None
     publish: PublishStore | None = None
     live: Any = None                    # live.runtime.LiveManager (HMR subsystem)
+    projects: ProjectIndexer | None = None  # P5: Project indexer for external projects
+    integrations: IntegrationManager | None = None  # P5.1: Integration manager
     build_report: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -102,7 +106,7 @@ class Toolkit:
 
     def describe(self) -> dict[str, Any]:
         snap = self.engine.advertise()
-        return {
+        desc: dict[str, Any] = {
             "workspace": self.config.workspace,
             "roots": [os.path.basename(r) or r for r in self.sandbox.roots],
             "profile": {"os": self.profile.os, "arch": self.profile.arch,
@@ -128,6 +132,32 @@ class Toolkit:
                       "ledger": self.ledger.path if self.ledger else None},
             "build": self.build_report,
         }
+        # P5: Add projects information if available
+        if self.projects:
+            stats = self.projects.get_statistics()
+            desc["projects"] = {
+                "total": stats["total_projects"],
+                "enabled": stats["enabled_projects"],
+                "disabled": stats["disabled_projects"],
+                "total_tools": stats["total_tools"],
+                "by_type": stats["by_type"],
+                "by_health": stats["by_health"],
+            }
+        
+        # P5.1: Add integrations information if available
+        if self.integrations:
+            stats = self.integrations.get_statistics()
+            desc["integrations"] = {
+                "total": stats["total_integrations"],
+                "loaded": stats["loaded_integrations"],
+                "enabled": stats["enabled_integrations"],
+                "disabled": stats["disabled_integrations"],
+                "by_type": stats["by_type"],
+                "by_category": stats["by_category"],
+                "by_platform": stats["by_platform"],
+            }
+        
+        return desc
 
     def sync_skills(self, *, refresh: bool = True) -> dict[str, Any]:
         """Re-discover the skills and re-apply their tool declarations.
@@ -151,8 +181,14 @@ class Toolkit:
             try:
                 self.engine.close()
             finally:
-                if self.ledger:
-                    self.ledger.close()
+                try:
+                    if self.integrations:
+                        # Unload all integrations
+                        for name in list(self.integrations._instances.keys()):
+                            self.integrations.unload_integration(name)
+                finally:
+                    if self.ledger:
+                        self.ledger.close()
 
     def __enter__(self) -> Toolkit:
         return self
@@ -255,9 +291,25 @@ def build(*, config: Config | None = None, overrides: dict[str, Any] | None = No
                 {"error": f"{type(exc).__name__}: {exc}", "stage": "config"})
             registry.load_errors.append({"stage": "remote", "error": str(exc)[:400]})
     report["registered_after_load"] = len(registry.all())
+    
+    # P5: Initialize project indexer
+    projects = ProjectIndexer(cfg.roots)
+    report["projects"] = projects.get_statistics()
+    
+    # P5.1: Initialize integration manager
+    integrations = IntegrationManager(cfg)
+    report["integrations"] = integrations.get_statistics()
+    
+    # P5.2/P5.3: Register integration management tools
+    from .core.integration_tools import register_integration_tools
+    report["integration_tools"] = register_integration_tools(
+        registry, engine=engine, integrations_manager=integrations
+    )
+    
     return Toolkit(config=cfg, profile=profile, sandbox=sandbox, fs=fs, journal=journal, shells=shells,
                    registry=registry, engine=engine, skills=skills, ledger=ledger,
-                   publish=publish_store, live=live_manager, build_report=report)
+                   publish=publish_store, live=live_manager, projects=projects,
+                   integrations=integrations, build_report=report)
 
 
 def _mk_overrides(overrides: dict[str, Any] | None, roots: list[str] | None,

@@ -210,14 +210,6 @@ class StateConfig:
 
 
 @dataclass
-class PublishConfig:
-    # Empty = <user config dir>/skeletonkey/publish/store.json. The store is
-    # deliberately OUTSIDE the workspace roots: the fs sandbox is the wall that
-    # keeps fs.* tools away from it (see ADR-0010). Override for tests/CI.
-    store_path: str = ""
-
-
-@dataclass
 class LiveConfig:
     """The `live.*` group (docs/LIVE-HMR.md): Python HMR over a LiveREPL.
 
@@ -243,6 +235,41 @@ class LiveConfig:
 
 
 @dataclass
+class PublishConfig:
+    # Empty = <user config dir>/skeletonkey/publish/store.json. The store is
+    # deliberately OUTSIDE the workspace roots: the fs sandbox is the wall that
+    # keeps fs.* tools away from it (see ADR-0010). Override for tests/CI.
+    store_path: str = ""
+
+
+@dataclass
+class IntegrationConfig:
+    """Configuration for integrations (P5.1).
+    
+    This section configures the integration subsystem including:
+    - Which integrations are enabled/disabled
+    - Integration-specific configuration
+    - Secret management for integrations
+    - Integration sandboxing settings
+    """
+    # List of integration names to enable on startup
+    enabled: list[str] = field(default_factory=list)
+    # List of integration names to disable
+    disabled: list[str] = field(default_factory=list)
+    # Per-integration configuration
+    configs: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # Secret storage configuration
+    secrets_dir: str = ""  # Empty = <state_dir>/integrations/secrets
+    # Sandbox settings
+    default_sandbox: bool = True
+    allow_all_capabilities: bool = False
+    # Auto-load integrations on startup
+    auto_load: bool = False
+    # Integration pack directories
+    packs_dir: str = "integrations"
+
+
+@dataclass
 class Config:
     roots: list[str] = field(default_factory=list)
     cwd: str = ""
@@ -258,6 +285,7 @@ class Config:
     state: StateConfig = field(default_factory=StateConfig)
     publish: PublishConfig = field(default_factory=PublishConfig)
     live: LiveConfig = field(default_factory=LiveConfig)
+    integrations: IntegrationConfig = field(default_factory=IntegrationConfig)  # P5.1
     log_level: str = "WARNING"
     source_files: list[str] = field(default_factory=list)
     overrides_applied: list[str] = field(default_factory=list)
@@ -420,6 +448,12 @@ _ENV_MAP = {
     "MCP_PORT": ("mcp.port", int),
     "ADVERTISE_MAX": ("mcp.advertise_max_tools", int),
     "NO_JOURNAL": ("state.journal", lambda v: not _truthy(v)),
+    # P5.1: Integration environment variables
+    "INTEGRATIONS_ENABLED": ("integrations.enabled", list),
+    "INTEGRATIONS_DISABLED": ("integrations.disabled", list),
+    "INTEGRATIONS_AUTO_LOAD": ("integrations.auto_load", bool),
+    "INTEGRATIONS_SECRETS_DIR": ("integrations.secrets_dir", str),
+    "INTEGRATIONS_PACKS_DIR": ("integrations.packs_dir", str),
 }
 
 TRUE_WORDS = {"1", "true", "yes", "on"}
