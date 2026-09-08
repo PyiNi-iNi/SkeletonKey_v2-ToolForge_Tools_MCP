@@ -1533,7 +1533,7 @@ __all__ = [
     'PackManifest',
 ]
 
-# Import example integrations to register them
+# Import example integrations
 try:
     from . import examples  # noqa: F401
     _examples_imported = True
@@ -1542,3 +1542,11 @@ except ImportError as e:
     # This is expected and okay - they'll be registered when their deps are installed
     _examples_imported = False
     logger.debug(f"Could not import example integrations: {e}")
+
+# Import category integrations (P5.4)
+try:
+    from . import categories  # noqa: F401
+    _categories_imported = True
+except ImportError as e:
+    _categories_imported = False
+    logger.debug(f"Could not import category integrations: {e}")
