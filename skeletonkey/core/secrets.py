@@ -16,13 +16,11 @@ from __future__ import annotations
 
 import base64
 import hashlib
-import hmac
 import json
 import logging
 import os
 import secrets as secrets_module
-import warnings
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -112,6 +110,7 @@ class SecretStore:
         self.encryption = encryption
         self._secrets: dict[str, dict[str, Any]] = {}
         self._loaded = False
+        self._plaintext_warned = False
         
         # Get master key from environment or generate
         self._master_key = master_key or self._get_master_key()
@@ -130,17 +129,15 @@ class SecretStore:
         # Try to read from key file
         key_file = os.environ.get("SKELETONKEY_SECRETS_KEY_FILE")
         if key_file and os.path.exists(key_file):
-            with open(key_file, "r") as f:
+            with open(key_file) as f:
                 return f.read().strip()
         
-        # Generate a warning if no key is available
+        # No key available: fall back to plaintext storage. The warning is
+        # emitted lazily at *persist* time (see _warn_plaintext_once), never at
+        # construction — constructing a store must not write to stderr, because
+        # the MCP stdio server builds one on every startup and stderr is part of
+        # its diagnostics contract.
         if self.encryption != "plain":
-            warnings.warn(
-                "No SKELETONKEY_SECRETS_KEY or SKELETONKEY_SECRETS_KEY_FILE provided. "
-                "Secrets will be stored in plain text. Set one of these environment "
-                "variables for encryption.",
-                UserWarning,
-            )
             self.encryption = "plain"
         
         # Generate a random key (for testing only)
@@ -148,7 +145,6 @@ class SecretStore:
     
     def _derive_key(self, salt: bytes) -> bytes:
         """Derive an encryption key from the master key and salt."""
-        import hashlib
         kdf = hashlib.pbkdf2_hmac(
             "sha256",
             self._master_key.encode(),
@@ -156,6 +152,23 @@ class SecretStore:
             100000,
         )
         return kdf
+
+    def _warn_plaintext_once(self) -> None:
+        """Warn once (via logging) that secrets are being stored unencrypted.
+
+        Deferred to persist time on purpose: the store is constructed on every
+        toolkit build, and a startup-time `warnings.warn` leaked onto the MCP
+        stdio server's stderr channel. The warning belongs at the moment a secret
+        is actually about to be written in clear text.
+        """
+        if self._plaintext_warned:
+            return
+        self._plaintext_warned = True
+        logger.warning(
+            "No SKELETONKEY_SECRETS_KEY or SKELETONKEY_SECRETS_KEY_FILE provided. "
+            "Secrets will be stored in plain text. Set one of these environment "
+            "variables for encryption."
+        )
     
     def _encrypt(self, plaintext: str) -> dict[str, Any]:
         """Encrypt a plaintext value."""
@@ -184,10 +197,9 @@ class SecretStore:
             }
         except ImportError:
             # cryptography not installed, fall back to plain
-            warnings.warn(
+            logger.warning(
                 "cryptography package not installed. Secrets will be stored in plain text. "
-                "Install with: pip install cryptography",
-                UserWarning,
+                "Install with: pip install cryptography"
             )
             self.encryption = "plain"
             return {"value": plaintext, "encryption": "plain"}
@@ -213,10 +225,7 @@ class SecretStore:
             return plaintext.decode()
         except ImportError:
             # cryptography not installed
-            warnings.warn(
-                "cryptography package not installed. Cannot decrypt secrets.",
-                UserWarning,
-            )
+            logger.warning("cryptography package not installed. Cannot decrypt secrets.")
             return encrypted["value"]
         except Exception as e:
             logger.error(f"Failed to decrypt secret: {e}")
@@ -228,7 +237,7 @@ class SecretStore:
             return
         
         try:
-            with open(self.path, "r") as f:
+            with open(self.path) as f:
                 data = json.load(f)
                 self._secrets = data.get("secrets", {})
             self._loaded = True
@@ -295,6 +304,10 @@ class SecretStore:
         if not overwrite and storage_key in self._secrets:
             logger.warning(f"Secret {storage_key} already exists and overwrite=False")
             return False
+        
+        # Warn (once) if we're about to persist in plain text.
+        if self.encryption == "plain":
+            self._warn_plaintext_once()
         
         # Encrypt the value
         encrypted = self._encrypt(value)
@@ -505,6 +518,10 @@ class SecretStore:
         
         if storage_key not in self._secrets:
             return False
+        
+        # Warn (once) if we're about to persist in plain text.
+        if self.encryption == "plain":
+            self._warn_plaintext_once()
         
         # Encrypt the new value
         encrypted = self._encrypt(new_value)

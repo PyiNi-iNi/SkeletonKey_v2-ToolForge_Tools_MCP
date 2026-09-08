@@ -33,26 +33,24 @@ Integration Types Supported:
 
 from __future__ import annotations
 
-import json
 import logging
 import os
-import sys
 import traceback
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
+
+from ..core.config import Config
+from ..core.errors import E, SkeletonKeyError
+from ..core.secrets import SecretStore, SecretValue, get_secret_store
 
 # P5.3: Discovery and Dynamic Loading
 from .discovery import IntegrationDiscovery, get_discovery
 from .loader import IntegrationLoader, get_loader
-from .packs import IntegrationPackManager, get_pack_manager, PackInfo
-from typing import Any, Callable, TypeVar
-
-from ..core.config import Config
-from ..core.secrets import SecretStore, SecretValue, get_secret_store
-from ..core.util import compact_json, pretty_json
+from .packs import IntegrationPackManager, PackInfo, get_pack_manager
 
 logger = logging.getLogger(__name__)
 
@@ -453,6 +451,32 @@ class Integration(ABC):
             list: List of tool definitions
         """
         return []
+
+    def call_tool(self, name: str, args: dict[str, Any]) -> Any:
+        """Dispatch a tool call to this integration's ``tool_<name>`` method.
+
+        This is the single dispatch entry point the engine bridge uses. A tool
+        id ``<integration>.<suffix>`` maps to ``tool_<suffix>``; the bridge
+        passes ``suffix`` here as ``name``.
+
+        Args:
+            name: Tool suffix (the part of the tool id after the integration
+                namespace, e.g. ``query`` for ``sqlite.query``).
+            args: Validated tool arguments (keyword arguments for the method).
+
+        Returns:
+            Any: The tool's result payload.
+
+        Raises:
+            SkeletonKeyError: If this integration exposes no such tool handler.
+        """
+        method = getattr(self, f"tool_{name}", None)
+        if not callable(method):
+            raise SkeletonKeyError(
+                E.BAD_ARGS,
+                f"integration {self.name!r} has no handler for tool {name!r}",
+            )
+        return method(**args)
     
     def get_config_schema(self) -> dict[str, Any] | None:
         """Get the configuration schema for this integration.
@@ -595,14 +619,13 @@ class IntegrationRegistry:
                     status=IntegrationStatus.LOADED,
                     instance=instance,
                 )
-            else:
-                return IntegrationInstance(
-                    info=instance.info,
-                    config=config,
-                    status=IntegrationStatus.ERROR,
-                    error="Initialization failed",
-                    instance=instance,
-                )
+            return IntegrationInstance(
+                info=instance.info,
+                config=config,
+                status=IntegrationStatus.ERROR,
+                error="Initialization failed",
+                instance=instance,
+            )
         except Exception as e:
             logger.error(f"Failed to load integration {name}: {e}\n{traceback.format_exc()}")
             return IntegrationInstance(
@@ -733,10 +756,20 @@ class IntegrationManager:
     - Dependency resolution
     """
     
-    def __init__(self, config: Config | None = None):
-        """Initialize the integration manager."""
+    def __init__(self, config: Config | None = None, tool_registry: Any = None):
+        """Initialize the integration manager.
+
+        Args:
+            config: SkeletonKey configuration (defaults to ``Config.load()``).
+            tool_registry: The engine tool ``Registry`` to wire loaded
+                integration tools into. When provided, loading an integration
+                registers its ``tool_*`` handlers as engine tools and unloading
+                removes them.
+        """
         self.config = config or Config.load()
-        self.registry = registry
+        self.registry = registry  # the integration class registry (global)
+        self._tool_registry = tool_registry
+        self._tool_ids: dict[str, list[str]] = {}
         self._instances: dict[str, IntegrationInstance] = {}
         self._enabled_integrations: set[str] = set()
         self._disabled_integrations: set[str] = set()
@@ -905,22 +938,34 @@ class IntegrationManager:
             instance.health = health
             instance.health_message = message
             
+            # Wire the integration's tools into the engine registry (P5.4).
+            self._register_tools(name)
+            
             logger.info(f"Loaded integration: {name} (v{instance.info.version})")
         
         return instance
     
     def unload_integration(self, name: str) -> bool:
-        """Unload an integration."""
+        """Unload an integration and remove its engine tools."""
         if name not in self._instances:
             return True
         
-        success = self.registry.unload_integration(name)
-        if success:
-            del self._instances[name]
-            self._enabled_integrations.discard(name)
-            logger.info(f"Unloaded integration: {name}")
+        # Remove the integration's tools before cleanup so no in-flight call
+        # can reach a handler whose instance is being torn down.
+        self._unregister_tools(name)
         
-        return success
+        instance = self._instances[name]
+        try:
+            if instance.instance is not None:
+                instance.instance.cleanup()
+        except Exception as e:
+            logger.error(f"Failed to clean up integration {name}: {e}")
+        
+        del self._instances[name]
+        self._enabled_integrations.discard(name)
+        logger.info(f"Unloaded integration: {name}")
+        
+        return True
     
     def enable_integration(self, name: str) -> bool:
         """Enable an integration."""
@@ -1026,6 +1071,52 @@ class IntegrationManager:
                 }
                 tools.append(tool_with_meta)
         return tools
+
+    # P5.4: engine wiring ----------------------------------------------------
+    def register_tools(self, name: str) -> list[str]:
+        """Register a loaded integration's tools into the engine registry.
+
+        Args:
+            name: Integration name (must already be loaded).
+
+        Returns:
+            list: Tool ids that were registered.
+        """
+        return self._register_tools(name)
+
+    def _register_tools(self, name: str) -> list[str]:
+        """Internal: wire ``instance.get_tools()`` into the engine registry."""
+        if self._tool_registry is None:
+            return []
+        instance = self._instances.get(name)
+        if instance is None or instance.instance is None:
+            return []
+
+        from .bridge import build_manifest
+
+        registered: list[str] = []
+        for tool in instance.instance.get_tools():
+            manifest = build_manifest(instance.instance, name, tool)
+            if manifest is None:
+                continue
+            try:
+                self._tool_registry.register(manifest, replace=False)
+                registered.append(manifest.id)
+            except SkeletonKeyError as e:
+                logger.warning(f"integration {name}: failed to register tool {tool.get('id')}: {e}")
+        self._tool_ids[name] = registered
+        return registered
+
+    def _unregister_tools(self, name: str) -> None:
+        """Internal: remove an integration's engine tools."""
+        if self._tool_registry is None:
+            self._tool_ids.pop(name, None)
+            return
+        for tool_id in self._tool_ids.pop(name, []):
+            try:
+                self._tool_registry.unregister(tool_id)
+            except Exception as e:  # never let teardown break unload
+                logger.warning(f"integration {name}: failed to unregister tool {tool_id}: {e}")
     
     # P5.2: Secret Management
     
@@ -1087,7 +1178,6 @@ class IntegrationManager:
         default: str | None = None,
     ) -> SecretValue | None:
         """Get a secret from environment variables."""
-        import os
         
         # Try environment variables
         env_key = f"SKELETONKEY_SECRET_{key.upper()}"
@@ -1281,6 +1371,7 @@ class IntegrationManager:
         if result.success and result.instance:
             # Store in instances
             self._instances[name] = result.instance
+            self._register_tools(name)
             return result.instance
         
         return None
@@ -1298,7 +1389,8 @@ class IntegrationManager:
             logger.warning("Loader not initialized")
             return False
         
-        # Remove from instances
+        # Remove from instances (and drop any engine tools first)
+        self._unregister_tools(name)
         self._instances.pop(name, None)
         
         return self._loader.unload(name)
@@ -1318,12 +1410,14 @@ class IntegrationManager:
             return None
         
         # Unload first
+        self._unregister_tools(name)
         self._instances.pop(name, None)
         
         # Load again
         result = self._loader.load(name, config)
         if result.success and result.instance:
             self._instances[name] = result.instance
+            self._register_tools(name)
             return result.instance
         
         return None
@@ -1484,53 +1578,53 @@ class IntegrationManager:
 # =============================================================================
 
 __all__ = [
-    # Enums
-    'IntegrationType',
-    'IntegrationCategory',
-    'IntegrationPlatform',
-    'IntegrationMaturity',
-    'IntegrationStatus',
-    # Data classes
-    'IntegrationDependency',
-    'IntegrationCapability',
-    'IntegrationHealthCheck',
-    'IntegrationSandbox',
-    'IntegrationConfig',
-    'IntegrationInfo',
-    'IntegrationInstance',
+    'ConfigDiscoverySource',
+    'DiscoveryResult',
+    'DiscoverySource',
+    'EntryPointDiscoverySource',
+    'FilesystemDiscoverySource',
     # Base class
     'Integration',
-    # Registry
-    'IntegrationRegistry',
-    'registry',
-    # Decorator
-    'register_integration',
+    'IntegrationCapability',
+    'IntegrationCategory',
+    'IntegrationConfig',
+    # Data classes
+    'IntegrationDependency',
+    # P5.3: Discovery
+    'IntegrationDiscovery',
+    'IntegrationHealthCheck',
+    'IntegrationInfo',
+    'IntegrationInstance',
+    # P5.3: Dynamic Loading
+    'IntegrationLoader',
     # Manager
     'IntegrationManager',
+    'IntegrationMaturity',
+    # P5.3: Pack Management
+    'IntegrationPackManager',
+    'IntegrationPlatform',
+    # Registry
+    'IntegrationRegistry',
+    'IntegrationSandbox',
+    'IntegrationStatus',
+    # Enums
+    'IntegrationType',
+    'LoadError',
+    'LoadResult',
+    'PackInfo',
+    'PackManifest',
+    'PackageDiscoverySource',
+    'SecretInfo',
     # P5.2: Secret Management
     'SecretStore',
     'SecretValue',
-    'SecretInfo',
-    'get_secret_store',
-    # P5.3: Discovery
-    'IntegrationDiscovery',
     'get_discovery',
-    'DiscoverySource',
-    'DiscoveryResult',
-    'EntryPointDiscoverySource',
-    'FilesystemDiscoverySource',
-    'PackageDiscoverySource',
-    'ConfigDiscoverySource',
-    # P5.3: Dynamic Loading
-    'IntegrationLoader',
     'get_loader',
-    'LoadResult',
-    'LoadError',
-    # P5.3: Pack Management
-    'IntegrationPackManager',
     'get_pack_manager',
-    'PackInfo',
-    'PackManifest',
+    'get_secret_store',
+    # Decorator
+    'register_integration',
+    'registry',
 ]
 
 # Import example integrations

@@ -296,8 +296,9 @@ def build(*, config: Config | None = None, overrides: dict[str, Any] | None = No
     projects = ProjectIndexer(cfg.roots)
     report["projects"] = projects.get_statistics()
     
-    # P5.1: Initialize integration manager
-    integrations = IntegrationManager(cfg)
+    # P5.1: Initialize integration manager (wired to the engine registry so a
+    # loaded integration's tools become callable engine tools, P5.4).
+    integrations = IntegrationManager(cfg, tool_registry=registry)
     report["integrations"] = integrations.get_statistics()
     
     # P5.2/P5.3: Register integration management tools

@@ -24,12 +24,11 @@ import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 # Type checking imports
 if TYPE_CHECKING:
-    from . import IntegrationInfo, registry
-    from .loader import IntegrationLoader
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -217,11 +216,15 @@ class IntegrationPackManager:
         else:
             self.install_root = Path('integrations')
         
-        # Ensure install root exists
-        self.install_root.mkdir(parents=True, exist_ok=True)
-        
-        # Load installed packs
+        # NOTE: the install root is deliberately *not* created here. A toolkit
+        # build constructs this manager, and a build must never write into the
+        # workspace (the policy property test snapshots the tree around build()).
+        # The root is created lazily, on first install/persist.
         self._load_installed()
+    
+    def _ensure_root(self) -> None:
+        """Create the install root on demand (never at construction)."""
+        self.install_root.mkdir(parents=True, exist_ok=True)
     
     def _load_installed(self) -> None:
         """Load information about installed packs."""
@@ -229,9 +232,9 @@ class IntegrationPackManager:
         
         if installed_file.exists():
             try:
-                with open(installed_file, 'r') as f:
+                with open(installed_file) as f:
                     data = json.load(f)
-                    for name, pack_data in data.items():
+                    for _name, pack_data in data.items():
                         pack_info = PackInfo.from_dict(pack_data)
                         self._installed[pack_info.name] = pack_info
             except Exception as e:
@@ -239,6 +242,7 @@ class IntegrationPackManager:
     
     def _save_installed(self) -> None:
         """Save information about installed packs."""
+        self._ensure_root()
         installed_file = self.install_root / self.INSTALLED_FILE
         
         try:
@@ -259,6 +263,7 @@ class IntegrationPackManager:
         force: bool = False,
     ) -> bool:
         """Install an integration pack."""
+        self._ensure_root()
         # Check if already installed
         if name in self._installed and not force:
             logger.warning(f"Pack {name} already installed, use force=True to reinstall")
@@ -278,13 +283,12 @@ class IntegrationPackManager:
         try:
             if source_type in ["git", "https://", "http://"]:
                 return self._install_from_git(name, version)
-            elif source_type == "local":
+            if source_type == "local":
                 return self._install_from_local(name)
-            elif source_type == "pypi":
+            if source_type == "pypi":
                 return self._install_from_pypi(name, version)
-            else:
-                logger.error(f"Unknown source type: {source_type}")
-                return False
+            logger.error(f"Unknown source type: {source_type}")
+            return False
         except Exception as e:
             logger.error(f"Failed to install pack {name}: {e}")
             return False
@@ -309,7 +313,7 @@ class IntegrationPackManager:
         
         # Read manifest
         try:
-            with open(manifest_file, 'r') as f:
+            with open(manifest_file) as f:
                 manifest_data = json.load(f)
             manifest = PackManifest.from_dict(manifest_data)
         except Exception as e:
@@ -391,7 +395,7 @@ class IntegrationPackManager:
                 cmd.extend(["--branch", version])
             
             try:
-                result = subprocess.run(
+                subprocess.run(
                     cmd,
                     capture_output=True,
                     text=True,
@@ -422,7 +426,7 @@ class IntegrationPackManager:
             # Read manifest
             manifest_file = pack_dir / self.MANIFEST_FILENAME
             try:
-                with open(manifest_file, 'r') as f:
+                with open(manifest_file) as f:
                     manifest_data = json.load(f)
                 manifest = PackManifest.from_dict(manifest_data)
             except Exception as e:
@@ -486,7 +490,7 @@ class IntegrationPackManager:
             cmd.append(f"=={version}")
         
         try:
-            result = subprocess.run(
+            subprocess.run(
                 cmd,
                 capture_output=True,
                 text=True,
@@ -501,7 +505,7 @@ class IntegrationPackManager:
         
         # Import the package and look for integrations
         try:
-            module = __import__(package)
+            __import__(package)
             
             # Look for pack manifest
             manifest_path = None
@@ -516,7 +520,7 @@ class IntegrationPackManager:
                 return False
             
             # Read manifest
-            with open(manifest_path, 'r') as f:
+            with open(manifest_path) as f:
                 manifest_data = json.load(f)
             manifest = PackManifest.from_dict(manifest_data)
             
@@ -705,9 +709,8 @@ class IntegrationPackManager:
                             "use force=True to uninstall anyway"
                         )
                         return False
-                    else:
-                        # Unload the integration
-                        self._loader.unload(integration_name)
+                    # Unload the integration
+                    self._loader.unload(integration_name)
         
         # Remove from installed
         del self._installed[name]
@@ -747,13 +750,12 @@ class IntegrationPackManager:
         # Reinstall with new version
         if pack_info.source == "local":
             return self.install(pack_info.source_url, "local", version, force=True)
-        elif pack_info.source == "git":
+        if pack_info.source == "git":
             return self.install(pack_info.source_url, "git", version, force=True)
-        elif pack_info.source == "pypi":
+        if pack_info.source == "pypi":
             return self.install(pack_info.source_url, "pypi", version, force=True)
-        else:
-            logger.error(f"Unknown source for pack {name}: {pack_info.source}")
-            return False
+        logger.error(f"Unknown source for pack {name}: {pack_info.source}")
+        return False
     
     def list_installed(self) -> list[PackInfo]:
         """List all installed packs."""
@@ -786,7 +788,7 @@ class IntegrationPackManager:
         """Check for available updates for installed packs."""
         updates = []
         
-        for name, pack_info in self._installed.items():
+        for _name, pack_info in self._installed.items():
             if pack_info.source == "git":
                 update_info = self._check_git_update(pack_info)
                 if update_info:
@@ -886,7 +888,7 @@ class IntegrationPackManager:
             return False, errors
         
         try:
-            with open(manifest_file, 'r') as f:
+            with open(manifest_file) as f:
                 manifest_data = json.load(f)
             manifest = PackManifest.from_dict(manifest_data)
         except Exception as e:

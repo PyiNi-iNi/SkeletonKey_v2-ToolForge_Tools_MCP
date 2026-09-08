@@ -14,10 +14,7 @@ Install with: pip install boto3
 
 from __future__ import annotations
 
-import json
 import logging
-from dataclasses import dataclass, field
-from datetime import datetime
 from typing import Any
 
 from skeletonkey.integrations import (
@@ -26,10 +23,7 @@ from skeletonkey.integrations import (
     IntegrationCategory,
     IntegrationConfig,
     IntegrationDependency,
-    IntegrationHealthCheck,
-    IntegrationInfo,
     IntegrationPlatform,
-    IntegrationSandbox,
     IntegrationType,
     register_integration,
 )
@@ -176,8 +170,7 @@ class AWSS3Integration(Integration):
             response = self._client.list_buckets(MaxBuckets=1)
             if "Buckets" in response:
                 return ("healthy", "AWS S3 is accessible")
-            else:
-                return ("unhealthy", "AWS S3 list buckets failed")
+            return ("unhealthy", "AWS S3 list buckets failed")
         except Exception as e:
             return ("unhealthy", f"Health check failed: {e}")
     
@@ -419,7 +412,7 @@ class AWSS3Integration(Integration):
                 "count": len(buckets),
             }
         except Exception as e:
-            raise Exception(f"List buckets failed: {e}")
+            raise Exception(f"List buckets failed: {e}") from e
     
     def tool_bucket_exists(self, bucket: str) -> dict[str, Any]:
         """Check if a bucket exists."""
@@ -436,7 +429,7 @@ class AWSS3Integration(Integration):
                 "exists": False,
             }
         except Exception as e:
-            raise Exception(f"Check bucket exists failed: {e}")
+            raise Exception(f"Check bucket exists failed: {e}") from e
     
     def tool_create_bucket(
         self,
@@ -465,7 +458,7 @@ class AWSS3Integration(Integration):
                 "created": True,
             }
         except Exception as e:
-            raise Exception(f"Create bucket failed: {e}")
+            raise Exception(f"Create bucket failed: {e}") from e
     
     def tool_delete_bucket(self, bucket: str, force: bool = False) -> dict[str, Any]:
         """Delete an S3 bucket."""
@@ -481,7 +474,7 @@ class AWSS3Integration(Integration):
                 "deleted": True,
             }
         except Exception as e:
-            raise Exception(f"Delete bucket failed: {e}")
+            raise Exception(f"Delete bucket failed: {e}") from e
     
     def _empty_bucket(self, bucket: str) -> None:
         """Empty a bucket by deleting all objects."""
@@ -567,7 +560,7 @@ class AWSS3Integration(Integration):
                 "common_prefixes": common_prefixes,
             }
         except Exception as e:
-            raise Exception(f"List objects failed: {e}")
+            raise Exception(f"List objects failed: {e}") from e
     
     def tool_upload(
         self,
@@ -609,7 +602,7 @@ class AWSS3Integration(Integration):
                 "uploaded": True,
             }
         except Exception as e:
-            raise Exception(f"Upload failed: {e}")
+            raise Exception(f"Upload failed: {e}") from e
     
     def tool_download(
         self,
@@ -632,18 +625,17 @@ class AWSS3Integration(Integration):
                     "file_path": file_path,
                     "size": len(body),
                 }
-            else:
-                return {
-                    "bucket": bucket,
-                    "key": key,
-                    "downloaded": True,
-                    "body": body.decode() if isinstance(body, bytes) else body,
-                    "size": len(body),
-                    "content_type": response.get("ContentType"),
-                    "metadata": response.get("Metadata", {}),
-                }
+            return {
+                "bucket": bucket,
+                "key": key,
+                "downloaded": True,
+                "body": body.decode() if isinstance(body, bytes) else body,
+                "size": len(body),
+                "content_type": response.get("ContentType"),
+                "metadata": response.get("Metadata", {}),
+            }
         except Exception as e:
-            raise Exception(f"Download failed: {e}")
+            raise Exception(f"Download failed: {e}") from e
     
     def tool_delete_object(
         self,
@@ -665,7 +657,7 @@ class AWSS3Integration(Integration):
                 "deleted": True,
             }
         except Exception as e:
-            raise Exception(f"Delete object failed: {e}")
+            raise Exception(f"Delete object failed: {e}") from e
     
     def tool_head_object(
         self,
@@ -692,7 +684,7 @@ class AWSS3Integration(Integration):
                 "storage_class": response.get("StorageClass", "STANDARD"),
             }
         except Exception as e:
-            raise Exception(f"Head object failed: {e}")
+            raise Exception(f"Head object failed: {e}") from e
     
     def tool_copy_object(
         self,
@@ -730,7 +722,7 @@ class AWSS3Integration(Integration):
                 "etag": response.get("ETag"),
             }
         except Exception as e:
-            raise Exception(f"Copy object failed: {e}")
+            raise Exception(f"Copy object failed: {e}") from e
     
     def tool_generate_presigned_url(
         self,
@@ -772,4 +764,4 @@ class AWSS3Integration(Integration):
                 "expires_in": expires_in,
             }
         except Exception as e:
-            raise Exception(f"Generate presigned URL failed: {e}")
+            raise Exception(f"Generate presigned URL failed: {e}") from e

@@ -551,9 +551,8 @@ def _dispatch(args: argparse.Namespace, tk: Any, call: Any, cfg: Config) -> int:
                 else:
                     print(f"Enabled project: {project.name}")
                 return 0
-            else:
-                print(f"Project not found: {args.name}", file=sys.stderr)
-                return 1
+            print(f"Project not found: {args.name}", file=sys.stderr)
+            return 1
         if args.action == "disable":
             if not args.name:
                 print("usage: sk projects disable <project-name>", file=sys.stderr)
@@ -568,9 +567,8 @@ def _dispatch(args: argparse.Namespace, tk: Any, call: Any, cfg: Config) -> int:
                 else:
                     print(f"Disabled project: {project.name}")
                 return 0
-            else:
-                print(f"Project not found: {args.name}", file=sys.stderr)
-                return 1
+            print(f"Project not found: {args.name}", file=sys.stderr)
+            return 1
         if args.action == "scan":
             if not tk.projects:
                 print("Project indexer not available", file=sys.stderr)
@@ -597,10 +595,10 @@ def _dispatch(args: argparse.Namespace, tk: Any, call: Any, cfg: Config) -> int:
                 print(f"Enabled: {stats['enabled_projects']}")
                 print(f"Disabled: {stats['disabled_projects']}")
                 print(f"Total Tools: {stats['total_tools']}")
-                print(f"\nBy Type:")
+                print("\nBy Type:")
                 for ptype, count in sorted(stats['by_type'].items()):
                     print(f"  {ptype}: {count}")
-                print(f"\nBy Health:")
+                print("\nBy Health:")
                 for health, count in sorted(stats['by_health'].items()):
                     print(f"  {health}: {count}")
             return 0
@@ -619,7 +617,11 @@ def _dispatch(args: argparse.Namespace, tk: Any, call: Any, cfg: Config) -> int:
             platform_filter = getattr(args, "platform", None)
             
             # Convert string filters to enum values
-            from skeletonkey.integrations import IntegrationType, IntegrationCategory, IntegrationPlatform
+            from skeletonkey.integrations import (
+                IntegrationCategory,
+                IntegrationPlatform,
+                IntegrationType,
+            )
             
             type_enum = None
             if type_filter and type_filter != "all":
@@ -733,9 +735,8 @@ def _dispatch(args: argparse.Namespace, tk: Any, call: Any, cfg: Config) -> int:
                 else:
                     print(f"Enabled integration: {args.name}")
                 return 0
-            else:
-                print(f"Failed to enable integration: {args.name}", file=sys.stderr)
-                return 1
+            print(f"Failed to enable integration: {args.name}", file=sys.stderr)
+            return 1
         
         if args.action == "disable":
             if not args.name:
@@ -753,9 +754,8 @@ def _dispatch(args: argparse.Namespace, tk: Any, call: Any, cfg: Config) -> int:
                 else:
                     print(f"Disabled integration: {args.name}")
                 return 0
-            else:
-                print(f"Failed to disable integration: {args.name}", file=sys.stderr)
-                return 1
+            print(f"Failed to disable integration: {args.name}", file=sys.stderr)
+            return 1
         
         if args.action == "load":
             if not args.name:
@@ -772,9 +772,8 @@ def _dispatch(args: argparse.Namespace, tk: Any, call: Any, cfg: Config) -> int:
                 else:
                     print(f"Loaded integration: {args.name} (v{instance.info.version})")
                 return 0
-            else:
-                print(f"Failed to load integration: {args.name}", file=sys.stderr)
-                return 1
+            print(f"Failed to load integration: {args.name}", file=sys.stderr)
+            return 1
         
         if args.action == "unload":
             if not args.name:
@@ -791,9 +790,8 @@ def _dispatch(args: argparse.Namespace, tk: Any, call: Any, cfg: Config) -> int:
                 else:
                     print(f"Unloaded integration: {args.name}")
                 return 0
-            else:
-                print(f"Failed to unload integration: {args.name}", file=sys.stderr)
-                return 1
+            print(f"Failed to unload integration: {args.name}", file=sys.stderr)
+            return 1
         
         if args.action == "health":
             if not args.name:
@@ -812,20 +810,19 @@ def _dispatch(args: argparse.Namespace, tk: Any, call: Any, cfg: Config) -> int:
                         if result.get("message"):
                             print(f"      {result['message']}")
                 return 0
+            if not tk.integrations:
+                print("Integration manager not available", file=sys.stderr)
+                return 1
+            
+            result = tk.integrations.check_health(args.name)
+            if json_out:
+                print(compact_json(result))
             else:
-                if not tk.integrations:
-                    print("Integration manager not available", file=sys.stderr)
-                    return 1
-                
-                result = tk.integrations.check_health(args.name)
-                if json_out:
-                    print(compact_json(result))
-                else:
-                    status = "✓" if result["health"] == "healthy" else "✗"
-                    print(f"  {status} {args.name}: {result['health']}")
-                    if result.get("message"):
-                        print(f"      {result['message']}")
-                return 0
+                status = "✓" if result["health"] == "healthy" else "✗"
+                print(f"  {status} {args.name}: {result['health']}")
+                if result.get("message"):
+                    print(f"      {result['message']}")
+            return 0
         
         if args.action == "stats":
             if not tk.integrations:
@@ -841,16 +838,16 @@ def _dispatch(args: argparse.Namespace, tk: Any, call: Any, cfg: Config) -> int:
                 print(f"Enabled: {stats['enabled_integrations']}")
                 print(f"Disabled: {stats['disabled_integrations']}")
                 
-                print(f"\nBy Type:")
+                print("\nBy Type:")
                 for itype, count in sorted(stats['by_type'].items()):
                     print(f"  {itype}: {count}")
                 
-                print(f"\nBy Category:")
+                print("\nBy Category:")
                 for category, count in sorted(stats['by_category'].items()):
                     print(f"  {category}: {count}")
                 
                 if stats['by_platform']:
-                    print(f"\nBy Platform:")
+                    print("\nBy Platform:")
                     for platform, count in sorted(stats['by_platform'].items()):
                         print(f"  {platform}: {count}")
             return 0

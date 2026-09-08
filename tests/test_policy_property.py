@@ -54,6 +54,16 @@ BURST: dict[str, dict] = {
     "live.snapshot": {"op": "list"},
     "live.scene": {"op": "clear"},
     "live.serve": {"port": 0},
+    # integration management (P5.1-P5.4): the management tools are mutating,
+    # so they must be refused by the same walls before any instance/side effect.
+    "integrations.load": {"name": "simple-demo"},
+    "integrations.unload": {"name": "simple-demo"},
+    "integrations.enable": {"name": "simple-demo"},
+    "integrations.disable": {"name": "simple-demo"},
+    "integrations.config": {"name": "simple-demo", "get": False, "set": {"greeting": "Hi"}},
+    "integrations.secrets": {"action": "set", "name": "simple-demo", "key": "burst", "value": "secret"},
+    "integrations.packs.install": {"name": "no-such-pack"},
+    "integrations.packs.uninstall": {"name": "no-such-pack"},
 }
 
 WALL_CODES = {

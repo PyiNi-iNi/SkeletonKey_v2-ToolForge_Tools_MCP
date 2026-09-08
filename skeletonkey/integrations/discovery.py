@@ -18,17 +18,16 @@ from __future__ import annotations
 import importlib
 import importlib.util
 import logging
-import os
 import sys
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 # Type checking imports - these are only used for type hints
 if TYPE_CHECKING:
     # These imports are safe because they're only evaluated during type checking
-    from . import IntegrationInfo, IntegrationType
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +59,7 @@ class DiscoveryResult:
     
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary, importing IntegrationInfo only when needed."""
-        IntegrationInfo = _get_integration_info_class()
+        _get_integration_info_class()
         return {
             "integrations": [i.to_dict() for i in self.integrations],
             "errors": self.errors,
@@ -167,8 +166,8 @@ class FilesystemDiscoverySource(DiscoverySource):
         errors = []
         warnings = []
         
-        IntegrationInfo = _get_integration_info_class()
-        IntegrationType = _get_integration_type_class()
+        _get_integration_info_class()
+        _get_integration_type_class()
         
         for base_path in self.paths:
             path = Path(base_path)
@@ -184,10 +183,7 @@ class FilesystemDiscoverySource(DiscoverySource):
                     errors.append(f"Failed to load {path}: {e}")
             elif path.is_dir():
                 # Directory - search for integration files
-                if self.recursive:
-                    files = path.rglob(self.pattern)
-                else:
-                    files = path.glob(self.pattern)
+                files = path.rglob(self.pattern) if self.recursive else path.glob(self.pattern)
                 
                 for file_path in files:
                     if file_path.is_file():
@@ -291,7 +287,7 @@ class PackageDiscoverySource(DiscoverySource):
                 
                 # Check if it's a skeletonkey integration package
                 if name.startswith(self.package_prefix):
-                    integration_name = name[len(self.package_prefix):]
+                    name[len(self.package_prefix):]
                     
                     try:
                         # Import the package
@@ -352,7 +348,7 @@ class RegistryDiscoverySource(DiscoverySource):
         errors = []
         warnings = []
         
-        IntegrationInfo = _get_integration_info_class()
+        _get_integration_info_class()
         
         try:
             # Import registry here to avoid circular imports
@@ -380,16 +376,13 @@ class ConfigDiscoverySource(DiscoverySource):
         errors = []
         warnings = []
         
-        IntegrationInfo = _get_integration_info_class()
+        _get_integration_info_class()
         
         try:
             from ..core.config import Config
             
             # Load config
-            if self.config_path:
-                config = Config.load(path=self.config_path)
-            else:
-                config = Config.load()
+            config = Config.load(path=self.config_path) if self.config_path else Config.load()
             
             # Get integrations config
             integrations_config = getattr(config, 'integrations', None)
@@ -525,7 +518,7 @@ class IntegrationDiscovery:
         Returns:
             list: List of IntegrationInfo objects
         """
-        IntegrationInfo = _get_integration_info_class()
+        _get_integration_info_class()
         
         if not refresh and self._cache_valid and self._cache:
             return list(self._cache.values())
@@ -590,7 +583,7 @@ class IntegrationDiscovery:
         Returns:
             IntegrationInfo: Info about the integration, or None if not found
         """
-        IntegrationInfo = _get_integration_info_class()
+        _get_integration_info_class()
         
         if not self._cache_valid:
             self.discover()

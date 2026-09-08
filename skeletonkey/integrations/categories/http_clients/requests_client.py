@@ -17,11 +17,8 @@ Install with: pip install requests
 
 from __future__ import annotations
 
-import json
 import logging
-from dataclasses import dataclass, field
 from typing import Any
-from urllib.parse import urlparse
 
 from skeletonkey.integrations import (
     Integration,
@@ -29,10 +26,7 @@ from skeletonkey.integrations import (
     IntegrationCategory,
     IntegrationConfig,
     IntegrationDependency,
-    IntegrationHealthCheck,
-    IntegrationInfo,
     IntegrationPlatform,
-    IntegrationSandbox,
     IntegrationType,
     register_integration,
 )
@@ -184,8 +178,7 @@ class RequestsIntegration(Integration):
             
             if response.status_code == 200:
                 return ("healthy", "Requests client is working")
-            else:
-                return ("degraded", f"Health check returned {response.status_code}")
+            return ("degraded", f"Health check returned {response.status_code}")
         except Exception as e:
             return ("degraded", f"Health check failed (may be offline): {e}")
     
@@ -417,7 +410,7 @@ class RequestsIntegration(Integration):
             
             return self._format_response(response, stream=stream)
         except Exception as e:
-            raise Exception(f"GET request failed: {e}")
+            raise Exception(f"GET request failed: {e}") from e
     
     def tool_post(
         self,
@@ -445,7 +438,7 @@ class RequestsIntegration(Integration):
             
             return self._format_response(response, stream=stream)
         except Exception as e:
-            raise Exception(f"POST request failed: {e}")
+            raise Exception(f"POST request failed: {e}") from e
     
     def tool_put(
         self,
@@ -471,7 +464,7 @@ class RequestsIntegration(Integration):
             
             return self._format_response(response)
         except Exception as e:
-            raise Exception(f"PUT request failed: {e}")
+            raise Exception(f"PUT request failed: {e}") from e
     
     def tool_delete(
         self,
@@ -493,7 +486,7 @@ class RequestsIntegration(Integration):
             
             return self._format_response(response)
         except Exception as e:
-            raise Exception(f"DELETE request failed: {e}")
+            raise Exception(f"DELETE request failed: {e}") from e
     
     def tool_patch(
         self,
@@ -519,7 +512,7 @@ class RequestsIntegration(Integration):
             
             return self._format_response(response)
         except Exception as e:
-            raise Exception(f"PATCH request failed: {e}")
+            raise Exception(f"PATCH request failed: {e}") from e
     
     def tool_head(
         self,
@@ -541,7 +534,7 @@ class RequestsIntegration(Integration):
             
             return self._format_response(response)
         except Exception as e:
-            raise Exception(f"HEAD request failed: {e}")
+            raise Exception(f"HEAD request failed: {e}") from e
     
     def _format_response(self, response: Any, stream: bool = False) -> dict[str, Any]:
         """Format a response for output."""

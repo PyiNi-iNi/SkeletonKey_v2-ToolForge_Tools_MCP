@@ -16,9 +16,7 @@ Install with: pip install redis
 
 from __future__ import annotations
 
-import json
 import logging
-from dataclasses import dataclass, field
 from typing import Any
 
 from skeletonkey.integrations import (
@@ -27,10 +25,7 @@ from skeletonkey.integrations import (
     IntegrationCategory,
     IntegrationConfig,
     IntegrationDependency,
-    IntegrationHealthCheck,
-    IntegrationInfo,
     IntegrationPlatform,
-    IntegrationSandbox,
     IntegrationType,
     register_integration,
 )
@@ -473,7 +468,7 @@ class RedisIntegration(Integration):
                 "exists": value is not None,
             }
         except Exception as e:
-            raise Exception(f"Get failed: {e}")
+            raise Exception(f"Get failed: {e}") from e
     
     def tool_set(
         self,
@@ -499,7 +494,7 @@ class RedisIntegration(Integration):
                 "set": result,
             }
         except Exception as e:
-            raise Exception(f"Set failed: {e}")
+            raise Exception(f"Set failed: {e}") from e
     
     def tool_delete(self, key: str, many: bool = False) -> dict[str, Any]:
         """Delete a key or multiple keys."""
@@ -512,14 +507,13 @@ class RedisIntegration(Integration):
                     "deleted": result,
                     "keys": key,
                 }
-            else:
-                result = self._client.delete(key)
-                return {
-                    "deleted": result == 1,
-                    "key": key,
-                }
+            result = self._client.delete(key)
+            return {
+                "deleted": result == 1,
+                "key": key,
+            }
         except Exception as e:
-            raise Exception(f"Delete failed: {e}")
+            raise Exception(f"Delete failed: {e}") from e
     
     def tool_exists(self, key: str, many: bool = False) -> dict[str, Any]:
         """Check if a key exists."""
@@ -533,14 +527,13 @@ class RedisIntegration(Integration):
                     "count": result,
                     "keys": key,
                 }
-            else:
-                result = self._client.exists(key)
-                return {
-                    "exists": result == 1,
-                    "key": key,
-                }
+            result = self._client.exists(key)
+            return {
+                "exists": result == 1,
+                "key": key,
+            }
         except Exception as e:
-            raise Exception(f"Exists check failed: {e}")
+            raise Exception(f"Exists check failed: {e}") from e
     
     def tool_keys(self, pattern: str = "*", limit: int | None = None) -> dict[str, Any]:
         """List keys matching a pattern."""
@@ -563,7 +556,7 @@ class RedisIntegration(Integration):
                 "pattern": pattern,
             }
         except Exception as e:
-            raise Exception(f"Keys list failed: {e}")
+            raise Exception(f"Keys list failed: {e}") from e
     
     def tool_expire(
         self,
@@ -585,7 +578,7 @@ class RedisIntegration(Integration):
                 "expired": result == 1,
             }
         except Exception as e:
-            raise Exception(f"Expire failed: {e}")
+            raise Exception(f"Expire failed: {e}") from e
     
     def tool_ttl(self, key: str) -> dict[str, Any]:
         """Get the remaining time to live for a key."""
@@ -598,7 +591,7 @@ class RedisIntegration(Integration):
                 "no_expiry": ttl == -1,
             }
         except Exception as e:
-            raise Exception(f"TTL check failed: {e}")
+            raise Exception(f"TTL check failed: {e}") from e
     
     def tool_hget(self, key: str, field: str) -> dict[str, Any]:
         """Get a field value from a hash."""
@@ -611,7 +604,7 @@ class RedisIntegration(Integration):
                 "exists": value is not None,
             }
         except Exception as e:
-            raise Exception(f"HGET failed: {e}")
+            raise Exception(f"HGET failed: {e}") from e
     
     def tool_hset(
         self,
@@ -631,15 +624,14 @@ class RedisIntegration(Integration):
                     "set": result,
                     "fields": list(field.keys()),
                 }
-            else:
-                result = self._client.hset(key, field, value)
-                return {
-                    "key": key,
-                    "field": field,
-                    "set": result,
-                }
+            result = self._client.hset(key, field, value)
+            return {
+                "key": key,
+                "field": field,
+                "set": result,
+            }
         except Exception as e:
-            raise Exception(f"HSET failed: {e}")
+            raise Exception(f"HSET failed: {e}") from e
     
     def tool_hgetall(self, key: str) -> dict[str, Any]:
         """Get all fields and values from a hash."""
@@ -651,7 +643,7 @@ class RedisIntegration(Integration):
                 "count": len(result),
             }
         except Exception as e:
-            raise Exception(f"HGETALL failed: {e}")
+            raise Exception(f"HGETALL failed: {e}") from e
     
     def tool_lpush(self, key: str, values: list[str]) -> dict[str, Any]:
         """Push elements to the left of a list."""
@@ -663,7 +655,7 @@ class RedisIntegration(Integration):
                 "length": result,
             }
         except Exception as e:
-            raise Exception(f"LPUSH failed: {e}")
+            raise Exception(f"LPUSH failed: {e}") from e
     
     def tool_rpush(self, key: str, values: list[str]) -> dict[str, Any]:
         """Push elements to the right of a list."""
@@ -675,7 +667,7 @@ class RedisIntegration(Integration):
                 "length": result,
             }
         except Exception as e:
-            raise Exception(f"RPUSH failed: {e}")
+            raise Exception(f"RPUSH failed: {e}") from e
     
     def tool_lpop(self, key: str, count: int = 1) -> dict[str, Any]:
         """Remove and return the first element(s) of a list."""
@@ -687,15 +679,14 @@ class RedisIntegration(Integration):
                     "value": result,
                     "popped": result is not None,
                 }
-            else:
-                results = self._client.lpop(key, count)
-                return {
-                    "key": key,
-                    "values": results,
-                    "popped": len(results),
-                }
+            results = self._client.lpop(key, count)
+            return {
+                "key": key,
+                "values": results,
+                "popped": len(results),
+            }
         except Exception as e:
-            raise Exception(f"LPOP failed: {e}")
+            raise Exception(f"LPOP failed: {e}") from e
     
     def tool_rpop(self, key: str, count: int = 1) -> dict[str, Any]:
         """Remove and return the last element(s) of a list."""
@@ -707,15 +698,14 @@ class RedisIntegration(Integration):
                     "value": result,
                     "popped": result is not None,
                 }
-            else:
-                results = self._client.rpop(key, count)
-                return {
-                    "key": key,
-                    "values": results,
-                    "popped": len(results),
-                }
+            results = self._client.rpop(key, count)
+            return {
+                "key": key,
+                "values": results,
+                "popped": len(results),
+            }
         except Exception as e:
-            raise Exception(f"RPOP failed: {e}")
+            raise Exception(f"RPOP failed: {e}") from e
     
     def tool_lrange(self, key: str, start: int = 0, stop: int = -1) -> dict[str, Any]:
         """Get a range of elements from a list."""
@@ -729,7 +719,7 @@ class RedisIntegration(Integration):
                 "stop": stop,
             }
         except Exception as e:
-            raise Exception(f"LRANGE failed: {e}")
+            raise Exception(f"LRANGE failed: {e}") from e
     
     def tool_llen(self, key: str) -> dict[str, Any]:
         """Get the length of a list."""
@@ -740,4 +730,4 @@ class RedisIntegration(Integration):
                 "length": result,
             }
         except Exception as e:
-            raise Exception(f"LLEN failed: {e}")
+            raise Exception(f"LLEN failed: {e}") from e

@@ -8,7 +8,7 @@ The integrations are registered automatically when this module is imported.
 
 from __future__ import annotations
 
-from typing import Any
+import importlib.util
 
 from .. import (
     Integration,
@@ -24,18 +24,13 @@ from .. import (
 # Import simple demo (no external dependencies)
 from .simple_demo import SimpleDemoIntegration
 
-# Try to import integrations with external dependencies
-try:
-    from .rest_api import RESTAPIIntegration
-    _has_rest = True
-except ImportError:
-    _has_rest = False
-
-try:
-    from .aws_devkit import AWSDevKitIntegration
-    _has_aws = True
-except ImportError:
-    _has_aws = False
+# Import integrations that carry optional third-party dependencies only when the
+# dependency is actually importable (find_spec avoids importing the dependency
+# merely to discover whether the integration can register).
+if importlib.util.find_spec("httpx") is not None:
+    from .rest_api import RESTAPIIntegration  # noqa: F401
+if importlib.util.find_spec("boto3") is not None:
+    from .aws_devkit import AWSDevKitIntegration  # noqa: F401
 
 __all__ = [
     'Integration',
@@ -45,11 +40,6 @@ __all__ = [
     'IntegrationDependency',
     'IntegrationPlatform',
     'IntegrationType',
-    'register_integration',
     'SimpleDemoIntegration',
+    'register_integration',
 ]
-
-if _has_rest:
-    __all__.append('RESTAPIIntegration')
-if _has_aws:
-    __all__.append('AWSDevKitIntegration')
