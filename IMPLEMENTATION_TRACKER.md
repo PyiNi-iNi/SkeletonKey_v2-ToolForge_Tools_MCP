@@ -408,8 +408,14 @@ This document tracks the implementation progress of comprehensive integration su
 - [x] Existing GitHub/Stripe stub-server tests pass through the shared transport
 - [x] `DemoREST` test fixture generated from the base (`tests/test_rest_integration.py`)
 
+**Delivered in this slice:**
+- [x] Opt-in safe-request retries for 429/5xx responses with exponential backoff
+- [x] Non-idempotent writes are never retried by the shared base
+- [x] Retry behavior covered by `tests/test_rest_integration.py`
+
 **Next:**
-- [ ] Add provider-specific retry/rate-limit policy only where an integration requires it
+- [ ] Runtime output secret scanning
+- [ ] End-to-end pack upgrade migration tests
 
 ## Configuration Reference
 

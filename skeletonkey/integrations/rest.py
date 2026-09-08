@@ -14,6 +14,7 @@ state between calls.
 from __future__ import annotations
 
 import json
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -39,6 +40,8 @@ class RestIntegration(Integration):
         super().__init__(config)
         self._base_url = str(config.config.get("base_url") or self.default_base_url).rstrip("/")
         self._timeout = float(config.config.get("timeout", 30))
+        self._retries = max(0, int(config.config.get("retries", 0)))
+        self._retry_backoff = max(0.0, float(config.config.get("retry_backoff", 0.1)))
         self._default_headers = {
             str(k): str(v) for k, v in (config.config.get("headers") or {}).items()
         }
@@ -75,7 +78,35 @@ class RestIntegration(Integration):
         body: Any = None,
         params: Any = None,
     ) -> dict[str, Any]:
-        """Make a request and return ``status``, ``headers`` and decoded data."""
+        """Make a request, optionally retrying safe transient responses.
+
+        Retries are opt-in (``config.retries``) and limited to idempotent
+        methods. This prevents duplicate writes while allowing providers to
+        enable bounded recovery from rate limits and transient 5xx responses.
+        """
+        method = method.upper()
+        attempts = self._retries if method in {"GET", "HEAD", "OPTIONS"} else 0
+        for attempt in range(attempts + 1):
+            response = self._request_once(
+                method, path, query=query, body=body, params=params
+            )
+            if response["status"] not in {429, 500, 502, 503, 504} or attempt == attempts:
+                return response
+            delay = self._retry_backoff * (2**attempt)
+            if delay:
+                time.sleep(delay)
+        raise AssertionError("unreachable")
+
+    def _request_once(
+        self,
+        method: str,
+        path: str,
+        *,
+        query: dict[str, Any] | None = None,
+        body: Any = None,
+        params: Any = None,
+    ) -> dict[str, Any]:
+        """Make one request and return ``status``, ``headers`` and data."""
         url = path if path.startswith(("http://", "https://")) else self._base_url + path
         clean = {k: v for k, v in (query or {}).items() if v is not None}
         if clean:

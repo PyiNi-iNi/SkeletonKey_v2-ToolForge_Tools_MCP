@@ -69,3 +69,31 @@ def test_rest_base_pagination_normalizes_common_payload():
     inst = DemoREST(IntegrationConfig(name="demo", integration_id="demo", config={}))
     result = inst._paged({"data": {"data": [{"id": 1}], "has_more": True}})
     assert result == {"items": [{"id": 1}], "count": 1, "has_more": True}
+
+
+def test_rest_base_retries_transient_reads_but_not_writes(monkeypatch):
+    inst = DemoREST(
+        IntegrationConfig(
+            name="demo", integration_id="demo", config={"retries": 2, "retry_backoff": 0}
+        )
+    )
+    responses = iter(
+        [
+            {"status": 503, "headers": {}, "data": {"error": "busy"}},
+            {"status": 429, "headers": {}, "data": {"error": "busy"}},
+            {"status": 200, "headers": {}, "data": {"ok": True}},
+        ]
+    )
+    calls = []
+    monkeypatch.setattr(inst, "_request_once", lambda *args, **kwargs: (calls.append(args[0]) or next(responses)))
+    assert inst._request("GET", "/health")["data"] == {"ok": True}
+    assert calls == ["GET", "GET", "GET"]
+
+    calls.clear()
+    monkeypatch.setattr(
+        inst,
+        "_request_once",
+        lambda *args, **kwargs: (calls.append(args[0]) or {"status": 503, "headers": {}, "data": {}}),
+    )
+    assert inst._request("POST", "/write")["status"] == 503
+    assert calls == ["POST"]
