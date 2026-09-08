@@ -361,6 +361,9 @@ class Integration(ABC):
     _integration_keywords: list[str] = field(default_factory=list)
     _integration_dependencies: list[IntegrationDependency] = field(default_factory=list)
     _integration_capabilities: list[IntegrationCapability] = field(default_factory=list)
+    # A real list (not the field() idiom used above): unregistered classes read
+    # it directly, and registration replaces it wholesale.
+    _integration_conflicts: list[str] = []  # noqa: RUF012
     
     def __init__(self, config: IntegrationConfig):
         """Initialize the integration with configuration."""
@@ -414,6 +417,7 @@ class Integration(ABC):
             keywords=self._integration_keywords,
             dependencies=self._integration_dependencies,
             capabilities=self._integration_capabilities,
+            conflicts=list(self._integration_conflicts or []),
         )
     
     @abstractmethod
@@ -524,6 +528,7 @@ class IntegrationRegistry:
         keywords: list[str] | None = None,
         dependencies: list[IntegrationDependency] | None = None,
         capabilities: list[IntegrationCapability] | None = None,
+        conflicts: list[str] | None = None,
     ) -> type[Integration]:
         """Register an integration class."""
         # Set class attributes
@@ -539,6 +544,7 @@ class IntegrationRegistry:
         integration_class._integration_keywords = keywords or []
         integration_class._integration_dependencies = dependencies or []
         integration_class._integration_capabilities = capabilities or []
+        integration_class._integration_conflicts = conflicts or []
         
         # Register the class
         self._integrations[integration_class._integration_name] = integration_class
@@ -551,6 +557,10 @@ class IntegrationRegistry:
         """Get an integration class by name."""
         return self._integrations.get(name)
     
+    def has_integration(self, name: str) -> bool:
+        """Check whether an integration class is registered under this name."""
+        return name in self._integrations
+
     def get_integration_info(self, name: str) -> IntegrationInfo | None:
         """Get integration metadata by name."""
         integration_class = self._integrations.get(name)
@@ -564,7 +574,40 @@ class IntegrationRegistry:
             instance = integration_class(dummy_config)
             return instance.info
         return None
-    
+
+    def register_integration(
+        self,
+        integration_class: type[Integration],
+        info: IntegrationInfo,
+    ) -> type[Integration]:
+        """Register a class discovered dynamically (loader / pack path).
+
+        The decorator path (``register``) takes metadata as keyword arguments;
+        the dynamic loader has an ``IntegrationInfo`` in hand instead, and this
+        is the same operation expressed in that form. ``IntegrationLoader.load
+        _from_module`` / ``load_from_path`` call it - before these two methods
+        existed, every file/module-based load failed with ``AttributeError``,
+        masked inside a ``LoadResult.errors`` string.
+        """
+        integration_class._integration_name = info.name
+        integration_class._integration_title = info.title
+        integration_class._integration_version = info.version
+        integration_class._integration_type = info.integration_type
+        integration_class._integration_category = info.category
+        integration_class._integration_platform = info.platform
+        integration_class._integration_description = info.description
+        integration_class._integration_author = info.author or ""
+        integration_class._integration_license = info.license or "MIT"
+        integration_class._integration_keywords = list(info.keywords or [])
+        integration_class._integration_dependencies = list(info.dependencies or [])
+        integration_class._integration_capabilities = list(info.capabilities or [])
+        integration_class._integration_conflicts = list(info.conflicts or [])
+        self._integrations[info.name] = integration_class
+
+        logger.debug(f"Registered integration: {info.name} (dynamic)")
+
+        return integration_class
+
     def list_integrations(self) -> list[IntegrationInfo]:
         """List all registered integrations."""
         infos = []
@@ -685,6 +728,7 @@ def register_integration(
     keywords: list[str] | None = None,
     dependencies: list[IntegrationDependency] | None = None,
     capabilities: list[IntegrationCapability] | None = None,
+    conflicts: list[str] | None = None,
 ) -> Callable[[type[Integration]], type[Integration]]:
     """Decorator to register an integration class.
     
@@ -736,6 +780,7 @@ def register_integration(
             keywords=keywords,
             dependencies=dependencies,
             capabilities=capabilities,
+            conflicts=conflicts,
         )
     
     return decorator
@@ -1413,8 +1458,11 @@ class IntegrationManager:
         self._unregister_tools(name)
         self._instances.pop(name, None)
         
-        # Load again
-        result = self._loader.load(name, config)
+        # Load again. The loader's own reload() unloads the live instance
+        # before loading: loader.load() short-circuits on an already-loaded
+        # name, so calling it here would silently reuse the old instance and
+        # ignore the new config.
+        result = self._loader.reload(name, config)
         if result.success and result.instance:
             self._instances[name] = result.instance
             self._register_tools(name)
