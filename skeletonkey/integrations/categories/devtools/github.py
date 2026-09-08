@@ -24,23 +24,20 @@ from __future__ import annotations
 
 import base64
 import importlib.util
-import json
 import logging
 import os
-import urllib.error
 import urllib.parse
-import urllib.request
 from typing import Any
 
 from skeletonkey.core.errors import E, SkeletonKeyError
 from skeletonkey.integrations import (
-    Integration,
     IntegrationCapability,
     IntegrationCategory,
     IntegrationConfig,
     IntegrationDependency,
     IntegrationPlatform,
     IntegrationType,
+    RestIntegration,
     register_integration,
 )
 
@@ -79,7 +76,7 @@ USER_AGENT = "skeletonkey-toolforge"
         ),
     ],
 )
-class GitHubIntegration(Integration):
+class GitHubIntegration(RestIntegration):
     """GitHub REST API integration.
 
     Tools are grouped by resource (``github.repo.*``, ``github.issues.*``,
@@ -149,93 +146,20 @@ class GitHubIntegration(Integration):
         return self._token
 
     # ------------------------------------------------------------------ transport
-    def _request(
-        self,
-        method: str,
-        path: str,
-        *,
-        query: dict[str, Any] | None = None,
-        body: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        """Perform one GitHub API request and return a normalized envelope."""
-        url = self._base_url + path
-        if query:
-            clean = {k: v for k, v in query.items() if v is not None}
-            if clean:
-                url += "?" + urllib.parse.urlencode(clean, doseq=True)
-
+    def _auth_headers(self) -> dict[str, str]:
         headers = {
             "Accept": "application/vnd.github+json",
-            "User-Agent": USER_AGENT,
             "X-GitHub-Api-Version": API_VERSION,
         }
         if self._token:
             headers["Authorization"] = f"Bearer {self._token}"
+        return headers
 
-        data = None
-        if body is not None:
-            data = json.dumps(body).encode("utf-8")
-            headers["Content-Type"] = "application/json"
-
-        req = urllib.request.Request(
-            url, data=data, headers=headers, method=method.upper()
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=self._timeout) as resp:
-                raw = resp.read()
-                status = int(resp.status)
-                resp_headers = {k.lower(): v for k, v in resp.headers.items()}
-        except urllib.error.HTTPError as exc:
-            raw = exc.read()
-            status = int(exc.code)
-            resp_headers = {k.lower(): v for k, v in exc.headers.items()}
-        except urllib.error.URLError as exc:
-            raise SkeletonKeyError(
-                E.REMOTE,
-                f"GitHub API unreachable: {exc.reason}",
-                details={"path": path},
-            ) from exc
-        except TimeoutError as exc:
-            raise SkeletonKeyError(
-                E.TIMEOUT,
-                f"GitHub API timed out after {self._timeout}s",
-                details={"timeout_s": self._timeout, "path": path},
-            ) from exc
-
-        parsed: Any = None
-        if raw:
-            try:
-                parsed = json.loads(raw.decode("utf-8"))
-            except (ValueError, UnicodeDecodeError):
-                parsed = raw.decode("utf-8", errors="replace")
-
-        return {
-            "status": status,
-            "headers": resp_headers,
-            "data": parsed,
-            "rate": self._rate_info(resp_headers),
-            "next": self._next_url(resp_headers),
-        }
-
-    def _api(
-        self,
-        method: str,
-        path: str,
-        *,
-        query: dict[str, Any] | None = None,
-        body: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        """Like ``_request`` but raises ``SkeletonKeyError`` on HTTP >= 400."""
-        resp = self._request(method, path, query=query, body=body)
-        if resp["status"] >= 400:
-            detail = resp["data"]
-            message = detail.get("message") if isinstance(detail, dict) else str(detail)
-            raise SkeletonKeyError(
-                E.REMOTE,
-                f"GitHub API {path} -> HTTP {resp['status']}: {message}",
-                details={"status": resp["status"], "body": detail, "rate": resp["rate"]},
-            )
-        return resp
+    def _request(self, method: str, path: str, *, query=None, body=None, params=None):
+        response = super()._request(method, path, query=query, body=body, params=params)
+        response["rate"] = self._rate_info(response["headers"])
+        response["next"] = self._next_url(response["headers"])
+        return response
 
     @staticmethod
     def _rate_info(headers: dict[str, str]) -> dict[str, int] | None:

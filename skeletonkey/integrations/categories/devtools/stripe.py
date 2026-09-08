@@ -21,23 +21,20 @@ every call. It resolves from config (``token``/``api_key``),
 from __future__ import annotations
 
 import importlib.util
-import json
 import logging
 import os
-import urllib.error
 import urllib.parse
-import urllib.request
 from typing import Any
 
 from skeletonkey.core.errors import E, SkeletonKeyError
 from skeletonkey.integrations import (
-    Integration,
     IntegrationCapability,
     IntegrationCategory,
     IntegrationConfig,
     IntegrationDependency,
     IntegrationPlatform,
     IntegrationType,
+    RestIntegration,
     register_integration,
 )
 
@@ -75,7 +72,7 @@ USER_AGENT = "skeletonkey-toolforge"
         ),
     ],
 )
-class StripeIntegration(Integration):
+class StripeIntegration(RestIntegration):
     """Stripe REST API integration.
 
     Stripe uses form-encoded request bodies (not JSON) and OAuth-free Bearer
@@ -150,119 +147,45 @@ class StripeIntegration(Integration):
         return self._api_key
 
     # ------------------------------------------------------------------ transport
-    def _request(
-        self,
-        method: str,
-        path: str,
-        *,
-        query: dict[str, Any] | None = None,
-        params: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        """Perform one Stripe API request and return a normalized envelope."""
-        url = self._base_url + path
-        if query:
-            clean = {k: v for k, v in query.items() if v is not None}
-            if clean:
-                url += "?" + urllib.parse.urlencode(clean, doseq=True)
+    def _auth_headers(self) -> dict[str, str]:
+        return {"Authorization": f"Bearer {self._require_key()}"}
 
-        headers = {
-            "Authorization": f"Bearer {self._require_key()}",
-            "User-Agent": USER_AGENT,
-        }
-        data = None
-        if method in ("POST", "PUT", "PATCH") and params:
-            # Stripe accepts application/x-www-form-urlencoded (not JSON).
-            data = urllib.parse.urlencode(_flatten(params)).encode("utf-8")
-            headers["Content-Type"] = "application/x-www-form-urlencoded"
-
-        req = urllib.request.Request(
-            url, data=data, headers=headers, method=method.upper()
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=self._timeout) as resp:
-                raw = resp.read()
-                status = int(resp.status)
-                resp_headers = {k.lower(): v for k, v in resp.headers.items()}
-        except urllib.error.HTTPError as exc:
-            raw = exc.read()
-            status = int(exc.code)
-            resp_headers = {k.lower(): v for k, v in exc.headers.items()}
-        except urllib.error.URLError as exc:
-            raise SkeletonKeyError(
-                E.REMOTE,
-                f"Stripe API unreachable: {exc.reason}",
-                details={"path": path},
-            ) from exc
-        except TimeoutError as exc:
-            raise SkeletonKeyError(
-                E.TIMEOUT,
-                f"Stripe API timed out after {self._timeout}s",
-                details={"timeout_s": self._timeout, "path": path},
-            ) from exc
-
-        parsed: Any = None
-        if raw:
-            try:
-                parsed = json.loads(raw.decode("utf-8"))
-            except (ValueError, UnicodeDecodeError):
-                parsed = raw.decode("utf-8", errors="replace")
-
-        request_id = resp_headers.get("request-id")
-        return {
-            "status": status,
-            "data": parsed,
-            "request_id": request_id,
+    def _encode_body(self, method: str, body: Any):
+        if body is None or method.upper() in {"GET", "HEAD"}:
+            return None, {}
+        return urllib.parse.urlencode(_flatten(body)).encode("utf-8"), {
+            "Content-Type": "application/x-www-form-urlencoded"
         }
 
-    def _api(
-        self,
-        method: str,
-        path: str,
-        *,
-        query: dict[str, Any] | None = None,
-        params: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        """Like ``_request`` but raises ``SkeletonKeyError`` on HTTP >= 400."""
-        resp = self._request(method, path, query=query, params=params)
-        if resp["status"] >= 400:
-            detail = resp["data"]
-            error = detail.get("error") if isinstance(detail, dict) else None
-            if isinstance(error, dict):
-                message = error.get("message") or str(detail)
-                raise SkeletonKeyError(
-                    E.REMOTE,
-                    f"Stripe API {path} -> HTTP {resp['status']}: {message}",
-                    details={
-                        "status": resp["status"],
-                        "stripe_code": error.get("code"),
-                        "type": error.get("type"),
-                        "request_id": resp["request_id"],
-                    },
-                )
-            raise SkeletonKeyError(
-                E.REMOTE,
-                f"Stripe API {path} -> HTTP {resp['status']}",
-                details={"status": resp["status"], "body": detail},
+    def _remote_error(self, response: dict[str, Any]):
+        detail = response["data"]
+        error = detail.get("error") if isinstance(detail, dict) else None
+        if isinstance(error, dict):
+            return (
+                error.get("message") or str(detail),
+                {"stripe_code": error.get("code"), "type": error.get("type")},
             )
-        return resp
+        return (str(detail or "remote request failed"), {"body": detail})
+
+    def _request(self, method: str, path: str, *, query=None, params=None, body=None):
+        return super()._request(method, path, query=query, body=body, params=params)
 
     def _envelope(self, resp: dict[str, Any]) -> dict[str, Any]:
-        """Attach the request id to a passthrough payload."""
         data = resp["data"]
-        if isinstance(data, dict) and resp["request_id"]:
+        request_id = resp["headers"].get("request-id")
+        if isinstance(data, dict) and request_id:
             data = dict(data)
-            data["_request_id"] = resp["request_id"]
+            data["_request_id"] = request_id
         return data
 
     def _paged(self, resp: dict[str, Any]) -> dict[str, Any]:
-        """Wrap a Stripe list payload (``{object:list, data, has_more}``)."""
         data = resp["data"]
         if isinstance(data, dict) and isinstance(data.get("data"), list):
             return {
                 "items": data["data"],
                 "count": len(data["data"]),
                 "has_more": bool(data.get("has_more", False)),
-                "_request_id": resp["request_id"],
+                "_request_id": resp["headers"].get("request-id"),
             }
         return self._envelope(resp)
 

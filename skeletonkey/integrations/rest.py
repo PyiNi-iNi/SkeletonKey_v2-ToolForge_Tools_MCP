@@ -73,6 +73,7 @@ class RestIntegration(Integration):
         *,
         query: dict[str, Any] | None = None,
         body: Any = None,
+        params: Any = None,
     ) -> dict[str, Any]:
         """Make a request and return ``status``, ``headers`` and decoded data."""
         url = path if path.startswith(("http://", "https://")) else self._base_url + path
@@ -80,6 +81,8 @@ class RestIntegration(Integration):
         if clean:
             url += ("&" if "?" in url else "?") + urllib.parse.urlencode(clean, doseq=True)
         method = method.upper()
+        if body is None and params is not None:
+            body = params
         data, body_headers = self._encode_body(method, body)
         headers = {"User-Agent": self.user_agent, **self._default_headers, **self._auth_headers(), **body_headers}
         req = urllib.request.Request(url, data=data, headers=headers, method=method)
@@ -102,8 +105,8 @@ class RestIntegration(Integration):
             parsed = raw.decode("utf-8", errors="replace")
         return {"status": status, "headers": response_headers, "data": parsed}
 
-    def _api(self, method: str, path: str, *, query: dict[str, Any] | None = None, body: Any = None) -> dict[str, Any]:
-        response = self._request(method, path, query=query, body=body)
+    def _api(self, method: str, path: str, *, query: dict[str, Any] | None = None, body: Any = None, params: Any = None) -> dict[str, Any]:
+        response = self._request(method, path, query=query, body=body, params=params)
         if response["status"] >= 400:
             message, details = self._remote_error(response)
             raise SkeletonKeyError(E.REMOTE, f"{self.name} API {path} -> HTTP {response['status']}: {message}", details={"status": response["status"], **details})

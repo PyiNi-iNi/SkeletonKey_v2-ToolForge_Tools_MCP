@@ -1632,7 +1632,7 @@ class IntegrationManager:
 # Exports
 # =============================================================================
 
-__all__ = [
+__all__ = [  # noqa: RUF022
     'ConfigDiscoverySource',
     'DiscoveryResult',
     'DiscoverySource',
@@ -1660,11 +1660,11 @@ __all__ = [
     'IntegrationPlatform',
     # Registry
     'IntegrationRegistry',
-    'RestIntegration',
     'IntegrationSandbox',
     'IntegrationStatus',
     # Enums
     'IntegrationType',
+    'RestIntegration',
     'LoadError',
     'LoadResult',
     'PackInfo',
@@ -1688,6 +1688,9 @@ __all__ = [
     'validate_integration',
     'validate_registry',
 ]
+
+# Reusable stdlib REST transport (after the base classes, before providers).
+from .rest import RestIntegration  # noqa: E402
 
 # Import example integrations
 try:
@@ -1716,6 +1719,3 @@ from .validation import (  # noqa: E402
     validate_integration,
     validate_registry,
 )
-
-# Reusable stdlib REST transport (imported after the base classes to avoid a cycle).
-from .rest import RestIntegration  # noqa: E402

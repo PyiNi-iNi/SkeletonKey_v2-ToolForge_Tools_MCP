@@ -29,7 +29,10 @@ def test_rest_base_builds_json_request_and_decodes(monkeypatch):
 
     class Response:
         status = 200
-        headers = {"Content-Type": "application/json"}
+        headers: dict[str, str]
+
+        def __init__(self):
+            self.headers = {"Content-Type": "application/json"}
 
         def __enter__(self):
             return self
