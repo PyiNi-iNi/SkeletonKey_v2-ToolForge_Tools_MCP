@@ -32,6 +32,7 @@ import sys
 import tempfile
 import threading
 import time
+from pathlib import Path
 from typing import Any
 
 from .core.config import Config
@@ -222,6 +223,11 @@ def probe_stdio(*, python: str | None = None, timeout: float = 60.0,
     python = python or sys.executable
     env = dict(os.environ) if env is None else dict(env)
     env.setdefault("PYTHONUNBUFFERED", "1")
+    # A source checkout is a supported operator environment; the probe may be
+    # launched from a temporary cwd where the editable package is not installed.
+    # Preserve an existing PYTHONPATH while making this checkout importable.
+    package_root = str(Path(__file__).resolve().parent.parent)
+    env["PYTHONPATH"] = package_root + os.pathsep + env.get("PYTHONPATH", "")
     ws = tempfile.mkdtemp(prefix="sk-doctor-probe-")
     hello = os.path.join(ws, "hello.txt")
     with open(hello, "w", encoding="utf-8") as fh:

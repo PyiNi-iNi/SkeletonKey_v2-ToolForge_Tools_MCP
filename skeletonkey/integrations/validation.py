@@ -35,6 +35,7 @@ from __future__ import annotations
 import importlib.util
 import inspect
 import re
+import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -176,6 +177,49 @@ def validate_registry() -> list[ValidationReport]:
 def dependency_status(info: Any) -> dict[str, Any]:
     """Classify each declared dependency as present/absent, required/optional."""
     return _dependency_status(info)
+
+
+def compatibility_matrix(
+    names: list[str] | None = None,
+    *,
+    target_oses: tuple[str, ...] = ("linux", "windows", "darwin"),
+) -> list[dict[str, Any]]:
+    """Return a deterministic SDK/OS compatibility matrix for CI reporting.
+
+    This is deliberately a probe, not a claim that the current runner is
+    Windows or macOS: each row records declared platform support and dependency
+    availability separately. CI can run the same function on each target OS
+    and merge the JSON reports without network calls or SDK initialization.
+    """
+    selected = names or sorted(info.name for info in registry.list_integrations())
+    rows: list[dict[str, Any]] = []
+    for name in selected:
+        info = registry.get_integration_info(name)
+        if info is None:
+            rows.append({"name": name, "status": "not_registered"})
+            continue
+        declared = info.platform.value if info.platform else "cross-platform"
+        dependencies = _dependency_status(info)
+        required_missing = [
+            dependency for dependency, available in dependencies["required"].items()
+            if not available
+        ]
+        for target in target_oses:
+            normalized = {"darwin": "macos", "win32": "windows"}.get(target, target)
+            platform_ok = declared in {"cross-platform", normalized, "all", "any"}
+            rows.append(
+                {
+                    "name": name,
+                    "os": target,
+                    "declared_platform": declared,
+                    "platform_compatible": platform_ok,
+                    "dependencies": dependencies,
+                    "required_dependencies_missing": required_missing,
+                    "runner_os": sys.platform,
+                    "status": "ready" if platform_ok and not required_missing else "blocked",
+                }
+            )
+    return rows
 
 
 def benchmark_integration(name: str, *, iterations: int = 100) -> dict[str, Any]:

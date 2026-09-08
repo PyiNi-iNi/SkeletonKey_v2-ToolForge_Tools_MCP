@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import threading
 from dataclasses import dataclass, field
@@ -164,8 +165,12 @@ class RemoteServer:
             return factory(self.spec.url)
         from mcp.client.stdio import StdioServerParameters, stdio_client
 
+        # Pass the parent's environment explicitly. MCP's stdio helper otherwise
+        # defaults to an empty/host-dependent environment; source-checkout
+        # remotes then cannot import SkeletonKey when their cwd is another root.
         return stdio_client(StdioServerParameters(command=self.spec.command,
-                                                  args=self.spec.args))
+                                                  args=self.spec.args,
+                                                  env=dict(os.environ)))
 
     # ------------------------------------------------------------------- calls
     def _submit(self, coro: Any) -> Any:

@@ -140,6 +140,21 @@ def test_validation_flags_missing_required_dependency():
             assert all(issue.code != "dependencies" for issue in report.errors)
 
 
+def test_compatibility_matrix_reports_os_and_sdk_gates():
+    from skeletonkey.integrations import compatibility_matrix
+
+    rows = compatibility_matrix(["sqlite", "postgresql"], target_oses=("linux", "windows"))
+    assert {(row["name"], row["os"]) for row in rows} == {
+        ("sqlite", "linux"), ("sqlite", "windows"),
+        ("postgresql", "linux"), ("postgresql", "windows"),
+    }
+    sqlite = next(row for row in rows if row["name"] == "sqlite")
+    assert sqlite["status"] == "ready"
+    postgres = next(row for row in rows if row["name"] == "postgresql")
+    assert "psycopg2" in postgres["required_dependencies_missing"]
+    assert postgres["status"] == "blocked"
+
+
 def test_validate_registry_covers_every_integration():
     reports = validate_registry()
     registered = {info.name for info in registry.list_integrations()}

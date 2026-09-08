@@ -4,13 +4,13 @@
 
 This document tracks the implementation progress of comprehensive integration support for SkeletonKey v2, covering SDKs, external APIs, client libraries, API generators, frameworks, toolchains, CLIs, runtimes, protocol bindings, codegen systems, platform-specific devkits, and various integrations.
 
-## 🎉 Current Status: P5.4 IN PROGRESS - Integration Categories Being Implemented
+## 🎉 Current Status: P6 IN PROGRESS - REST Integration Base
 
 **Last Major Achievement:** Phase P5.3 (Integration Discovery & Dynamic Loading) has been **successfully completed** with all core features implemented, tested, and committed.
 
-**Current Phase:** P5.4 (Integration Categories) - Database, Cloud, and HTTP Client integrations implemented!
+**Current Phase:** P6 (SDK/API framework) - reusable REST integration base implemented.
 
-**Next Steps:** Continue with P5.4 implementation of more integration categories
+**Next Steps:** migrate GitHub/Stripe shared transport onto `RestIntegration`, then add a third generated-provider fixture.
 
 ## Phases and Status
 
@@ -382,12 +382,15 @@ This document tracks the implementation progress of comprehensive integration su
 ---
 
 ### Phase P5.6: Integration Documentation & Examples
-**Status:** 🟡 PLANNED
+**Status:** ✅ SHIPPED (development and testing guidance)
 
-**Planned Deliverables:**
-- [ ] Integration development guide
-- [ ] Integration API documentation
-- [ ] Integration best practices
+**Delivered:**
+- [x] Integration development guide — `docs/INTEGRATION-DEVELOPMENT.md`
+- [x] Integration testing guidelines — `docs/INTEGRATION-TESTING.md`
+- [x] Registration/discovery contract, conflicts/metadata conventions, validation gate codes, and thread-safety guidance
+
+**Deferred:**
+- [ ] Integration API documentation (generated reference)
 - [ ] Integration examples repository
 - [ ] Integration templates
 - [ ] Integration tutorial videos
@@ -395,6 +398,35 @@ This document tracks the implementation progress of comprehensive integration su
 - [ ] Integration comparison matrix
 
 ---
+
+### Phase P6: SDK/API Framework
+**Status:** 🟡 IN PROGRESS
+
+**Delivered in this slice:**
+- [x] `RestIntegration` — stdlib transport, URL/query construction, JSON decoding, timeout and remote error normalization, provider hooks, envelopes, and pagination helper
+- [x] GitHub and Stripe migrated onto the shared base without changing wire behavior
+- [x] Existing GitHub/Stripe stub-server tests pass through the shared transport
+- [x] `DemoREST` test fixture generated from the base (`tests/test_rest_integration.py`)
+
+**Delivered in this slice:**
+- [x] Opt-in safe-request retries for 429/5xx responses with exponential backoff
+- [x] Non-idempotent writes are never retried by the shared base
+- [x] Retry behavior covered by `tests/test_rest_integration.py`
+
+**Delivered in this slice:**
+- [x] Opt-in recursive runtime output secret scanning via `scan_output_secrets`
+- [x] Redaction coverage for live integration tool results
+
+**Delivered in this slice:**
+- [x] End-to-end local pack upgrade test covering v1 → v2 replacement and persisted state
+
+**Delivered in this slice:**
+- [x] `compatibility_matrix()` CI-oriented SDK/OS readiness report
+- [x] Declared platform support and required dependency gates are reported separately
+- [x] Matrix tests cover cross-platform and SDK-blocked integrations
+
+**Next:**
+- [ ] Optional SDK integration coverage
 
 ## Configuration Reference
 

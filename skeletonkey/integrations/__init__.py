@@ -459,22 +459,12 @@ class Integration(ABC):
         return []
 
     def call_tool(self, name: str, args: dict[str, Any]) -> Any:
-        """Dispatch a tool call to this integration's ``tool_<name>`` method.
+        """Dispatch a tool call and optionally redact secret-shaped output.
 
-        This is the single dispatch entry point the engine bridge uses. A tool
-        id ``<integration>.<suffix>`` maps to ``tool_<suffix>``; the bridge
-        passes ``suffix`` here as ``name``.
-
-        Args:
-            name: Tool suffix (the part of the tool id after the integration
-                namespace, e.g. ``query`` for ``sqlite.query``).
-            args: Validated tool arguments (keyword arguments for the method).
-
-        Returns:
-            Any: The tool's result payload.
-
-        Raises:
-            SkeletonKeyError: If this integration exposes no such tool handler.
+        Set ``config.config['scan_output_secrets']`` to true for integrations
+        whose live responses may contain credentials. The default is false to
+        preserve provider payloads; engine-level audit redaction remains
+        independent. Redaction is recursive and never raises on a result.
         """
         method = getattr(self, f"tool_{name}", None)
         if not callable(method):
@@ -482,7 +472,12 @@ class Integration(ABC):
                 E.BAD_ARGS,
                 f"integration {self.name!r} has no handler for tool {name!r}",
             )
-        return method(**args)
+        result = method(**args)
+        if self.config.config.get("scan_output_secrets", False):
+            from skeletonkey.core.redact import redact_obj
+
+            return redact_obj(result)
+        return result
     
     def get_config_schema(self) -> dict[str, Any] | None:
         """Get the configuration schema for this integration.
@@ -564,6 +559,13 @@ class IntegrationRegistry:
     def has_integration(self, name: str) -> bool:
         """Check whether an integration class is registered under this name."""
         return name in self._integrations
+
+    def unregister_integration(self, name: str) -> bool:
+        """Remove a registered integration and any retained instance record."""
+        existed = name in self._integrations
+        self._integrations.pop(name, None)
+        self._instances.pop(name, None)
+        return existed
 
     def get_integration_info(self, name: str) -> IntegrationInfo | None:
         """Get integration metadata by name."""
@@ -1632,7 +1634,7 @@ class IntegrationManager:
 # Exports
 # =============================================================================
 
-__all__ = [
+__all__ = [  # noqa: RUF022
     'ConfigDiscoverySource',
     'DiscoveryResult',
     'DiscoverySource',
@@ -1664,6 +1666,7 @@ __all__ = [
     'IntegrationStatus',
     # Enums
     'IntegrationType',
+    'RestIntegration',
     'LoadError',
     'LoadResult',
     'PackInfo',
@@ -1677,6 +1680,7 @@ __all__ = [
     'ValidationIssue',
     'ValidationReport',
     'benchmark_integration',
+    'compatibility_matrix',
     'get_discovery',
     'get_loader',
     'get_pack_manager',
@@ -1687,6 +1691,9 @@ __all__ = [
     'validate_integration',
     'validate_registry',
 ]
+
+# Reusable stdlib REST transport (after the base classes, before providers).
+from .rest import RestIntegration  # noqa: E402
 
 # Import example integrations
 try:
@@ -1712,6 +1719,7 @@ from .validation import (  # noqa: E402
     ValidationIssue,
     ValidationReport,
     benchmark_integration,
+    compatibility_matrix,
     validate_integration,
     validate_registry,
 )
