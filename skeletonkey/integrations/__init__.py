@@ -1131,13 +1131,14 @@ class IntegrationManager:
         base_config = {}
         if integrations_config:
             configs = getattr(integrations_config, 'configs', {})
-            base_config = configs.get(name, {})
+            if isinstance(configs, dict):
+                base_config = configs.get(name, {})
         
         # Get integration-specific config from the integration's default
         integration_class = self.registry.get_integration_class(name)
         if integration_class:
-            from .core.config import IntegrationConfig as IC
-            dummy_config = IC(
+            # Create a minimal IntegrationConfig for the integration
+            dummy_config = IntegrationConfig(
                 name=name,
                 integration_id=name,
                 enabled=True,

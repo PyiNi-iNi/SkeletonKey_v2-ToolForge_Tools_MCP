@@ -434,10 +434,9 @@ def register_integration_tools(
             if not integrations_config:
                 return {"error": "Integration configuration not available"}
             
-            # Update the config
-            if not hasattr(integrations_config, 'configs'):
-                integrations_config.configs = {}
-            integrations_config.configs[name] = set
+            # Update the config (use getattr for dataclass)
+            configs = getattr(integrations_config, 'configs', {})
+            configs[name] = set
             
             return {
                 "name": name,
