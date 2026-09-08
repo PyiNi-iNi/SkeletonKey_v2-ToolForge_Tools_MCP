@@ -560,6 +560,13 @@ class IntegrationRegistry:
         """Check whether an integration class is registered under this name."""
         return name in self._integrations
 
+    def unregister_integration(self, name: str) -> bool:
+        """Remove a registered integration and any retained instance record."""
+        existed = name in self._integrations
+        self._integrations.pop(name, None)
+        self._instances.pop(name, None)
+        return existed
+
     def get_integration_info(self, name: str) -> IntegrationInfo | None:
         """Get integration metadata by name."""
         integration_class = self._integrations.get(name)
