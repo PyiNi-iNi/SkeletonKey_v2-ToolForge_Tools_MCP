@@ -34,11 +34,14 @@ _VALID_TIERS = {"core", "task", "full"}
 def tool_suffix(integration_name: str, tool_id: str) -> str | None:
     """Derive the ``tool_<suffix>`` method name from a tool id, or None.
 
-    The convention is ``<integration-name>.<suffix>`` -> ``tool_<suffix>``::
+    The convention is ``<integration-name>.<suffix>`` -> ``tool_<suffix>``,
+    with dots and hyphens in the suffix normalized to underscores so nested
+    namespaces map onto flat method names::
 
-        sqlite.create_table  -> tool_create_table
-        requests.get         -> tool_get
-        github.repo.get      -> tool_repo_get
+        sqlite.create_table         -> tool_create_table
+        requests.get                -> tool_get
+        github.repo.get             -> tool_repo_get
+        stripe.payment_intents.list -> tool_payment_intents_list
 
     An id whose namespace does not match the integration name is unmappable
     (None) unless it is a single-dot id, in which case the suffix is taken from
@@ -47,10 +50,13 @@ def tool_suffix(integration_name: str, tool_id: str) -> str | None:
     prefix = f"{integration_name}."
     if tool_id.startswith(prefix):
         suffix = tool_id[len(prefix):]
-        return suffix if suffix else None
-    if "." in tool_id and tool_id.count(".") == 1:
-        return tool_id.split(".", 1)[1] or None
-    return None
+    elif "." in tool_id and tool_id.count(".") == 1:
+        suffix = tool_id.split(".", 1)[1]
+    else:
+        return None
+    if not suffix:
+        return None
+    return suffix.replace(".", "_").replace("-", "_")
 
 
 def build_manifest(

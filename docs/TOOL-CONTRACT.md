@@ -513,6 +513,7 @@ Other MCP servers join the surface as tools without their own adapter:
 | drop-in | `tools/*.py` with `TOOL_SPECS`/`register`, or `tool.toml` in `tools.dropin_dirs` | yes, `source: "dropin"` |
 | entry-point | `[project.entry-points."skeletonkey.tools"]` | yes, `source: "entry-point"` |
 | skill | `skills/<name>/tool.toml`, compiled by `skills/compiler.py` | yes, `source: "skill:<name>"`, unless the declaration says `advertised = false` |
+| integration | loaded via `integrations.load`; each `get_tools()` dict is bridged to a `ToolManifest` whose handler dispatches to the instance's `tool_<suffix>` method | yes, `source: "integration:<name>"`, only while the integration is loaded |
 
 Checklist for every new tool:
 

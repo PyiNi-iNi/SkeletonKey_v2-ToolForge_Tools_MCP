@@ -1618,6 +1618,10 @@ __all__ = [
     # P5.2: Secret Management
     'SecretStore',
     'SecretValue',
+    # P5.5: Testing & Validation
+    'ValidationIssue',
+    'ValidationReport',
+    'benchmark_integration',
     'get_discovery',
     'get_loader',
     'get_pack_manager',
@@ -1625,6 +1629,8 @@ __all__ = [
     # Decorator
     'register_integration',
     'registry',
+    'validate_integration',
+    'validate_registry',
 ]
 
 # Import example integrations
@@ -1644,3 +1650,13 @@ try:
 except ImportError as e:
     _categories_imported = False
     logger.debug(f"Could not import category integrations: {e}")
+
+# P5.5: Testing & Validation API (after the registry is populated so validation
+# can enumerate it). Imported last to avoid circular imports.
+from .validation import (  # noqa: E402
+    ValidationIssue,
+    ValidationReport,
+    benchmark_integration,
+    validate_integration,
+    validate_registry,
+)
