@@ -420,8 +420,13 @@ This document tracks the implementation progress of comprehensive integration su
 **Delivered in this slice:**
 - [x] End-to-end local pack upgrade test covering v1 → v2 replacement and persisted state
 
+**Delivered in this slice:**
+- [x] `compatibility_matrix()` CI-oriented SDK/OS readiness report
+- [x] Declared platform support and required dependency gates are reported separately
+- [x] Matrix tests cover cross-platform and SDK-blocked integrations
+
 **Next:**
-- [ ] Cross-SDK / OS compatibility matrix
+- [ ] Optional SDK integration coverage
 
 ## Configuration Reference
 

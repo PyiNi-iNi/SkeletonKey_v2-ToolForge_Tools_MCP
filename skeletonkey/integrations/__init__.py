@@ -1673,6 +1673,7 @@ __all__ = [  # noqa: RUF022
     'ValidationIssue',
     'ValidationReport',
     'benchmark_integration',
+    'compatibility_matrix',
     'get_discovery',
     'get_loader',
     'get_pack_manager',
@@ -1711,6 +1712,7 @@ from .validation import (  # noqa: E402
     ValidationIssue,
     ValidationReport,
     benchmark_integration,
+    compatibility_matrix,
     validate_integration,
     validate_registry,
 )
