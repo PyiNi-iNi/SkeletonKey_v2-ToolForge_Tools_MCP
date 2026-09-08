@@ -9,6 +9,11 @@ security pass + Windows CI). Read `PLAN.md` for the roadmap, `docs/` for the con
 this file is the *transfer* — state, next steps, landmines. It supersedes the previous
 handoff; standing constraints are collected in §7.
 
+**Accuracy note (2026-09-08, session `arena/01a082ca`):** the state table and §3
+were refreshed against the tree — PR #6 merged, and PR #7 (P6 + Release 0.2.0)
+landed most of the former "NOT done" items. The rest of this file describes
+the session that authored the P6 onboarding slice; re-measure before you restate.
+
 **Agent / model provenance.** The harness is **Arena.ai Agent Mode** (repo-cloned sandbox,
 bash + file tools, auto-saved turns). Not attributable to a single base model: Arena's
 Agent Mode draws on many (Claude, ChatGPT, Gemini, Grok, Qwen, Kimi, …), and no specific
@@ -21,11 +26,11 @@ tree at handoff, not remembered: re-measure before you restate it.
 
 | | |
 | --- | --- |
-| Branch | `arena/01a06fe5-skeletonkey-v2-toolforge-tools` — this session's branch; **no PR opened yet** (house flow: open against `main`, `--merge`, keep branch) |
-| `main` | `7d57e31` (merge PR #5 = P5). This branch adds `e571669` (sk wire) and `ef51dc5` (doctor + http + purity) + uncommitted docs/handoff chunk |
-| Test suite | **733 passed, 3 skipped, 1 xfailed in ~57 s**; ruff clean (`ruff check .`) |
+| Branch | `arena/01a06fe5-skeletonkey-v2-toolforge-tools` — **merged as PR #6** (2026-09-05, `--merge`, branch kept) |
+| `main` | `5d582ff` (merge PR #9 = integrations). Carries P5 + live.*, the P6 onboarding slice (PR #6), and P6 + Release 0.2.0 (PR #7) |
+| Test suite | **795 passed, 3 skipped, 1 xfailed in ~80 s** (2026-09-08, post-integration-rest); ruff clean (`ruff check .`) |
 | Tools | **61 registered / 59 advertised / 6410 tokens** at `full`, digest `05c88f0f77b7fd74` — **unchanged** (wire/doctor are operator CLI, deliberately *not* registry tools, ADR-0015) |
-| Venv | repo `.venv`: mcp 2.1.1, pytest 9.1.1, ruff, pyyaml, **watchfiles 1.2.0 present** (`.[dev]` default). Package installed editable (`pip install -e ".[dev]"`) |
+| Venv | repo `.venv`: mcp 2.1.1, pytest 9.1.1, ruff, pyyaml, **watchfiles 1.2.0 present** (`.[dev]` default). Package installed editable (`pip install -e ".[dev]"`). Version now **0.2.0** (PR #7) |
 | Doctor | `sk doctor` → `ok: true` in-repo; live `mcp.stdio` probe answers in ~1.5 s (58 tools in the scratch workspace — no skills dirs there) |
 | Docs | ADR-0015 (onboarding is operator-side); `docs/CONNECT-A-HOST.md` (wire/doctor schema + per-host stanzas); PLAN §6 annotated with the shipped slice; README "Drop it into any project" section |
 | CI | still un-landed (`.github/` push rejected by App permissions — unchanged blocker) |
@@ -88,20 +93,22 @@ capability the agent holds).
 
 ## 3. What is NOT done (P6 rest, in order)
 
-1. **PR + merge** this branch into `main` (house flow: `gh pr create`, then `--merge`).
-2. **Tagged releases**: wheels + sdist built in CI, GitHub release page, `pipx` story in
-   README/CONNECT. Version is still `0.1.0`; semver the bump (`0.2.0` fits — no envelope
-   change, new CLI surface). sdist include-list already carries skills/docs/config.
-3. **Security pass**: `pip-audit` on the extras only; property tests for the sentinel
-   parser and path normalization; the red-team bypass matrix (`..`, absolute-external,
-   symlink escape, device names, `\\?\`, env injection, CLIXML spoofing, spill-path
-   traversal) as executable tests.
-4. **Windows CI runner** (needs the App `workflows` permission; same blocker as
-   `ci.yml` itself). Turns `@pytest.mark.win` skips into real checks. New surfaces that
-   will meet Windows for the first time: wire's `%APPDATA%` paths (unit-tested via the
-   `env` parameter only), doctor's thread-based probe, http transport.
-5. Small honesty wins still open from last session: publish task in `tests/eval/suite.jsonl`
-   + replay fixture; store `expiry`; `registry.explain_all`.
+Resolved since this file was written (2026-09-08 accuracy note): item 1 merged
+as PR #6; item 5 and most of item 2–3 landed in PR #7 ("P6 + Release 0.2.0":
+publish expiry, explain_all, evals, security pass — `tests/eval/suite.jsonl`
+exists, version is 0.2.0, red-team matrix in `tests/test_redteam.py`).
+
+1. **Tagged release artifacts in CI**: wheels + sdist built *in CI*, GitHub
+   release page, `pipx` story in README/CONNECT — still needs the CI pipeline
+   (item 2 below); the local `python -m build` + fresh-venv wheel install loop
+   is unproven from this tree.
+2. **CI: `ci.yml` + Windows CI runner** (needs the App `workflows` permission —
+   the unchanged blocker; no `.github/` in the tree). Turns `@pytest.mark.win`
+   skips into real checks. New surfaces that will meet Windows for the first
+   time: wire's `%APPDATA%` paths (unit-tested via the `env` parameter only),
+   doctor's thread-based probe, http transport.
+3. Integration track (see `HANDOFF_INTEGRATIONS.md`): P5.6 docs, P6
+   `RestIntegration`, the deferred P5.5 items.
 
 ## 4. Next steps (in order)
 
