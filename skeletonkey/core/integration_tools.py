@@ -548,4 +548,234 @@ def register_integration_tools(
     except Exception as e:
         report["errors"].append(f"integrations.secrets: {e}")
     
+    # P5.3: Discovery Tools
+    
+    # Tool: integrations.discover
+    def tool_integrations_discover(
+        refresh: bool = False,
+        source: str | None = None,
+    ) -> dict[str, Any]:
+        """Discover available integrations."""
+        if not _manager:
+            return {"error": "Integration manager not available"}
+        
+        if source:
+            # Discover from specific source
+            integrations = _manager.discover_by_source(source)
+        else:
+            # Discover from all sources
+            integrations = _manager.discover_integrations(refresh=refresh)
+        
+        return {
+            "integrations": [i.to_dict() for i in integrations],
+            "count": len(integrations),
+            "sources": [s.name for s in _manager.get_discovery_sources()],
+        }
+    
+    try:
+        registry.register(ToolManifest(
+            id="integrations.discover",
+            title="Discover Integrations",
+            description="Discover available integrations from all configured sources",
+            capability="integrations.discover",
+            risk="none",
+            typical_latency_ms=50,
+            tier="task",
+            tags=["integrations", "discover", "dynamic"],
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "refresh": {"type": "boolean", "default": False, "description": "Refresh the discovery cache"},
+                    "source": {"type": "string", "description": "Specific source to discover from"},
+                },
+                "additionalProperties": False,
+            },
+        ), tool_integrations_discover)
+        report["registered"].append("integrations.discover")
+    except Exception as e:
+        report["errors"].append(f"integrations.discover: {e}")
+    
+    # P5.3: Pack Management Tools
+    
+    # Tool: integrations.packs.list
+    def tool_integrations_packs_list() -> dict[str, Any]:
+        """List installed integration packs."""
+        if not _manager:
+            return {"error": "Integration manager not available"}
+        
+        packs = _manager.list_installed_packs()
+        return {
+            "packs": [p.to_dict() for p in packs],
+            "count": len(packs),
+        }
+    
+    try:
+        registry.register(ToolManifest(
+            id="integrations.packs.list",
+            title="List Integration Packs",
+            description="List all installed integration packs",
+            capability="integrations.packs.list",
+            risk="none",
+            typical_latency_ms=10,
+            tier="task",
+            tags=["integrations", "packs", "list"],
+            input_schema={
+                "type": "object",
+                "properties": {},
+                "additionalProperties": False,
+            },
+        ), tool_integrations_packs_list)
+        report["registered"].append("integrations.packs.list")
+    except Exception as e:
+        report["errors"].append(f"integrations.packs.list: {e}")
+    
+    # Tool: integrations.packs.install
+    def tool_integrations_packs_install(
+        name: str,
+        source: str | None = None,
+        version: str | None = None,
+        force: bool = False,
+    ) -> dict[str, Any]:
+        """Install an integration pack."""
+        if not _manager:
+            return {"error": "Integration manager not available"}
+        
+        success = _manager.install_pack(name, source, version, force)
+        return {
+            "name": name,
+            "installed": success,
+        }
+    
+    try:
+        registry.register(ToolManifest(
+            id="integrations.packs.install",
+            title="Install Integration Pack",
+            description="Install an integration pack from local path, git repository, or PyPI",
+            capability="integrations.packs.install",
+            risk="write",
+            typical_latency_ms=100,
+            tier="task",
+            tags=["integrations", "packs", "install"],
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Pack name or URL"},
+                    "source": {"type": "string", "description": "Source type (local, git, pypi)"},
+                    "version": {"type": "string", "description": "Version to install"},
+                    "force": {"type": "boolean", "default": False, "description": "Force reinstall"},
+                },
+                "required": ["name"],
+                "additionalProperties": False,
+            },
+        ), tool_integrations_packs_install)
+        report["registered"].append("integrations.packs.install")
+    except Exception as e:
+        report["errors"].append(f"integrations.packs.install: {e}")
+    
+    # Tool: integrations.packs.uninstall
+    def tool_integrations_packs_uninstall(
+        name: str,
+        force: bool = False,
+    ) -> dict[str, Any]:
+        """Uninstall an integration pack."""
+        if not _manager:
+            return {"error": "Integration manager not available"}
+        
+        success = _manager.uninstall_pack(name, force)
+        return {
+            "name": name,
+            "uninstalled": success,
+        }
+    
+    try:
+        registry.register(ToolManifest(
+            id="integrations.packs.uninstall",
+            title="Uninstall Integration Pack",
+            description="Uninstall an integration pack",
+            capability="integrations.packs.uninstall",
+            risk="destructive",
+            typical_latency_ms=50,
+            tier="task",
+            tags=["integrations", "packs", "uninstall"],
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Pack name"},
+                    "force": {"type": "boolean", "default": False, "description": "Force uninstall"},
+                },
+                "required": ["name"],
+                "additionalProperties": False,
+            },
+        ), tool_integrations_packs_uninstall)
+        report["registered"].append("integrations.packs.uninstall")
+    except Exception as e:
+        report["errors"].append(f"integrations.packs.uninstall: {e}")
+    
+    # Tool: integrations.packs.info
+    def tool_integrations_packs_info(name: str) -> dict[str, Any]:
+        """Get information about an installed pack."""
+        if not _manager:
+            return {"error": "Integration manager not available"}
+        
+        pack_info = _manager.get_pack_info(name)
+        if not pack_info:
+            return {"error": f"Pack not found: {name}"}
+        
+        return pack_info.to_dict()
+    
+    try:
+        registry.register(ToolManifest(
+            id="integrations.packs.info",
+            title="Get Pack Information",
+            description="Get information about a specific installed integration pack",
+            capability="integrations.packs.info",
+            risk="none",
+            typical_latency_ms=10,
+            tier="task",
+            tags=["integrations", "packs", "info"],
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Pack name"},
+                },
+                "required": ["name"],
+                "additionalProperties": False,
+            },
+        ), tool_integrations_packs_info)
+        report["registered"].append("integrations.packs.info")
+    except Exception as e:
+        report["errors"].append(f"integrations.packs.info: {e}")
+    
+    # Tool: integrations.packs.updates
+    def tool_integrations_packs_updates() -> dict[str, Any]:
+        """Check for available pack updates."""
+        if not _manager:
+            return {"error": "Integration manager not available"}
+        
+        updates = _manager.check_pack_updates()
+        return {
+            "updates": updates,
+            "count": len(updates),
+        }
+    
+    try:
+        registry.register(ToolManifest(
+            id="integrations.packs.updates",
+            title="Check Pack Updates",
+            description="Check for available updates for installed integration packs",
+            capability="integrations.packs.updates",
+            risk="none",
+            typical_latency_ms=50,
+            tier="task",
+            tags=["integrations", "packs", "updates"],
+            input_schema={
+                "type": "object",
+                "properties": {},
+                "additionalProperties": False,
+            },
+        ), tool_integrations_packs_updates)
+        report["registered"].append("integrations.packs.updates")
+    except Exception as e:
+        report["errors"].append(f"integrations.packs.updates: {e}")
+    
     return report

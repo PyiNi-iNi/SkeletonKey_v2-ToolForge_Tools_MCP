@@ -42,6 +42,12 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
+from typing import Any
+
+# P5.3: Discovery and Dynamic Loading
+from .discovery import IntegrationDiscovery, get_discovery
+from .loader import IntegrationLoader, get_loader
+from .packs import IntegrationPackManager, get_pack_manager, PackInfo
 from typing import Any, Callable, TypeVar
 
 from ..core.config import Config
@@ -735,10 +741,19 @@ class IntegrationManager:
         self._enabled_integrations: set[str] = set()
         self._disabled_integrations: set[str] = set()
         self._secret_store: SecretStore | None = None
-        self._load_enabled_integrations()
+        self._discovery: IntegrationDiscovery | None = None
+        self._loader: IntegrationLoader | None = None
+        self._pack_manager: IntegrationPackManager | None = None
         
         # Initialize secret store if configured
         self._init_secret_store()
+        
+        # P5.3: Initialize discovery and loader
+        self._init_discovery()
+        self._init_loader()
+        self._init_pack_manager()
+        
+        self._load_enabled_integrations()
     
     def _init_secret_store(self) -> None:
         """Initialize the secret store for integrations."""
@@ -763,6 +778,41 @@ class IntegrationManager:
         except Exception as e:
             logger.warning(f"Failed to initialize secret store: {e}")
             self._secret_store = None
+    
+    # P5.3: Discovery
+    def _init_discovery(self) -> None:
+        """Initialize the discovery system."""
+        try:
+            self._discovery = IntegrationDiscovery(self.config)
+            logger.info("Initialized integration discovery")
+        except Exception as e:
+            logger.warning(f"Failed to initialize discovery: {e}")
+            self._discovery = None
+    
+    def _init_loader(self) -> None:
+        """Initialize the dynamic loader."""
+        try:
+            self._loader = IntegrationLoader(
+                registry=self.registry,
+                config=self.config,
+                discovery=self._discovery,
+            )
+            logger.info("Initialized integration loader")
+        except Exception as e:
+            logger.warning(f"Failed to initialize loader: {e}")
+            self._loader = None
+    
+    def _init_pack_manager(self) -> None:
+        """Initialize the pack manager."""
+        try:
+            self._pack_manager = IntegrationPackManager(
+                config=self.config,
+                loader=self._loader,
+            )
+            logger.info("Initialized pack manager")
+        except Exception as e:
+            logger.warning(f"Failed to initialize pack manager: {e}")
+            self._pack_manager = None
     
     def _load_enabled_integrations(self) -> None:
         """Load the list of enabled/disabled integrations from config."""
@@ -1154,6 +1204,279 @@ class IntegrationManager:
                 base_config[f"secret_{key}"] = value
         
         return base_config
+    
+    # P5.3: Discovery Methods
+    
+    def discover_integrations(self, refresh: bool = False) -> list[IntegrationInfo]:
+        """Discover all available integrations.
+        
+        Args:
+            refresh: Whether to refresh the discovery cache
+            
+        Returns:
+            list: List of IntegrationInfo objects
+        """
+        if not self._discovery:
+            logger.warning("Discovery not initialized")
+            return []
+        
+        return self._discovery.discover(refresh=refresh)
+    
+    def discover_by_source(self, source_name: str) -> list[IntegrationInfo]:
+        """Discover integrations from a specific source.
+        
+        Args:
+            source_name: Name of the discovery source
+            
+        Returns:
+            list: List of IntegrationInfo objects from that source
+        """
+        if not self._discovery:
+            logger.warning("Discovery not initialized")
+            return []
+        
+        return self._discovery.discover_by_source(source_name)
+    
+    def get_discovery_sources(self) -> list:
+        """Get all discovery sources.
+        
+        Returns:
+            list: List of DiscoverySource objects
+        """
+        if not self._discovery:
+            return []
+        return self._discovery.get_sources()
+    
+    def get_discovery_statistics(self) -> dict[str, Any]:
+        """Get discovery statistics.
+        
+        Returns:
+            dict: Statistics about discovery
+        """
+        if not self._discovery:
+            return {}
+        return self._discovery.get_statistics()
+    
+    # P5.3: Dynamic Loading Methods
+    
+    def load_integration_dynamic(
+        self,
+        name: str,
+        config: dict[str, Any] | None = None,
+    ) -> IntegrationInstance | None:
+        """Load an integration dynamically.
+        
+        Args:
+            name: Integration name
+            config: Optional configuration for the integration
+            
+        Returns:
+            IntegrationInstance: The loaded instance, or None if failed
+        """
+        if not self._loader:
+            logger.warning("Loader not initialized")
+            return None
+        
+        result = self._loader.load(name, config)
+        if result.success and result.instance:
+            # Store in instances
+            self._instances[name] = result.instance
+            return result.instance
+        
+        return None
+    
+    def unload_integration_dynamic(self, name: str) -> bool:
+        """Unload a dynamically loaded integration.
+        
+        Args:
+            name: Integration name
+            
+        Returns:
+            bool: True if unloaded successfully
+        """
+        if not self._loader:
+            logger.warning("Loader not initialized")
+            return False
+        
+        # Remove from instances
+        self._instances.pop(name, None)
+        
+        return self._loader.unload(name)
+    
+    def reload_integration(self, name: str, config: dict[str, Any] | None = None) -> IntegrationInstance | None:
+        """Reload an integration.
+        
+        Args:
+            name: Integration name
+            config: Optional configuration for the integration
+            
+        Returns:
+            IntegrationInstance: The reloaded instance, or None if failed
+        """
+        if not self._loader:
+            logger.warning("Loader not initialized")
+            return None
+        
+        # Unload first
+        self._instances.pop(name, None)
+        
+        # Load again
+        result = self._loader.load(name, config)
+        if result.success and result.instance:
+            self._instances[name] = result.instance
+            return result.instance
+        
+        return None
+    
+    def is_loaded_dynamic(self, name: str) -> bool:
+        """Check if an integration is dynamically loaded.
+        
+        Args:
+            name: Integration name
+            
+        Returns:
+            bool: True if the integration is loaded
+        """
+        if not self._loader:
+            return False
+        return self._loader.is_loaded(name)
+    
+    def is_loading(self, name: str) -> bool:
+        """Check if an integration is currently loading.
+        
+        Args:
+            name: Integration name
+            
+        Returns:
+            bool: True if the integration is currently loading
+        """
+        if not self._loader:
+            return False
+        return self._loader.is_loading(name)
+    
+    def get_loader_statistics(self) -> dict[str, Any]:
+        """Get loader statistics.
+        
+        Returns:
+            dict: Statistics about loaded integrations
+        """
+        if not self._loader:
+            return {}
+        return self._loader.get_statistics()
+    
+    # P5.3: Pack Management Methods
+    
+    def install_pack(
+        self,
+        name: str,
+        source: str | None = None,
+        version: str | None = None,
+        force: bool = False,
+    ) -> bool:
+        """Install an integration pack.
+        
+        Args:
+            name: Pack name or URL
+            source: Source type (local, git, pypi) or URL
+            version: Version to install (for git/pypi)
+            force: Force reinstall if already installed
+            
+        Returns:
+            bool: True if installation succeeded
+        """
+        if not self._pack_manager:
+            logger.warning("Pack manager not initialized")
+            return False
+        
+        return self._pack_manager.install(name, source, version, force)
+    
+    def uninstall_pack(self, name: str, force: bool = False) -> bool:
+        """Uninstall an integration pack.
+        
+        Args:
+            name: Pack name
+            force: Force uninstall even if integrations are loaded
+            
+        Returns:
+            bool: True if uninstallation succeeded
+        """
+        if not self._pack_manager:
+            logger.warning("Pack manager not initialized")
+            return False
+        
+        return self._pack_manager.uninstall(name, force)
+    
+    def upgrade_pack(self, name: str, version: str | None = None) -> bool:
+        """Upgrade an integration pack.
+        
+        Args:
+            name: Pack name
+            version: Version to upgrade to (optional)
+            
+        Returns:
+            bool: True if upgrade succeeded
+        """
+        if not self._pack_manager:
+            logger.warning("Pack manager not initialized")
+            return False
+        
+        return self._pack_manager.upgrade(name, version)
+    
+    def list_installed_packs(self) -> list[PackInfo]:
+        """List all installed packs.
+        
+        Returns:
+            list: List of PackInfo objects
+        """
+        if not self._pack_manager:
+            return []
+        return self._pack_manager.list_installed()
+    
+    def get_pack_info(self, name: str) -> PackInfo | None:
+        """Get information about an installed pack.
+        
+        Args:
+            name: Pack name
+            
+        Returns:
+            PackInfo: Pack information, or None if not installed
+        """
+        if not self._pack_manager:
+            return None
+        return self._pack_manager.get_installed(name)
+    
+    def is_pack_installed(self, name: str) -> bool:
+        """Check if a pack is installed.
+        
+        Args:
+            name: Pack name
+            
+        Returns:
+            bool: True if the pack is installed
+        """
+        if not self._pack_manager:
+            return False
+        return self._pack_manager.is_installed(name)
+    
+    def check_pack_updates(self) -> list[dict[str, Any]]:
+        """Check for available updates for installed packs.
+        
+        Returns:
+            list: List of update information dictionaries
+        """
+        if not self._pack_manager:
+            return []
+        return self._pack_manager.check_updates()
+    
+    def get_pack_statistics(self) -> dict[str, Any]:
+        """Get pack manager statistics.
+        
+        Returns:
+            dict: Statistics about installed packs
+        """
+        if not self._pack_manager:
+            return {}
+        return self._pack_manager.get_statistics()
 
 
 # =============================================================================
@@ -1189,6 +1512,25 @@ __all__ = [
     'SecretValue',
     'SecretInfo',
     'get_secret_store',
+    # P5.3: Discovery
+    'IntegrationDiscovery',
+    'get_discovery',
+    'DiscoverySource',
+    'DiscoveryResult',
+    'EntryPointDiscoverySource',
+    'FilesystemDiscoverySource',
+    'PackageDiscoverySource',
+    'ConfigDiscoverySource',
+    # P5.3: Dynamic Loading
+    'IntegrationLoader',
+    'get_loader',
+    'LoadResult',
+    'LoadError',
+    # P5.3: Pack Management
+    'IntegrationPackManager',
+    'get_pack_manager',
+    'PackInfo',
+    'PackManifest',
 ]
 
 # Import example integrations to register them
