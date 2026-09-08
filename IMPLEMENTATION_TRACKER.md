@@ -413,8 +413,11 @@ This document tracks the implementation progress of comprehensive integration su
 - [x] Non-idempotent writes are never retried by the shared base
 - [x] Retry behavior covered by `tests/test_rest_integration.py`
 
+**Delivered in this slice:**
+- [x] Opt-in recursive runtime output secret scanning via `scan_output_secrets`
+- [x] Redaction coverage for live integration tool results
+
 **Next:**
-- [ ] Runtime output secret scanning
 - [ ] End-to-end pack upgrade migration tests
 
 ## Configuration Reference

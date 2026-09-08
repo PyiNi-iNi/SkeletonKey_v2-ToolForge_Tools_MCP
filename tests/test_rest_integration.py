@@ -20,6 +20,9 @@ class DemoREST(RestIntegration):
     def get_tools(self):
         return []
 
+    def tool_secret(self):
+        return {"token": "ghp_123456789012345678901234567890"}
+
     def _remote_error(self, response):
         return (response["data"]["error"], {"provider_code": "demo_error"})
 
@@ -63,6 +66,18 @@ def test_rest_base_builds_json_request_and_decodes(monkeypatch):
     assert captured["timeout"] == 4
     assert captured["body"] == b'{"x": 1}'
     assert captured["headers"]["Authorization"] == "Bearer test"
+
+
+def test_runtime_output_scan_is_opt_in_and_recursive():
+    plain = DemoREST(IntegrationConfig(name="demo", integration_id="demo", config={}))
+    assert plain.call_tool("secret", {})["token"].startswith("ghp_")
+
+    safe = DemoREST(
+        IntegrationConfig(
+            name="demo", integration_id="demo", config={"scan_output_secrets": True}
+        )
+    )
+    assert "ghp_" not in safe.call_tool("secret", {})["token"]
 
 
 def test_rest_base_pagination_normalizes_common_payload():

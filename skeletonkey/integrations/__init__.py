@@ -459,22 +459,12 @@ class Integration(ABC):
         return []
 
     def call_tool(self, name: str, args: dict[str, Any]) -> Any:
-        """Dispatch a tool call to this integration's ``tool_<name>`` method.
+        """Dispatch a tool call and optionally redact secret-shaped output.
 
-        This is the single dispatch entry point the engine bridge uses. A tool
-        id ``<integration>.<suffix>`` maps to ``tool_<suffix>``; the bridge
-        passes ``suffix`` here as ``name``.
-
-        Args:
-            name: Tool suffix (the part of the tool id after the integration
-                namespace, e.g. ``query`` for ``sqlite.query``).
-            args: Validated tool arguments (keyword arguments for the method).
-
-        Returns:
-            Any: The tool's result payload.
-
-        Raises:
-            SkeletonKeyError: If this integration exposes no such tool handler.
+        Set ``config.config['scan_output_secrets']`` to true for integrations
+        whose live responses may contain credentials. The default is false to
+        preserve provider payloads; engine-level audit redaction remains
+        independent. Redaction is recursive and never raises on a result.
         """
         method = getattr(self, f"tool_{name}", None)
         if not callable(method):
@@ -482,7 +472,12 @@ class Integration(ABC):
                 E.BAD_ARGS,
                 f"integration {self.name!r} has no handler for tool {name!r}",
             )
-        return method(**args)
+        result = method(**args)
+        if self.config.config.get("scan_output_secrets", False):
+            from skeletonkey.core.redact import redact_obj
+
+            return redact_obj(result)
+        return result
     
     def get_config_schema(self) -> dict[str, Any] | None:
         """Get the configuration schema for this integration.
