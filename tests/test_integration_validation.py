@@ -29,6 +29,8 @@ from skeletonkey.integrations import IntegrationConfig, registry
 from skeletonkey.integrations.bridge import tool_suffix
 from skeletonkey.integrations.validation import validate_integration, validate_registry
 
+from .integration_helpers import make_temp_integration
+
 
 # --------------------------------------------------------------------------- stub API
 class _Recorder:
@@ -297,3 +299,83 @@ def test_engine_integrations_validate_tool(engine):
 
     result = engine.call("integrations.validate", {"name": "github"})
     assert result.ok and result.data["valid"] is True
+
+
+# --------------------------------------------------------------------------- P5.5: security scan + compatibility gate
+def test_secret_scan_flags_provider_literals_in_source(tmp_path):
+    # Both literals are the provider-published documentation example keys.
+    handle = make_temp_integration(
+        tmp_path,
+        extra_source=(
+            'STRIPE_KEY = "sk_live_4eC39HqLyjWDarjtT1zdp7dc"\n'
+            'AWS_KEY = "AKIAIOSFODNN7EXAMPLE"\n'
+        ),
+    )
+    try:
+        handle["register"]()
+        report = validate_integration(handle["name"])
+        secret_issues = [i for i in report.issues if i.code == "secrets"]
+        assert len(secret_issues) == 2
+        assert all(i.severity == "warning" for i in secret_issues)
+        labels = {i.detail.split("pattern=")[1].split()[0] for i in secret_issues}
+        assert labels == {"stripe", "aws_key"}
+        # flag, not police: a static heuristic warning does not invalidate
+        assert report.valid is True
+        assert report.checks["secrets"] == 2
+        # and the report never echoes the matched material
+        dump = json.dumps(report.to_dict())
+        assert "sk_live_4eC39HqLyjWDarjtT1zdp7dc" not in dump
+    finally:
+        handle["cleanup"]()
+
+
+def test_secret_scan_is_clean_on_all_builtin_integrations():
+    # Pins the zero-false-positive guarantee: a future edit that adds a
+    # credential literal to an integration module fails the suite here.
+    for report in validate_registry():
+        assert not [i for i in report.issues if i.code == "secrets"], report.name
+
+
+def test_min_engine_gate_blocks_incompatible_integrations(tmp_path):
+    too_new = make_temp_integration(tmp_path, metadata={"min_engine": "999.0.0"})
+    try:
+        too_new["register"]()
+        report = validate_integration(too_new["name"])
+        compat = [i for i in report.issues if i.code == "compatibility"]
+        assert len(compat) == 1 and compat[0].severity == "error"
+        assert report.valid is False
+        assert "999.0.0" in compat[0].message
+        assert report.checks["min_engine"] == "999.0.0"
+    finally:
+        too_new["cleanup"]()
+
+    fine = make_temp_integration(tmp_path, metadata={"min_engine": "0.1.0"})
+    try:
+        fine["register"]()
+        report = validate_integration(fine["name"])
+        assert not [i for i in report.issues if i.code == "compatibility"]
+        assert report.valid is True
+    finally:
+        fine["cleanup"]()
+
+    bogus = make_temp_integration(tmp_path, metadata={"min_engine": "not-semver"})
+    try:
+        bogus["register"]()
+        report = validate_integration(bogus["name"])
+        compat = [i for i in report.issues if i.code == "compatibility"]
+        assert len(compat) == 1 and compat[0].severity == "warning"
+        assert report.valid is True
+    finally:
+        bogus["cleanup"]()
+
+
+def test_engine_validate_tool_surfaces_compatibility_error(engine, tmp_path):
+    handle = make_temp_integration(tmp_path, metadata={"min_engine": "999.0.0"})
+    try:
+        handle["register"]()
+        result = engine.call("integrations.validate", {"name": handle["name"]})
+        assert result.ok, result.error
+        assert result.data["valid"] is False
+        assert any(e["code"] == "compatibility" for e in result.data["errors"])
+    finally:
+        handle["cleanup"]()

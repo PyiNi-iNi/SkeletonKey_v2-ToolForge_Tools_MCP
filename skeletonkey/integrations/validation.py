@@ -18,6 +18,11 @@ Checks (each tagged with a stable ``code`` so automation can gate on it):
 - ``tool_schema``   - input schema shape, valid risk/tier, unique ids
 - ``dependencies``  - required deps importable, optional deps reported
 - ``security``      - mutating tools are backed by a capability declaration
+- ``secrets``       - static scan of the integration's own module source for
+                      secret-looking literals (reuses the redaction table;
+                      only the unambiguous provider-key patterns, warnings)
+- ``compatibility`` - ``metadata["min_engine"]`` (semver) satisfiable by this
+                      engine version (numeric-core comparison)
 - ``health``        - (opt-in) ``check_health`` returns a sane tuple
 
 Plus ``benchmark_integration`` (get_tools latency) and ``dependency_status``.
@@ -28,11 +33,15 @@ imported registry and never imports the integrations' third-party SDKs.
 from __future__ import annotations
 
 import importlib.util
+import inspect
 import re
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
+from ..core.redact import redact_text
+from ..version import __version__
 from . import IntegrationConfig, registry
 from .bridge import tool_suffix
 
@@ -40,6 +49,17 @@ _VALID_RISKS = {"none", "read", "write", "destructive", "network", "privileged"}
 _VALID_TIERS = {"core", "task", "full"}
 _NAME_RE = re.compile(r"^[a-z][a-z0-9-]*$")
 _SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+([-.][0-9A-Za-z-]+)?$")
+
+# The redaction table (core/redact.py) is tuned for *output* text, where a line
+# like `password = ...` in a transcript is a leak. In *source* code those
+# context-dependent patterns (kv_secret, bearer, conn_str, url_creds, cli_flag,
+# auth_header, azure) fire on ordinary assignments and f-strings, so the source
+# scan keeps only the labels whose pattern is an unambiguous provider
+# credential literal anywhere it appears: a leak wherever it is in source.
+_SOURCE_SCAN_LABELS = {
+    "aws_key", "gh_token", "github_pat", "slack", "discord", "jwt",
+    "stripe", "anthropic", "openai", "google", "hf", "pem",
+}
 
 
 @dataclass
@@ -126,6 +146,10 @@ def validate_integration(name: str, *, include_health: bool = False) -> Validati
 
     # ------------------------------------------------------------------ security
     _check_security(report, info, tools)
+    secret_findings = _check_secrets(report, cls)
+
+    # ------------------------------------------------------------------ compatibility
+    _check_compatibility(report, info)
 
     # ------------------------------------------------------------------ health (opt-in)
     if include_health:
@@ -137,6 +161,8 @@ def validate_integration(name: str, *, include_health: bool = False) -> Validati
         "version": info.version,
         "tools": len(tools),
         "dependencies": _dependency_status(info),
+        "secrets": secret_findings,
+        "min_engine": (getattr(info, "metadata", None) or {}).get("min_engine"),
     }
     return report
 
@@ -319,6 +345,78 @@ def _check_health(report: ValidationReport, instance: Any) -> None:
             ValidationIssue("health", "warning", f"unusual health status {status!r}")
         )
     report.checks["health"] = {"status": status, "message": health[1]}
+
+
+def _check_secrets(report: ValidationReport, cls: Any) -> int:
+    """Static scan of the integration's own module source for secret literals.
+
+    Reuses the redaction table (via redact_text) so the two cannot drift;
+    provider-key labels apply to source (see _SOURCE_SCAN_LABELS). Findings are
+    warnings - the harness is static and its job is to flag, and a CI gate can
+    hard-fail on code ``secrets``. The report carries the label and line only:
+    the matched material is never echoed into the report itself.
+    """
+    path = inspect.getsourcefile(cls)
+    if not path or not isinstance(path, str):
+        return 0
+    try:
+        source = Path(path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return 0
+    findings = 0
+    for lineno, line in enumerate(source.splitlines(), start=1):
+        _redacted, labels = redact_text(line)
+        for label in labels:
+            if label not in _SOURCE_SCAN_LABELS:
+                continue
+            findings += 1
+            report.issues.append(
+                ValidationIssue(
+                    "secrets",
+                    "warning",
+                    "possible secret literal in integration source",
+                    detail=f"{Path(path).name}:{lineno} pattern={label} (value masked by design)",
+                )
+            )
+    return findings
+
+
+def _check_compatibility(report: ValidationReport, info: Any) -> None:
+    """``metadata["min_engine"]`` (semver) must be satisfiable by this engine.
+
+    Numeric-core comparison (prerelease tags are treated as their core
+    version): good enough for a floor, not a full semver resolver.
+    """
+    min_engine = (getattr(info, "metadata", None) or {}).get("min_engine")
+    if min_engine is None:
+        return
+    min_engine = str(min_engine)
+    if not _SEMVER_RE.match(min_engine):
+        report.issues.append(
+            ValidationIssue(
+                "compatibility", "warning", "min_engine is not semver",
+                detail=repr(min_engine),
+            )
+        )
+        return
+    have = _version_core(__version__)
+    want = _version_core(min_engine)
+    if have < want:
+        report.valid = False
+        report.issues.append(
+            ValidationIssue(
+                "compatibility", "error",
+                f"requires engine >= {min_engine}, this engine is {__version__}",
+            )
+        )
+
+
+def _version_core(version: str) -> tuple[int, int, int]:
+    parts = re.split(r"[-+]", version, maxsplit=1)[0].split(".")
+    nums = [int(p) for p in parts if p.isdigit()]
+    while len(nums) < 3:
+        nums.append(0)
+    return (nums[0], nums[1], nums[2])
 
 
 def _dependency_status(info: Any) -> dict[str, Any]:

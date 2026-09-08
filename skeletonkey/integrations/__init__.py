@@ -364,6 +364,7 @@ class Integration(ABC):
     # A real list (not the field() idiom used above): unregistered classes read
     # it directly, and registration replaces it wholesale.
     _integration_conflicts: list[str] = []  # noqa: RUF012
+    _integration_metadata: dict[str, Any] = {}  # noqa: RUF012
     
     def __init__(self, config: IntegrationConfig):
         """Initialize the integration with configuration."""
@@ -418,6 +419,7 @@ class Integration(ABC):
             dependencies=self._integration_dependencies,
             capabilities=self._integration_capabilities,
             conflicts=list(self._integration_conflicts or []),
+            metadata=dict(self._integration_metadata or {}),
         )
     
     @abstractmethod
@@ -529,6 +531,7 @@ class IntegrationRegistry:
         dependencies: list[IntegrationDependency] | None = None,
         capabilities: list[IntegrationCapability] | None = None,
         conflicts: list[str] | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> type[Integration]:
         """Register an integration class."""
         # Set class attributes
@@ -545,6 +548,7 @@ class IntegrationRegistry:
         integration_class._integration_dependencies = dependencies or []
         integration_class._integration_capabilities = capabilities or []
         integration_class._integration_conflicts = conflicts or []
+        integration_class._integration_metadata = metadata or {}
         
         # Register the class
         self._integrations[integration_class._integration_name] = integration_class
@@ -602,6 +606,7 @@ class IntegrationRegistry:
         integration_class._integration_dependencies = list(info.dependencies or [])
         integration_class._integration_capabilities = list(info.capabilities or [])
         integration_class._integration_conflicts = list(info.conflicts or [])
+        integration_class._integration_metadata = dict(info.metadata or {})
         self._integrations[info.name] = integration_class
 
         logger.debug(f"Registered integration: {info.name} (dynamic)")
@@ -729,6 +734,7 @@ def register_integration(
     dependencies: list[IntegrationDependency] | None = None,
     capabilities: list[IntegrationCapability] | None = None,
     conflicts: list[str] | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> Callable[[type[Integration]], type[Integration]]:
     """Decorator to register an integration class.
     
@@ -781,6 +787,7 @@ def register_integration(
             dependencies=dependencies,
             capabilities=capabilities,
             conflicts=conflicts,
+            metadata=metadata,
         )
     
     return decorator
