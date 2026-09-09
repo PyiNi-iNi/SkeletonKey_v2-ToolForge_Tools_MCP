@@ -277,9 +277,13 @@ def main(argv: list[str] | None = None) -> int:
     ex.add_argument("--output", "-o", default=None,
                     help="write output to file instead of stdout")
 
-    vz = sub.add_parser("viz", help="tool visualizer: the whole toolset as one document (V0: --json)")
+    vz = sub.add_parser("viz", help="tool visualizer: the whole toolset as a page or a document")
     vz.add_argument("--json", dest="viz_json", action="store_true",
-                    help="print the visualizer model as JSON (implied for now)")
+                    help="emit the model as JSON instead of the HTML page")
+    vz.add_argument("--title", default="SkeletonKey toolset",
+                    help="page title for the HTML catalog")
+    vz.add_argument("--open", dest="viz_open", action="store_true",
+                    help="open the written page in the default browser")
     vz.add_argument("--tier", default=None, choices=["core", "task", "full"],
                     help="build the model for this advertisement tier (default: active tier)")
     vz.add_argument("--read-only", dest="viz_read_only", action="store_true",
@@ -287,7 +291,8 @@ def main(argv: list[str] | None = None) -> int:
     vz.add_argument("--no-schemas", action="store_true",
                     help="omit input/output schemas (smaller document)")
     vz.add_argument("--no-examples", action="store_true", help="omit worked examples")
-    vz.add_argument("--output", "-o", default=None, help="write the model to a file")
+    vz.add_argument("--output", "-o", default=None,
+                    help="write to a file (.json implies --json; .html the page)")
 
     args = ap.parse_args(argv)
     if args.cmd == "doctor":
@@ -552,7 +557,7 @@ def _dispatch(args: argparse.Namespace, tk: Any, call: Any, cfg: Config) -> int:
                 print(pretty_json(result))
         return 0
     if cmd == "viz":
-        from .viz import build_viz_model
+        from .viz import build_viz_model, render_html
 
         model = build_viz_model(
             tk.engine.registry,
@@ -561,16 +566,36 @@ def _dispatch(args: argparse.Namespace, tk: Any, call: Any, cfg: Config) -> int:
             include_schemas=not args.no_schemas,
             include_examples=not args.no_examples,
         )
-        doc = model.to_json()
-        doc["model_digest"] = model.digest()
-        output = compact_json(doc) if args.json else pretty_json(doc)
+        # The output *shape* follows the flag, or the file extension when a path
+        # says what it wants: `-o tools.html` is a page, `-o model.json` is data.
+        as_json = bool(getattr(args, "viz_json", False)) or args.json
+        if args.output and args.output.lower().endswith((".html", ".htm")):
+            as_json = False
+        elif args.output and args.output.lower().endswith(".json"):
+            as_json = True
+        elif not args.output and not as_json:
+            # No file and no format asked for: stdout gets JSON, because a
+            # terminal is not a browser. `-o page.html` is the page path.
+            as_json = True
+
+        if as_json:
+            doc = model.to_json()
+            doc["model_digest"] = model.digest()
+            output = compact_json(doc) if args.json else pretty_json(doc)
+        else:
+            output = render_html(model, title=args.title)
+
+        agg = model.aggregates
         if args.output:
             with open(args.output, "w", encoding="utf-8") as fh:
-                fh.write(output + "\n")
-            agg = model.aggregates
-            print(f"viz model: {agg['registered']} tools "
+                fh.write(output if output.endswith("\n") else output + "\n")
+            print(f"viz {'model' if as_json else 'page'}: {agg['registered']} tools "
                   f"({agg['advertised']} advertised, {agg['withheld']} withheld), "
-                  f"{len(model.edges)} edges -> {args.output}", file=sys.stderr)
+                  f"{len(model.edges)} relations -> {args.output}", file=sys.stderr)
+            if getattr(args, "viz_open", False):
+                import webbrowser
+
+                webbrowser.open(f"file://{os.path.abspath(args.output)}")
         else:
             print(output)
         return 0

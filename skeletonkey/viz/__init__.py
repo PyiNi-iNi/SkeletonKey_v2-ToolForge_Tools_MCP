@@ -19,5 +19,7 @@ from .model import (
     build_viz_model,
     model_digest,
 )
+from .render import render_html
 
-__all__ = ["VizEdge", "VizModel", "VizNode", "build_viz_model", "model_digest"]
+__all__ = ["VizEdge", "VizModel", "VizNode", "build_viz_model", "model_digest",
+           "render_html"]

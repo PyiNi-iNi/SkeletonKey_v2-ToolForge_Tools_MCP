@@ -4,8 +4,10 @@
 knows about — what it is, whether it is advertised here and why, what it costs, what it
 touches, how it relates to the others, and what happened the last time it ran.
 
-**Status:** **V0 shipped** (`skeletonkey/viz/`, `sk viz --json`, `schemas/viz-model.schema.json`,
-`tests/test_viz_model.py` — 21 tests). V1–V6 below are still plan.
+**Status:** **V0 + V1 shipped** — `skeletonkey/viz/` (`model.py`, `render.py`),
+`sk viz` (JSON model *and* standalone HTML catalog), `schemas/viz-model.schema.json`,
+39 tests across `tests/test_viz_model.py` and `tests/test_viz_render.py`.
+V2–V6 below are still plan.
 
 ## 0. Ground truth (measured on this box, `python -m skeletonkey.cli describe`)
 
@@ -81,7 +83,7 @@ $ sk viz --read-only --no-schemas --json  # every mutating tool withheld, lean p
 
 ---
 
-## V1 — Static render: the catalog page
+## V1 — Static render: the catalog page ✅ SHIPPED
 
 *Ship something useful before anything is interactive.*
 
@@ -96,8 +98,22 @@ $ sk viz --read-only --no-schemas --json  # every mutating tool withheld, lean p
   destructive-only, has-examples. All client-side over the embedded model.
 - `sk viz --out tools.html` writes the standalone file — mailable, commitable, diffable.
 
-**Acceptance:** golden-file test on a fixture registry; the HTML parses; every tool id
-appears exactly once; opening the file with no network yields a working page.
+**Acceptance (as built):** `tests/test_viz_render.py` — 18 tests. Every tool is exactly
+one card (advertised or not, withheld ones dashed and labelled); card `data-*` filter
+attributes match the model field for field; markup is well-formed and fully closed per
+`html.parser`, not a regex; the page makes **no** network reference (no `src`, no `href`,
+no `@import`, no `url(` in the chrome) so `file://` works offline; every id the behaviour
+script looks up actually exists in the DOM; the embedded payload round-trips through
+`json.loads`; a tool whose title/description/tags contain `</script><img src=x
+onerror=alert(1)>` cannot break out of the block or become live markup; no credential-shaped
+string reaches the page; rendering is deterministic; and `embed_model=False` still renders
+the full catalog, which is the JS-disabled degradation path V3 will fall back to.
+
+```console
+$ sk viz -o tools.html --title "Ops toolset"   # 240 KB, one file, opens offline
+$ sk viz -o model.json                          # extension picks the format
+$ sk viz --json | jq .aggregates                # stdout stays machine-readable
+```
 
 ---
 
