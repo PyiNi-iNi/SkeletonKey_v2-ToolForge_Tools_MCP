@@ -1271,7 +1271,7 @@ def register(reg: Any, *, engine: Any, shells: Any, fs: Any, journal: Any, skill
                              "hint": "call registry.search or registry.route to find the right tool"},
                 ) from None
             tasks.append((man, args))
-        p = build_plan(tasks, strict=strict)
+        p = build_plan(tasks, strict=strict, registry=engine.registry)
         return p.to_dict()
 
     def planner_export(format: str, tier: str | None = None,

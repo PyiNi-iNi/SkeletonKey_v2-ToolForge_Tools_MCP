@@ -187,6 +187,7 @@ def plan(
     tasks: list[tuple[ToolManifest, dict[str, Any]]],
     *,
     strict: bool = False,
+    registry: Any = None,
 ) -> Plan:
     """Build a read-only execution plan for a list of (manifest, args) pairs.
 
@@ -198,6 +199,11 @@ def plan(
         reads but preserves the relative order of writes.
     strict:
         If True, raise on conflicts instead of recording them.
+    registry:
+        Optional registry to pull observed latency from. When provided,
+        the planner uses ``ProviderStats.mean_ms`` (if available) instead
+        of the manifest's ``typical_latency_ms``, giving the autopilot
+        cheaper cost estimates over time.
 
     Returns
     -------
@@ -275,7 +281,7 @@ def plan(
     read_only = all(s.risk in ("read", "none") for s in steps)
     stateful_steps = [s.index for s in steps if s.stateful != "none"]
     estimated_latency = sum(
-        _typical_latency(s.tool_id, tasks) for s in steps
+        _typical_latency(s.tool_id, tasks, registry=registry) for s in steps
     )
 
     # Warnings
@@ -348,8 +354,24 @@ def _check_conflict(sa: PlanStep, sb: PlanStep, resource: str) -> PlanConflict |
     return None
 
 
-def _typical_latency(tool_id: str, tasks: list[tuple[ToolManifest, dict]]) -> int:
-    """Look up the typical latency for a tool id from the task list."""
+def _typical_latency(tool_id: str, tasks: list[tuple[ToolManifest, dict]], *, registry: Any = None) -> int:
+    """Look up the typical latency for a tool id.
+
+    When a registry is provided, prefers observed ``ProviderStats.mean_ms``
+    over the manifest's declared ``typical_latency_ms``. The observed value
+    is used only when there are >= 3 calls (enough evidence to trust);
+    otherwise falls back to the declared value.
+    """
+    if registry is not None:
+        try:
+            all_stats = registry.stats(tool_id)
+            tool_stats = all_stats.get(tool_id, {})
+            if tool_stats.get("calls", 0) >= 3:
+                observed = tool_stats.get("mean_ms")
+                if observed is not None and observed > 0:
+                    return int(observed)
+        except Exception:
+            pass
     for man, _ in tasks:
         if man.id == tool_id:
             return man.typical_latency_ms

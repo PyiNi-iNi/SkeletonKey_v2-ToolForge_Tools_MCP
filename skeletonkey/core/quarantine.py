@@ -356,6 +356,91 @@ def promote(session: QuarantineSession) -> bool:
     return False
 
 
+def promote_and_register(
+    session: QuarantineSession,
+    registry: Any,
+    *,
+    handler: Any,
+    tier: str = "full",
+    description: str = "",
+    risk: str = "read",
+    input_schema: dict[str, Any] | None = None,
+    capability: str = "",
+    group: str = "generated",
+) -> dict[str, Any]:
+    """Promote a quarantined tool and register it into the main registry.
+
+    The promoted tool is registered with ``source: "generated"`` tracking
+    and placed at the requested tier (default ``full`` keeps it out of
+    the ``core`` and ``task`` surfaces). The handler is the callable the
+    engine will invoke when the tool is called.
+
+    Parameters
+    ----------
+    session:
+        The quarantine session to promote.
+    registry:
+        The ToolRegistry to register into.
+    handler:
+        The callable ``(args...) -> dict | ToolResult`` for the engine.
+    tier:
+        The tier to register at (default ``full``).
+    description:
+        Agent-facing description for the tool manifest.
+    risk:
+        Risk classification (default ``read``).
+    input_schema:
+        JSON Schema for the tool's arguments.
+    capability:
+        Capability namespace the tool satisfies.
+    group:
+        Tool group (default ``generated``).
+
+    Returns
+    -------
+    A dict with the registration outcome.
+    """
+    from skeletonkey.core.manifest import ToolManifest
+
+    if not promote(session):
+        return {
+            "ok": False,
+            "reason": "not_eligible",
+            "successes": session.successes,
+            "failures": session.failures,
+            "detail": f"tool needs >= 1 success with failures <= successes; "
+                      f"got {session.successes} success(es), {session.failures} failure(s)",
+        }
+
+    tool_id = session.tool_name
+    man = ToolManifest(
+        id=tool_id,
+        description=description or f"Generated tool: {tool_id}",
+        risk=risk,
+        tier=tier,
+        group=group,
+        capability=capability or tool_id,
+        input_schema=input_schema or {"type": "object", "properties": {}},
+        advertised=True,
+        parallel_safe=True,
+        stateful="none",
+        tags=["generated", "quarantine-promoted"],
+        source="generated",
+    )
+    registry.register(man, handler, replace=False)
+    return {
+        "ok": True,
+        "tool_id": tool_id,
+        "tier": tier,
+        "group": group,
+        "risk": risk,
+        "source": "generated",
+        "session_id": session.id,
+        "quarantine_calls": session.calls,
+        "quarantine_successes": session.successes,
+    }
+
+
 def run_once(
     tool_name: str,
     code: str,

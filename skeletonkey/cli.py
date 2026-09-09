@@ -214,6 +214,18 @@ def main(argv: list[str] | None = None) -> int:
     e = sub.add_parser("call", help="call any tool directly: sk call <tool> '<json args>'")
     e.add_argument("tool")
     e.add_argument("args", nargs="?", default="{}")
+    e.add_argument("--as-subagent", action="store_true",
+                   help="route through a subagent boundary (restricted tier, read-only by default)")
+    e.add_argument("--sub-tier", default="task", choices=["core", "task", "full"],
+                   help="subagent tier (default: task)")
+    e.add_argument("--sub-read-only", action="store_true", default=True,
+                   help="subagent read-only mode (default: true)")
+    e.add_argument("--sub-writable", action="store_true",
+                   help="allow writes in the subagent (overrides --sub-read-only)")
+    e.add_argument("--sub-max-calls", type=int, default=50,
+                   help="subagent max calls (default: 50)")
+    e.add_argument("--sub-max-time", type=float, default=60.0,
+                   help="subagent max wall time in seconds (default: 60)")
 
     m = sub.add_parser("mcp", help="run the MCP server")
     m.add_argument("--transport", default="stdio", choices=["stdio", "streamable-http"])
@@ -425,6 +437,32 @@ def _dispatch(args: argparse.Namespace, tk: Any, call: Any, cfg: Config) -> int:
         except ValueError as exc:
             print(f"invalid json args: {exc}", file=sys.stderr)
             return 2
+        if getattr(args, "as_subagent", False):
+            from .core.subagent import SubagentSpec, call_as_subagent, create_subagent
+            spec = SubagentSpec(
+                name=f"cli-call-{args.tool}",
+                tier=args.sub_tier,
+                read_only=not args.sub_writable,
+                max_calls=args.sub_max_calls,
+                max_wall_time_s=args.sub_max_time,
+            )
+            sub = create_subagent(tk.engine, spec=spec)
+            result = call_as_subagent(sub, args.tool, payload)
+            summary = sub.close()
+            # Wrap the subagent result in a ToolResult-compatible shape
+            envelope = {
+                "ok": result["ok"],
+                "tool": args.tool,
+                "data": result.get("data"),
+                "subagent": summary,
+            }
+            if result.get("error"):
+                envelope["error"] = result["error"]
+            if args.json:
+                print(compact_json(envelope))
+            else:
+                print(pretty_json(envelope))
+            return 0 if result["ok"] else 1
         return _emit(call(args.tool, payload), json_out=True)
     if cmd == "replay":
         from .core import replay as replay_mod
