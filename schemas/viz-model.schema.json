@@ -1,0 +1,157 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://skeletonkey.dev/schemas/viz-model.schema.json",
+  "title": "SkeletonKey tool visualizer model",
+  "description": "A read-only projection of the registry: every registered tool as a node, typed relations as edges, plus the advertisement snapshot that decided what this host may see. Produced by skeletonkey.viz.build_viz_model and printed by `sk viz --json`. Deterministic: same registry state gives byte-identical output.",
+  "type": "object",
+  "required": ["schema_version", "snapshot", "host", "aggregates", "groups", "capabilities", "nodes", "edges"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "snapshot": {
+      "type": "object",
+      "description": "The AdSnapshot this model was built from. `digest` is the registry's advertisement digest, not the model digest.",
+      "required": ["digest", "tier", "tokens", "count"],
+      "properties": {
+        "digest": {"type": "string"},
+        "tier": {"type": "string", "enum": ["core", "task", "full"]},
+        "tokens": {"type": "integer", "minimum": 0},
+        "count": {"type": "integer", "minimum": 0},
+        "selected": {"type": "object", "description": "capability -> winning tool id"},
+        "budget_drops": {"type": "object", "description": "tool id -> why it was trimmed"},
+        "at": {"type": "number"}
+      }
+    },
+    "host": {
+      "type": "object",
+      "description": "The profile the gating was evaluated against. Empty strings when no profile is attached.",
+      "properties": {
+        "os": {"type": "string"},
+        "arch": {"type": "string"},
+        "python_version": {"type": "string"},
+        "fingerprint": {"type": "string"},
+        "capabilities": {"type": "array", "items": {"type": "string"}},
+        "read_only": {"type": "boolean"}
+      }
+    },
+    "aggregates": {
+      "type": "object",
+      "description": "Rollups the page renders without walking the node list.",
+      "required": ["registered", "advertised", "withheld", "tokens"],
+      "properties": {
+        "registered": {"type": "integer", "minimum": 0},
+        "advertised": {"type": "integer", "minimum": 0},
+        "withheld": {"type": "integer", "minimum": 0},
+        "withheld_by": {"type": "object"},
+        "tokens": {"type": "integer", "minimum": 0},
+        "token_cost_registered": {"type": "integer", "minimum": 0},
+        "groups": {"type": "integer", "minimum": 0},
+        "capabilities": {"type": "integer", "minimum": 0},
+        "contested_capabilities": {"type": "integer", "minimum": 0},
+        "risk": {"type": "object"},
+        "tiers": {"type": "object"},
+        "sources": {"type": "object"},
+        "destructive": {"type": "integer", "minimum": 0},
+        "mutating": {"type": "integer", "minimum": 0},
+        "with_examples": {"type": "integer", "minimum": 0},
+        "examples": {"type": "integer", "minimum": 0},
+        "edges": {"type": "object"}
+      }
+    },
+    "groups": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "tools", "advertised"],
+        "properties": {
+          "name": {"type": "string"},
+          "tools": {"type": "integer", "minimum": 0},
+          "advertised": {"type": "integer", "minimum": 0},
+          "token_cost": {"type": "integer", "minimum": 0},
+          "risk": {"type": "object"}
+        }
+      }
+    },
+    "capabilities": {
+      "type": "array",
+      "description": "One row per declared capability, with the provider contest resolved.",
+      "items": {
+        "type": "object",
+        "required": ["capability", "tools", "contested"],
+        "properties": {
+          "capability": {"type": "string"},
+          "tools": {"type": "array", "items": {"type": "string"}},
+          "providers": {"type": "array", "items": {"type": "string"}},
+          "contested": {"type": "boolean"},
+          "winner": {"type": ["string", "null"]},
+          "receipt": {"type": "object"}
+        }
+      }
+    },
+    "nodes": {
+      "type": "array",
+      "description": "Every REGISTERED tool, advertised or not. `advertised` says whether this host would list it; `withheld_by` and `gate` say why not.",
+      "items": {
+        "type": "object",
+        "required": ["id", "group", "title", "summary", "capability", "risk", "tier", "advertised"],
+        "properties": {
+          "id": {"type": "string"},
+          "group": {"type": "string"},
+          "title": {"type": "string"},
+          "summary": {"type": "string"},
+          "description": {"type": "string"},
+          "capability": {"type": "string"},
+          "provides": {"type": "array", "items": {"type": "string"}},
+          "provider": {"type": ["string", "null"]},
+          "priority": {"type": "integer"},
+          "tier": {"type": "string", "enum": ["core", "task", "full"]},
+          "risk": {"type": "string"},
+          "version": {"type": "string"},
+          "source": {"type": "string"},
+          "destructive": {"type": "boolean"},
+          "reversible": {"type": "boolean"},
+          "idempotent": {"type": "boolean"},
+          "parallel_safe": {"type": "boolean"},
+          "open_world": {"type": "boolean"},
+          "mutating": {"type": "boolean"},
+          "stateful": {"type": "string", "enum": ["none", "session", "host"]},
+          "approval": {"type": "string"},
+          "typical_latency_ms": {"type": "integer", "minimum": 0},
+          "typical_output_bytes": {"type": "integer", "minimum": 0},
+          "timeout_s": {"type": "number"},
+          "token_cost": {"type": "integer", "minimum": 0},
+          "platforms": {"type": "array", "items": {"type": "string"}},
+          "requires": {"type": "array", "items": {"type": "object"}},
+          "requires_any": {"type": "array", "items": {"type": "object"}},
+          "tags": {"type": "array", "items": {"type": "string"}},
+          "advertised": {"type": "boolean"},
+          "advertisable": {"type": "boolean"},
+          "hidden_reason": {"type": "string"},
+          "gate": {"type": "object"},
+          "withheld_by": {"type": "string", "enum": ["", "gate", "tier", "internal", "budget", "unknown"]},
+          "budget_drop": {"type": "string"},
+          "example_count": {"type": "integer", "minimum": 0},
+          "examples": {"type": "array", "items": {"type": "object"}},
+          "anti_patterns": {"type": "array", "items": {"type": "string"}},
+          "see_also": {"type": "array", "items": {"type": "string"}},
+          "input_schema": {"type": "object"},
+          "output_schema": {"type": "object"}
+        }
+      }
+    },
+    "edges": {
+      "type": "array",
+      "description": "Typed relations between nodes. Both endpoints are always node ids present in `nodes`.",
+      "items": {
+        "type": "object",
+        "required": ["source", "target", "kind"],
+        "properties": {
+          "source": {"type": "string"},
+          "target": {"type": "string"},
+          "kind": {"type": "string", "enum": ["see_also", "same_capability", "provides", "anti_pattern"]},
+          "label": {"type": "string"}
+        }
+      }
+    }
+  }
+}

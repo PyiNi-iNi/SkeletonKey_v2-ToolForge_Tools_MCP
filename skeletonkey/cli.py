@@ -277,6 +277,18 @@ def main(argv: list[str] | None = None) -> int:
     ex.add_argument("--output", "-o", default=None,
                     help="write output to file instead of stdout")
 
+    vz = sub.add_parser("viz", help="tool visualizer: the whole toolset as one document (V0: --json)")
+    vz.add_argument("--json", dest="viz_json", action="store_true",
+                    help="print the visualizer model as JSON (implied for now)")
+    vz.add_argument("--tier", default=None, choices=["core", "task", "full"],
+                    help="build the model for this advertisement tier (default: active tier)")
+    vz.add_argument("--read-only", dest="viz_read_only", action="store_true",
+                    help="model the toolset as a read-only host would see it")
+    vz.add_argument("--no-schemas", action="store_true",
+                    help="omit input/output schemas (smaller document)")
+    vz.add_argument("--no-examples", action="store_true", help="omit worked examples")
+    vz.add_argument("--output", "-o", default=None, help="write the model to a file")
+
     args = ap.parse_args(argv)
     if args.cmd == "doctor":
         # Doctor builds its own scratch-state toolkit: the operator's real state dir is
@@ -538,6 +550,29 @@ def _dispatch(args: argparse.Namespace, tk: Any, call: Any, cfg: Config) -> int:
                 print(output)
             else:
                 print(pretty_json(result))
+        return 0
+    if cmd == "viz":
+        from .viz import build_viz_model
+
+        model = build_viz_model(
+            tk.engine.registry,
+            tier=args.tier,
+            read_only=getattr(args, "viz_read_only", False),
+            include_schemas=not args.no_schemas,
+            include_examples=not args.no_examples,
+        )
+        doc = model.to_json()
+        doc["model_digest"] = model.digest()
+        output = compact_json(doc) if args.json else pretty_json(doc)
+        if args.output:
+            with open(args.output, "w", encoding="utf-8") as fh:
+                fh.write(output + "\n")
+            agg = model.aggregates
+            print(f"viz model: {agg['registered']} tools "
+                  f"({agg['advertised']} advertised, {agg['withheld']} withheld), "
+                  f"{len(model.edges)} edges -> {args.output}", file=sys.stderr)
+        else:
+            print(output)
         return 0
     if cmd == "skills":
         if args.action == "list":
