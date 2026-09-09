@@ -214,6 +214,18 @@ def main(argv: list[str] | None = None) -> int:
     e = sub.add_parser("call", help="call any tool directly: sk call <tool> '<json args>'")
     e.add_argument("tool")
     e.add_argument("args", nargs="?", default="{}")
+    e.add_argument("--as-subagent", action="store_true",
+                   help="route through a subagent boundary (restricted tier, read-only by default)")
+    e.add_argument("--sub-tier", default="task", choices=["core", "task", "full"],
+                   help="subagent tier (default: task)")
+    e.add_argument("--sub-read-only", action="store_true", default=True,
+                   help="subagent read-only mode (default: true)")
+    e.add_argument("--sub-writable", action="store_true",
+                   help="allow writes in the subagent (overrides --sub-read-only)")
+    e.add_argument("--sub-max-calls", type=int, default=50,
+                   help="subagent max calls (default: 50)")
+    e.add_argument("--sub-max-time", type=float, default=60.0,
+                   help="subagent max wall time in seconds (default: 60)")
 
     m = sub.add_parser("mcp", help="run the MCP server")
     m.add_argument("--transport", default="stdio", choices=["stdio", "streamable-http"])
@@ -254,6 +266,16 @@ def main(argv: list[str] | None = None) -> int:
     ev = sub.add_parser("eval", help="score a suite of scripted tasks")
     ev.add_argument("--suite", action="append", required=True,
                     help="suite file, repeatable (one task per JSON line)")
+
+    ex = sub.add_parser("export", help="export tools to external agent formats (openai-tools, anthropic-tools, mcp-manifest)")
+    ex.add_argument("format", choices=["openai-tools", "anthropic-tools", "mcp-manifest", "list"],
+                    help="export format, or 'list' to show available formats")
+    ex.add_argument("--tier", default=None, choices=["core", "task", "full"],
+                    help="export tools from this tier (default: full)")
+    ex.add_argument("--read-only", dest="export_read_only", action="store_true",
+                    help="export only read-only tools")
+    ex.add_argument("--output", "-o", default=None,
+                    help="write output to file instead of stdout")
 
     args = ap.parse_args(argv)
     if args.cmd == "doctor":
@@ -415,6 +437,32 @@ def _dispatch(args: argparse.Namespace, tk: Any, call: Any, cfg: Config) -> int:
         except ValueError as exc:
             print(f"invalid json args: {exc}", file=sys.stderr)
             return 2
+        if getattr(args, "as_subagent", False):
+            from .core.subagent import SubagentSpec, call_as_subagent, create_subagent
+            spec = SubagentSpec(
+                name=f"cli-call-{args.tool}",
+                tier=args.sub_tier,
+                read_only=not args.sub_writable,
+                max_calls=args.sub_max_calls,
+                max_wall_time_s=args.sub_max_time,
+            )
+            sub = create_subagent(tk.engine, spec=spec)
+            result = call_as_subagent(sub, args.tool, payload)
+            summary = sub.close()
+            # Wrap the subagent result in a ToolResult-compatible shape
+            envelope = {
+                "ok": result["ok"],
+                "tool": args.tool,
+                "data": result.get("data"),
+                "subagent": summary,
+            }
+            if result.get("error"):
+                envelope["error"] = result["error"]
+            if args.json:
+                print(compact_json(envelope))
+            else:
+                print(pretty_json(envelope))
+            return 0 if result["ok"] else 1
         return _emit(call(args.tool, payload), json_out=True)
     if cmd == "replay":
         from .core import replay as replay_mod
@@ -460,6 +508,37 @@ def _dispatch(args: argparse.Namespace, tk: Any, call: Any, cfg: Config) -> int:
                   f"mean {report['mean_tokens_per_task']} tokens/task, "
                   f"{report['refusal_then_recovery']} refusal-then-recovery of {report['refusals']} refusals")
         return 0 if report["passed"] == report["tasks"] else 1
+    if cmd == "export":
+        from .core import export as export_mod
+
+        fmt = args.format
+        if fmt == "list":
+            formats = export_mod.list_formats()
+            if args.json:
+                print(compact_json({"formats": formats}))
+            else:
+                print("Available export formats:")
+                for f in formats:
+                    print(f"  {f}")
+            return 0
+
+        result = export_mod.export_from_registry(
+            tk.engine.registry,
+            fmt,
+            tier=args.tier,
+            read_only=getattr(args, "export_read_only", False),
+        )
+        output = compact_json(result)
+        if args.output:
+            with open(args.output, "w", encoding="utf-8") as fh:
+                fh.write(output)
+            print(f"Exported {result['count']} tools to {args.output}", file=sys.stderr)
+        else:
+            if args.json:
+                print(output)
+            else:
+                print(pretty_json(result))
+        return 0
     if cmd == "skills":
         if args.action == "list":
             return _emit(call("skills.list", {}), json_out=args.json)
