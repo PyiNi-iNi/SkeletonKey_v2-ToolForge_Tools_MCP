@@ -655,6 +655,62 @@ _spec(
                   "additionalProperties": False},
 )
 
+# ================================================================ P7 planner
+_spec(
+    id="planner.plan", title="Build an execution plan from planned tool calls",
+    tier="full",
+    description="Build a read-only execution plan from a list of planned tool calls. "
+                "Uses parallel_safe and stateful metadata to detect conflicts and "
+                "determine serialization order. The plan is not executed - it is "
+                "inspected before dispatch. Conflicts (write-write or write-stateful "
+                "on the same resource) are flagged rather than silently applied. "
+                "Use this before a batch of related calls to check safety.",
+    capability="planner.plan", risk="none", parallel_safe=True, idempotent=True,
+    typical_latency_ms=2, stateful="none",
+    tags=["planner", "plan", "dag", "conflict", "parallel", "safety"],
+    see_also=["registry.describe", "registry.route"],
+    examples=[{"args": {"calls": [{"tool_id": "fs.read", "args": {"path": "/tmp/x"}},
+                                  {"tool_id": "fs.read", "args": {"path": "/tmp/y"}}]}}],
+    input_schema={"type": "object",
+                  "properties": {
+                      "calls": {"type": "array",
+                                "description": "Planned tool calls in intended execution order.",
+                                "items": {"type": "object",
+                                          "properties": {
+                                              "tool_id": {"type": "string", "description": "Tool id (fs.read, shell.run, ...)"},
+                                              "args": {"type": "object", "description": "Arguments for the call"}},
+                                          "required": ["tool_id"], "additionalProperties": False},
+                                "minItems": 1, "maxItems": 100},
+                      "strict": {"type": "boolean", "default": False,
+                                 "description": "If true, raise on conflicts instead of recording them."}},
+                  "required": ["calls"], "additionalProperties": False},
+)
+
+# ================================================================ P7 export
+_spec(
+    id="planner.export", title="Export tools to an external agent format",
+    tier="full",
+    description="Export the advertised tool set to a format that external agent "
+                "frameworks can consume. Supported formats: openai-tools (OpenAI "
+                "function-calling), anthropic-tools (Anthropic tool-use), "
+                "mcp-manifest (MCP tools/list). Secret-bearing default values are "
+                "redacted. The export is a snapshot of the current advertisement.",
+    capability="planner.export", risk="none", parallel_safe=True, idempotent=True,
+    typical_latency_ms=5, stateful="none",
+    tags=["export", "openai", "anthropic", "mcp", "interop"],
+    see_also=["registry.list", "planner.plan"],
+    examples=[{"args": {"format": "openai-tools"}}, {"args": {"format": "anthropic-tools", "tier": "task"}}],
+    input_schema={"type": "object",
+                  "properties": {
+                      "format": {"type": "string", "enum": ["openai-tools", "anthropic-tools", "mcp-manifest"],
+                                 "description": "Target export format."},
+                      "tier": {"type": ["string", "null"], "default": None,
+                               "description": "Export tools from this tier; omit for the active tier."},
+                      "read_only": {"type": "boolean", "default": False,
+                                    "description": "Export only read-only tools."}},
+                  "required": ["format"], "additionalProperties": False},
+)
+
 
 _spec(
     id="shell.quote", title="Quote values for a dialect",
@@ -1199,6 +1255,33 @@ def register(reg: Any, *, engine: Any, shells: Any, fs: Any, journal: Any, skill
             out["by_source"] = engine.registry.stats_by_source()
         return out
 
+    # ---- P7 planner + export
+    def planner_plan(calls: list[dict[str, Any]], strict: bool = False) -> dict[str, Any]:
+        from ..core.planner import plan as build_plan
+        tasks = []
+        for entry in calls:
+            tool_id = entry["tool_id"]
+            args = entry.get("args") or {}
+            try:
+                man = engine.registry.get(tool_id)
+            except SkeletonKeyError:
+                raise SkeletonKeyError(
+                    E.UNKNOWN_TOOL, f"planner.plan: unknown tool {tool_id!r}",
+                    details={"tool_id": tool_id,
+                             "hint": "call registry.search or registry.route to find the right tool"},
+                ) from None
+            tasks.append((man, args))
+        p = build_plan(tasks, strict=strict)
+        return p.to_dict()
+
+    def planner_export(format: str, tier: str | None = None,
+                       read_only: bool = False) -> dict[str, Any]:
+        from ..core.export import export_from_registry
+        return export_from_registry(
+            engine.registry, format,
+            tier=tier, read_only=read_only,
+        )
+
     def policy_grant(tool: str, scope: str = "task", ctx: Any = None,
                      engine: Any = None) -> dict[str, Any]:
         """Record an approval grant with a receipt (PLAN P3: a receipt for every
@@ -1494,6 +1577,7 @@ def register(reg: Any, *, engine: Any, shells: Any, fs: Any, journal: Any, skill
                      ("registry.route", registry_route), ("registry.expand", registry_expand),
                      ("capabilities.explain", capabilities_explain),
                      ("registry.explain_all", registry_explain_all),
+                     ("planner.plan", planner_plan), ("planner.export", planner_export),
                      ("policy.grant", policy_grant)]:
         add(name, fn)
     for name, fn in [("pub.store_put", pub_store_put), ("pub.store_list", pub_store_list),

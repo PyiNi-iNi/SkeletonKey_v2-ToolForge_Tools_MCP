@@ -144,6 +144,7 @@ class Plan:
             ],
             "parallel_groups": self.parallel_groups,
             "read_only": self.read_only,
+            "safe_to_execute": len(self.conflicts) == 0,
             "stateful_steps": self.stateful_steps,
             "estimated_latency_ms": self.estimated_latency_ms,
             "warnings": self.warnings,
