@@ -20,6 +20,15 @@ from .model import (
     model_digest,
 )
 from .render import render_html
+from .server import VizServer, serve
 
-__all__ = ["VizEdge", "VizModel", "VizNode", "build_viz_model", "model_digest",
-           "render_html"]
+__all__ = [
+    "VizEdge",
+    "VizModel",
+    "VizNode",
+    "VizServer",
+    "build_viz_model",
+    "model_digest",
+    "render_html",
+    "serve",
+]

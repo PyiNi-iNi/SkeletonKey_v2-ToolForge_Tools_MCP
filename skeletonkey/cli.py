@@ -11,6 +11,7 @@ import argparse
 import json
 import os
 import sys
+import time
 from typing import Any
 
 from . import __version__
@@ -283,7 +284,15 @@ def main(argv: list[str] | None = None) -> int:
     vz.add_argument("--title", default="SkeletonKey toolset",
                     help="page title for the HTML catalog")
     vz.add_argument("--open", dest="viz_open", action="store_true",
-                    help="open the written page in the default browser")
+                    help="open the page in the default browser (with --serve too)")
+    vz.add_argument("--serve", action="store_true",
+                    help="serve the catalog and watch for toolset drift")
+    vz.add_argument("--port", type=int, default=0,
+                    help="port for --serve (default: an unused one)")
+    vz.add_argument("--host", default="127.0.0.1",
+                    help="bind address for --serve (default: loopback only)")
+    vz.add_argument("--poll-ms", type=int, default=2000,
+                    help="how often the served page checks for drift")
     vz.add_argument("--tier", default=None, choices=["core", "task", "full"],
                     help="build the model for this advertisement tier (default: active tier)")
     vz.add_argument("--read-only", dest="viz_read_only", action="store_true",
@@ -558,6 +567,33 @@ def _dispatch(args: argparse.Namespace, tk: Any, call: Any, cfg: Config) -> int:
         return 0
     if cmd == "viz":
         from .viz import build_viz_model, render_html
+
+        if args.serve:
+            from .viz.server import VizServer
+
+            server = VizServer(tk.engine.registry, host=args.host, port=args.port,
+                               title=args.title, tier=args.tier,
+                               read_only=getattr(args, "viz_read_only", False),
+                               poll_ms=args.poll_ms)
+            server.start()
+            agg = server.model().aggregates
+            print(f"viz serving {agg['registered']} tools "
+                  f"({agg['advertised']} advertised) at {server.url}", file=sys.stderr)
+            print("  routes: / /api/model /api/digest /api/tool/<id> /healthz",
+                  file=sys.stderr)
+            print("  ctrl-c to stop", file=sys.stderr)
+            if getattr(args, "viz_open", False):
+                import webbrowser
+
+                webbrowser.open(server.url)
+            try:
+                while True:
+                    time.sleep(0.5)
+            except KeyboardInterrupt:
+                print("", file=sys.stderr)
+            finally:
+                server.stop()
+            return 0
 
         model = build_viz_model(
             tk.engine.registry,

@@ -149,7 +149,8 @@ def test_page_makes_no_network_request(page, parsed):
 def test_page_is_one_file_with_inline_css_and_js(page):
     assert page.startswith("<!doctype html>")
     assert "<style>" in page and "</style>" in page
-    assert page.count('<script') == 2      # the model payload + the behaviour
+    # the model payload, the live config (V2), and the behaviour - all inline
+    assert page.count("<script") == 3
     assert page.rstrip().endswith("</html>")
 
 
@@ -187,8 +188,8 @@ def test_a_tool_cannot_break_out_of_the_script_block(toolkit):
     )
     page = render_html(build_viz_model(reg))
 
-    # exactly the two real closing tags survive; the payload's is escaped
-    assert page.count("</script>") == 2
+    # exactly the three real closing tags survive; the payload's is escaped
+    assert page.count("</script>") == 3
     # the payload cannot terminate its block, and nothing became live markup:
     # the hostile string only ever survives entity-escaped as visible text.
     assert "<img src=x" not in page

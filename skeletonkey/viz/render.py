@@ -149,12 +149,21 @@ def _header(model: VizModel, title: str) -> str:
 # --------------------------------------------------------------------- page
 
 def render_html(model: VizModel, *, title: str = "SkeletonKey toolset",
-                embed_model: bool = True) -> str:
-    """Render the whole model as one standalone HTML document."""
+                embed_model: bool = True, live: bool = False,
+                poll_ms: int = 2000) -> str:
+    """Render the whole model as one standalone HTML document.
+
+    `live=True` adds the drift banner: the page polls `/api/digest` and, when
+    the toolset changes underneath it, says so instead of quietly showing a
+    stale catalog. The served page (V2) is otherwise byte-for-byte the file you
+    get from `sk viz -o tools.html` - one renderer, not two.
+    """
     doc = model.to_json()
     doc["model_digest"] = model.digest()
     cards = "".join(_card(n) for n in sorted(model.nodes, key=lambda n: (n.group, n.id)))
     payload = _json_for_script(doc) if embed_model else "null"
+    live_cfg = _json_for_script({"live": bool(live), "pollMs": int(poll_ms),
+                                 "digest": doc["model_digest"]})
 
     return f"""<!doctype html>
 <html lang="en">
@@ -167,6 +176,10 @@ def render_html(model: VizModel, *, title: str = "SkeletonKey toolset",
 </style>
 </head>
 <body>
+<div id="drift" hidden>The toolset changed underneath this page.
+  <button id="reload">reload</button>
+  <span id="drift-what" class="dim"></span>
+</div>
 {_header(model, title)}
 <div class="layout">
   <nav id="rail">{_group_rail(model)}</nav>
@@ -195,6 +208,7 @@ def render_html(model: VizModel, *, title: str = "SkeletonKey toolset",
 </aside>
 <div id="scrim" hidden></div>
 <script id="viz-model" type="application/json">{payload}</script>
+<script id="viz-live" type="application/json">{live_cfg}</script>
 <script>
 {_JS}
 </script>
@@ -269,6 +283,10 @@ input,select,button { background:#0d1117; color:var(--fg); border:1px solid var(
 #detail a:hover { text-decoration:underline; }
 .gate-bad { color:var(--warn); }
 #empty { color:var(--dim); }
+#drift { position:sticky; top:0; z-index:4; padding:8px 14px; background:#9e6a0322;
+         border-bottom:1px solid var(--warn); color:var(--warn); display:flex;
+         gap:10px; align-items:center; flex-wrap:wrap; }
+#drift button { color:var(--fg); }
 @media (prefers-reduced-motion:no-preference) { .card { transition:border-color .12s; } }
 @media (max-width:760px) { #rail { display:none; } }
 """
@@ -444,5 +462,36 @@ _JS = r"""
 
   apply();
   if (location.hash.length > 1) { open(decodeURIComponent(location.hash.slice(1))); }
+
+  // ---- drift watch (V2: only when served) ---------------------------------
+  var cfgEl = document.getElementById("viz-live");
+  var CFG = cfgEl ? JSON.parse(cfgEl.textContent) : null;
+  if (CFG && CFG.live && window.fetch) {
+    var banner = document.getElementById("drift");
+    var what = document.getElementById("drift-what");
+    document.getElementById("reload").addEventListener("click", function () {
+      location.reload();
+    });
+    var misses = 0;
+    setInterval(function () {
+      fetch("api/digest", { cache: "no-store" }).then(function (r) {
+        return r.json();
+      }).then(function (d) {
+        misses = 0;
+        if (d.model_digest && d.model_digest !== CFG.digest) {
+          var before = MODEL ? MODEL.aggregates.registered : "?";
+          what.textContent = "was " + before + " tools, now " + d.registered +
+            " (" + d.advertised + " advertised)";
+          banner.hidden = false;
+        }
+      }).catch(function () {
+        // The server went away: say so once, then stop shouting about it.
+        if (++misses === 3) {
+          what.textContent = "the viz server is no longer answering";
+          banner.hidden = false;
+        }
+      });
+    }, CFG.pollMs || 2000);
+  }
 }());
 """

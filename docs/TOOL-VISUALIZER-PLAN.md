@@ -4,10 +4,11 @@
 knows about — what it is, whether it is advertised here and why, what it costs, what it
 touches, how it relates to the others, and what happened the last time it ran.
 
-**Status:** **V0 + V1 shipped** — `skeletonkey/viz/` (`model.py`, `render.py`),
-`sk viz` (JSON model *and* standalone HTML catalog), `schemas/viz-model.schema.json`,
-39 tests across `tests/test_viz_model.py` and `tests/test_viz_render.py`.
-V2–V6 below are still plan.
+**Status:** **V0 + V1 + V2 shipped** — `skeletonkey/viz/` (`model.py`, `render.py`,
+`server.py`), `sk viz` in three modes (JSON model, standalone HTML catalog, served page
+with drift detection), `schemas/viz-model.schema.json`, 60 tests across
+`tests/test_viz_model.py`, `tests/test_viz_render.py` and `tests/test_viz_server.py`.
+V3–V6 below are still plan.
 
 ## 0. Ground truth (measured on this box, `python -m skeletonkey.cli describe`)
 
@@ -117,7 +118,7 @@ $ sk viz --json | jq .aggregates                # stdout stays machine-readable
 
 ---
 
-## V2 — Serve it: `sk viz` and the live panel route
+## V2 — Serve it: `sk viz --serve` ✅ SHIPPED
 
 **Deliverables**
 - `skeletonkey/viz/server.py` — `ThreadingHTTPServer`, mirroring `live/panel.py`
@@ -131,8 +132,29 @@ $ sk viz --json | jq .aggregates                # stdout stays machine-readable
   [--watch]`, registered next to `describe`/`export` in `cli.py`.
 - Reachable from the existing live panel as a `/tools` route so one server can host both.
 
-**Acceptance:** `tests/test_viz_server.py` starts the server on port 0, hits every
-route, asserts JSON matches `--json` output, asserts shutdown leaves no thread behind.
+**Acceptance (as built):** `tests/test_viz_server.py` — 21 tests. Every route answered on
+a port-0 loopback server; `/api/model` byte-matches the library call's digest; `/api/digest`
+stays under 400 bytes; registering a tool while serving changes the digest and appears in
+the page **without a restart** (the model is rebuilt per request under a lock, never
+cached); start is idempotent and `stop()` leaves no live `sk-viz` thread and a rebindable
+port; unknown routes 404 *with the route list*; a raised exception becomes a 500 and the
+server keeps serving; 8 concurrent requests all succeed; serving never perturbs the
+registry's tool list or digest.
+
+**Read-only, structurally.** There is no `do_POST`/`do_PUT`/`do_DELETE`/`do_PATCH` on the
+handler at all — asserted by test, not by convention — so V5's `--allow-calls` gate is
+pre-decided in the negative. That is the right default for something an operator leaves
+running. Loopback-only bind unless `--host` says otherwise.
+
+```console
+$ sk viz --serve                 # random free port on 127.0.0.1, prints the URL
+$ sk viz --serve --port 8080 --open --poll-ms 1000
+```
+
+The served page is the V1 renderer with `live=True` — one renderer, not two. The drift
+banner polls `/api/digest`, compares it to the digest it was rendered with, and offers a
+reload when a skill install or an HMR swap changes the toolset underneath it; if the server
+goes away it says that instead, once, after three misses.
 
 ---
 
