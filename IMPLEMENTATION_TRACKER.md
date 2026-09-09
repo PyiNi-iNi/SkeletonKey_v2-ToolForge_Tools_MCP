@@ -4,13 +4,13 @@
 
 This document tracks the implementation progress of comprehensive integration support for SkeletonKey v2, covering SDKs, external APIs, client libraries, API generators, frameworks, toolchains, CLIs, runtimes, protocol bindings, codegen systems, platform-specific devkits, and various integrations.
 
-## 🎉 Current Status: P6 IN PROGRESS - REST Integration Base
+## 🎉 Current Status: P7 EXPLORATORY - Tool Export, Planner, Remote Probe, Quarantine, Subagent
 
-**Last Major Achievement:** Phase P5.3 (Integration Discovery & Dynamic Loading) has been **successfully completed** with all core features implemented, tested, and committed.
+**Last Major Achievement:** Phase P6 (REST Integration Base) shipped, plus P7 exploratory modules implemented.
 
-**Current Phase:** P6 (SDK/API framework) - reusable REST integration base implemented.
+**Current Phase:** P7 (Exploratory) - tool export, planner/DAG, remote target probe, self-authored quarantine, subagent boundary.
 
-**Next Steps:** migrate GitHub/Stripe shared transport onto `RestIntegration`, then add a third generated-provider fixture.
+**Next Steps:** Wire P7 modules into the engine autopilot loop; add MCP-host integration for tool export; extend planner with execution feedback; harden remote probe with authentication backends.
 
 ## Phases and Status
 
@@ -427,6 +427,39 @@ This document tracks the implementation progress of comprehensive integration su
 
 **Next:**
 - [ ] Optional SDK integration coverage
+
+### Phase P7: Exploratory — Export, Planner, Remote Probe, Quarantine, Subagent
+**Status:** 🟡 IN PROGRESS (exploratory seams implemented)
+
+**Delivered:**
+- [x] **Tool export** (`skeletonkey/core/export.py`) — export advertised tools to
+      OpenAI function-calling, Anthropic tool-use, and MCP manifest formats.
+      Secret-bearing defaults are redacted; `sk export <format>` CLI subcommand.
+- [x] **Planner/DAG** (`skeletonkey/core/planner.py`) — read-only execution plan
+      from `(manifest, args)` pairs. Uses `parallel_safe`, `stateful`, and
+      resource-group inference. Detects write-write and write-stateful conflicts.
+- [x] **Remote target probe** (`skeletonkey/remote/`) — read-only capability
+      probing for local, Docker, and SSH targets. Reports OS, shells, tools,
+      filesystem, and resource limits.
+- [x] **Self-authored quarantine** (`skeletonkey/core/quarantine.py`) — run
+      generated tools in restricted subprocesses with clean environment, scratch
+      directory, reduced timeout, and promotion-after-success gate.
+- [x] **Subagent boundary** (`skeletonkey/core/subagent.py`) — restricted engine
+      view with tier/read-only/call-limit constraints, allowlist/denylist, and
+      ledger-tail history.
+- [x] **CI readiness script** (`scripts/ci_matrix_setup.sh`) — optional SDK
+      installation, OS-specific setup, dependency audit, API reference
+      generation, and integration templates.
+
+**Tests:** 97 new tests (`test_export.py`, `test_planner.py`,
+`test_remote_targets.py`, `test_quarantine.py`, `test_subagent.py`).
+
+**Next:**
+- [ ] Wire planner into the engine autopilot loop
+- [ ] Add MCP-host integration for tool export
+- [ ] Extend remote probe with authentication backends
+- [ ] Add execution feedback to planner (observed vs estimated latency)
+- [ ] Quarantine promotion to main registry integration
 
 ## Configuration Reference
 

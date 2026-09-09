@@ -255,6 +255,16 @@ def main(argv: list[str] | None = None) -> int:
     ev.add_argument("--suite", action="append", required=True,
                     help="suite file, repeatable (one task per JSON line)")
 
+    ex = sub.add_parser("export", help="export tools to external agent formats (openai-tools, anthropic-tools, mcp-manifest)")
+    ex.add_argument("format", choices=["openai-tools", "anthropic-tools", "mcp-manifest", "list"],
+                    help="export format, or 'list' to show available formats")
+    ex.add_argument("--tier", default=None, choices=["core", "task", "full"],
+                    help="export tools from this tier (default: full)")
+    ex.add_argument("--read-only", dest="export_read_only", action="store_true",
+                    help="export only read-only tools")
+    ex.add_argument("--output", "-o", default=None,
+                    help="write output to file instead of stdout")
+
     args = ap.parse_args(argv)
     if args.cmd == "doctor":
         # Doctor builds its own scratch-state toolkit: the operator's real state dir is
@@ -460,6 +470,37 @@ def _dispatch(args: argparse.Namespace, tk: Any, call: Any, cfg: Config) -> int:
                   f"mean {report['mean_tokens_per_task']} tokens/task, "
                   f"{report['refusal_then_recovery']} refusal-then-recovery of {report['refusals']} refusals")
         return 0 if report["passed"] == report["tasks"] else 1
+    if cmd == "export":
+        from .core import export as export_mod
+
+        fmt = args.format
+        if fmt == "list":
+            formats = export_mod.list_formats()
+            if args.json:
+                print(compact_json({"formats": formats}))
+            else:
+                print("Available export formats:")
+                for f in formats:
+                    print(f"  {f}")
+            return 0
+
+        result = export_mod.export_from_registry(
+            tk.engine.registry,
+            fmt,
+            tier=args.tier,
+            read_only=getattr(args, "export_read_only", False),
+        )
+        output = compact_json(result)
+        if args.output:
+            with open(args.output, "w", encoding="utf-8") as fh:
+                fh.write(output)
+            print(f"Exported {result['count']} tools to {args.output}", file=sys.stderr)
+        else:
+            if args.json:
+                print(output)
+            else:
+                print(pretty_json(result))
+        return 0
     if cmd == "skills":
         if args.action == "list":
             return _emit(call("skills.list", {}), json_out=args.json)
