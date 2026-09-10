@@ -11,10 +11,10 @@ Status legend: 🔴 not started · 🟡 in progress · ✅ shipped
 |---|---|---|
 | V9.5 | Performance: the O(n²) explain | ✅ shipped |
 | V10 | Make the suite green (`[mcp]` extra) | ✅ shipped |
-| V11 | Adoption: accept the tools people already have | 🔴 |
+| V11 | Adoption: accept the tools people already have | ✅ |
 | V12 | Live invalidation: HMR → MCP → catalog | 🔴 |
 | V13 | `viz.explain` as a tool an agent can call | 🔴 |
-| V14 | CI recipe: the toolset snapshot as a gate | 🔴 |
+| V14 | CI recipe: the toolset snapshot as a gate | ✅ |
 | V15 | Extract `skeletonkey-viz` | 🔴 |
 | V16 | The 3D viewport, only if earned | 🔴 |
 
@@ -95,7 +95,7 @@ The 27 failures were treated as a known baseline for this entire session —
 including by me — and they were never real. Anything genuinely expected to
 fail should `skip` with a reason.
 
-## V11 — Accept the tools people already have 🔴
+## V11 — Accept the tools people already have ✅
 
 The measured adoption barrier. An outsider tries the obvious thing and gets:
 
@@ -125,6 +125,34 @@ function array renders. Round-trip test: adapted model ≡ hand-built manifests.
 
 **Do not:** guess at risk or destructiveness from tool names. Unknown means
 unknown, and the page must say so rather than invent a reassuring answer.
+
+### Shipped
+
+`skeletonkey/viz/adapt.py` — `to_manifests()` / `as_registry()`, accepting
+OpenAI and Anthropic function schemas (including the `{"type": "function"}`
+wrapper), MCP `tools/list` and its `{"tools": [...]}` envelope, `{id: {...}}`
+mappings, bare `ToolManifest`s, and a real `Registry` (passed through).
+`build_viz_model` calls it unconditionally, so the failing snippet works.
+`sk viz --from FILE`, and `docs/VISUALIZE-YOUR-TOOLS.md`.
+
+Two decisions worth recording:
+
+- **It converts into a real `Registry`, not a duck-typed stub.** Adapted tools
+  go through identical gate evaluation, dedupe and budget logic, so `explain`
+  and `diff` work on them. The alternative — a lightweight shim — would have
+  been a second, weaker code path that drifts from the real one and quietly
+  renders different answers.
+- **The no-handler invariant is preserved** by injecting a handler that
+  *raises*. An adapted tool is documentation; a no-op handler would let a
+  caller believe something ran.
+
+The "do not guess" rule needed enforcing, not just stating. The first version
+of the test asserted only `risk_declared is False`, which a name-sniffing
+adapter passes happily — it can set `risk="destructive"` *and* flag it
+undeclared. The test now asserts an undeclared tool's risk does not vary with
+its name (`db.delete_all` must land where `docs.read_page` lands), which is
+the property that actually matters. Verified by mutation: the weak assertion
+survived the guessing adapter, the strong one kills it.
 
 ---
 
@@ -170,7 +198,7 @@ terminate, and there should be a test that says so.
 
 ---
 
-## V14 — The snapshot as a CI gate 🔴
+## V14 — The snapshot as a CI gate ✅
 
 `docs/TOOLSET.txt` is the most transferable idea in the repo and currently
 only this repo benefits.
@@ -186,6 +214,20 @@ Tasks:
 
 **Acceptance:** `--check` exits non-zero on a stale file and prints a readable
 diff; exits 0 when current.
+
+### Shipped
+
+`sk viz --summary --check -o FILE`: unified diff on stdout, the regenerate
+command on stderr, exit 1. It never writes the file — a gate that silently
+fixes what it is gating is not a gate, and there is a test asserting the file
+is byte-identical after a failed check. The GH Actions snippet and the
+limitation ("this does not catch behaviour changes behind an unchanged
+manifest") are in `docs/VISUALIZE-YOUR-TOOLS.md`.
+
+One consistency fix fell out of this: `--summary` printed `read` for tools
+that had never declared a risk, while the HTML page said "risk not declared".
+Same model, opposite conclusions depending on which surface you looked at. The
+summary now prints `undeclared`, and a test pins the two together.
 
 ---
 

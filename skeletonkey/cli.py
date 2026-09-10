@@ -327,6 +327,12 @@ def main(argv: list[str] | None = None) -> int:
                     help="overlay what the ledger measured, and lint the manifests")
     vz.add_argument("--summary", action="store_true",
                     help="compact, diff-reviewable text summary (one line per tool)")
+    vz.add_argument("--check", action="store_true",
+                    help="with --summary and -o: exit 1 and print a diff if the file "
+                         "is stale, instead of rewriting it (for CI)")
+    vz.add_argument("--from", dest="viz_from", metavar="FILE", default=None,
+                    help="visualise a tool list from a JSON file (OpenAI functions, "
+                         "an MCP tools/list, or a plain list) instead of this registry")
     vz.add_argument("--drift", action="store_true",
                     help="print only the contract-drift list and exit (non-zero if any)")
     vz.add_argument("--tier", default=None, choices=["core", "task", "full"],
@@ -608,6 +614,27 @@ def _dispatch(args: argparse.Namespace, tk: Any, call: Any, cfg: Config) -> int:
     if cmd == "viz":
         from .viz import build_viz_model, render_html
 
+        # --from lets you point the visualiser at somebody else's tool list:
+        # an OpenAI function array, an MCP tools/list, a plain list of dicts.
+        # It is adapted into a real Registry (viz/adapt.py) so every downstream
+        # surface - explain, diff, serve, summary - works identically rather
+        # than through a second, weaker code path.
+        viz_registry = tk.engine.registry
+        if getattr(args, "viz_from", None):
+            from .viz.adapt import as_registry
+
+            try:
+                with open(args.viz_from, encoding="utf-8") as fh:
+                    raw = json.load(fh)
+            except (OSError, ValueError) as exc:
+                print(f"cannot read {args.viz_from}: {exc}", file=sys.stderr)
+                return 2
+            try:
+                viz_registry = as_registry(raw)
+            except (TypeError, ValueError) as exc:
+                print(f"cannot adapt {args.viz_from}: {exc}", file=sys.stderr)
+                return 2
+
         # ---- V4: the why-not surfaces, which answer and exit -----------------
         if args.explain or args.why_not:
             from .viz.explain import explain_model, explain_tool
@@ -618,11 +645,11 @@ def _dispatch(args: argparse.Namespace, tk: Any, call: Any, cfg: Config) -> int:
             common = {"tier": args.tier,
                       "read_only": getattr(args, "viz_read_only", False)}
             if args.explain:
-                chains = {args.explain: explain_tool(tk.engine.registry,
+                chains = {args.explain: explain_tool(viz_registry,
                                                      args.explain, **common)}
             else:
                 chains = {k: v for k, v in
-                          explain_model(tk.engine.registry, **common).items()
+                          explain_model(viz_registry, **common).items()
                           if not v.advertised}
             if want_json:
                 print(compact_json({k: v.to_json() for k, v in chains.items()}))
@@ -650,7 +677,7 @@ def _dispatch(args: argparse.Namespace, tk: Any, call: Any, cfg: Config) -> int:
             with open(args.diff, encoding="utf-8") as fh:
                 saved = json.load(fh)
             current = build_viz_model(
-                tk.engine.registry, tier=args.tier,
+                viz_registry, tier=args.tier,
                 read_only=getattr(args, "viz_read_only", False))
             report = diff_models(saved, current)
             if args.json or getattr(args, "viz_json", False):
@@ -677,7 +704,7 @@ def _dispatch(args: argparse.Namespace, tk: Any, call: Any, cfg: Config) -> int:
         if args.serve:
             from .viz.server import VizServer
 
-            server = VizServer(tk.engine.registry, host=args.host, port=args.port,
+            server = VizServer(viz_registry, host=args.host, port=args.port,
                                title=args.title, tier=args.tier,
                                read_only=getattr(args, "viz_read_only", False),
                                poll_ms=args.poll_ms,
@@ -706,11 +733,11 @@ def _dispatch(args: argparse.Namespace, tk: Any, call: Any, cfg: Config) -> int:
         if args.as_host:
             from .viz.explain import hypothetical_profile
 
-            profile = hypothetical_profile(tk.engine.registry.profile, args.as_host)
+            profile = hypothetical_profile(viz_registry.profile, args.as_host)
         else:
             profile = None
         model = build_viz_model(
-            tk.engine.registry,
+            viz_registry,
             profile=profile,
             tier=args.tier,
             read_only=getattr(args, "viz_read_only", False),
@@ -758,6 +785,36 @@ def _dispatch(args: argparse.Namespace, tk: Any, call: Any, cfg: Config) -> int:
             from .viz import summary_lines
 
             output = summary_lines(model)
+            # --check turns the snapshot into a CI gate: no rewrite, exit 1
+            # and show the diff. The diff is the point - it tells a reviewer
+            # the SHAPE of the toolset moved, which is the thing worth
+            # noticing, not merely that a file is out of date.
+            if args.check:
+                if not args.output:
+                    print("--check needs -o FILE (the snapshot to compare against)",
+                          file=sys.stderr)
+                    return 2
+                try:
+                    with open(args.output, encoding="utf-8") as fh:
+                        on_disk = fh.read()
+                except OSError:
+                    print(f"{args.output} does not exist; generate it with "
+                          f"`sk viz --summary -o {args.output}`", file=sys.stderr)
+                    return 1
+                if on_disk.strip() == output.strip():
+                    print(f"{args.output} is current", file=sys.stderr)
+                    return 0
+                import difflib
+
+                diff = difflib.unified_diff(
+                    on_disk.splitlines(), output.splitlines(),
+                    fromfile=f"{args.output} (committed)", tofile="live registry",
+                    lineterm="", n=2)
+                print("\n".join(diff))
+                print(f"\n{args.output} is stale. Regenerate with:\n"
+                      f"  sk viz --summary -o {args.output}\n"
+                      f"Read the diff above before committing it.", file=sys.stderr)
+                return 1
         elif as_json:
             doc = model.to_json()
             doc["model_digest"] = model.digest()

@@ -46,6 +46,11 @@ class VizNode:
     priority: int = 50
     tier: str = "full"
     risk: str = "read"
+    #: True when the source never declared a risk class, so `risk` is only the
+    #: schema default rather than a claim anyone made. Adapted catalogs
+    #: (viz/adapt.py) set this; the page must say "not declared" rather than
+    #: printing a reassuring "read" nobody stands behind.
+    risk_declared: bool = True
     version: str = "1"
     source: str = "builtin"
 
@@ -193,13 +198,16 @@ def summary_lines(model: VizModel) -> str:
     ]
     for node in sorted(model.nodes, key=lambda n: n.id):
         exposure = "advertised" if node.advertised else f"withheld:{node.withheld_by}"
+        # Match the page: an undeclared risk must not print as a confident
+        # "read" here either, or the snapshot asserts something nobody claimed.
+        risk = node.risk if node.risk_declared else "undeclared"
         flags = "".join([
             "D" if node.destructive else "-",
             "R" if node.reversible else "-",
             "I" if node.idempotent else "-",
             "P" if node.parallel_safe else "-",
         ])
-        out.append(f"{node.id:34} {node.tier:5} {node.risk:11} "
+        out.append(f"{node.id:34} {node.tier:5} {risk:11} "
                    f"{node.token_cost:5}tok {flags} {exposure}")
     return "\n".join(out) + "\n"
 
@@ -331,6 +339,15 @@ def build_viz_model(
     `include_internal=False`, i.e. exactly the list a host would get, so
     `node.advertised` means "this host would show you this tool".
     """
+    # Accept whatever the caller has: a real Registry passes through, a list
+    # of OpenAI/MCP-style dicts is converted (viz/adapt.py). Doing this here
+    # rather than at every call site is the whole point - the obvious call
+    # should work.
+    if not (hasattr(registry, "all") and hasattr(registry, "advertise")):
+        from .adapt import as_registry
+
+        registry = as_registry(registry)
+
     manifests = sorted(registry.all(), key=lambda m: m.id)
     snap = registry.advertise(
         profile=profile,
@@ -347,6 +364,7 @@ def build_viz_model(
         is_adv = man.id in advertised_ids
         budget_drop = snap.budget_drops.get(man.id, "")
         node = VizNode(
+            risk_declared=not (man.meta or {}).get("unknown_risk", False),
             id=man.id,
             group=man.group,
             title=man.title,

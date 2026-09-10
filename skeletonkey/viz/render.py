@@ -74,8 +74,14 @@ def _stat(label: str, value: str, *, tone: str = "") -> str:
 
 
 def _badges(node: Any) -> str:
-    out = [f'<span class="badge risk-{_esc(node.risk)}">{_esc(node.risk)}</span>',
-           f'<span class="badge tier">{_esc(node.tier)}</span>']
+    # An undeclared risk must not render as a confident "read": the page would
+    # be making a safety claim nobody actually made. Say it is unknown.
+    if getattr(node, "risk_declared", True):
+        risk = f'<span class="badge risk-{_esc(node.risk)}">{_esc(node.risk)}</span>'
+    else:
+        risk = ('<span class="badge warn" title="the source catalog did not '
+                'declare a risk class">risk not declared</span>')
+    out = [risk, f'<span class="badge tier">{_esc(node.tier)}</span>']
     if node.destructive:
         out.append('<span class="badge danger">destructive</span>')
     if node.reversible:

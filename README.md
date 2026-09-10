@@ -157,6 +157,7 @@ handler at all. Details in [`docs/TOOL-VISUALIZER.md`](docs/TOOL-VISUALIZER.md).
 | [`docs/SHELL-DIALECTS.md`](docs/SHELL-DIALECTS.md) | bash vs pwsh vs python behaviour |
 | [`docs/SKILLS-SPEC.md`](docs/SKILLS-SPEC.md) | you are writing a `SKILL.md` |
 | [`docs/CONNECT-A-HOST.md`](docs/CONNECT-A-HOST.md) | you are wiring a host or debugging an install (`sk wire`, `sk doctor`) |
+| [`docs/VISUALIZE-YOUR-TOOLS.md`](docs/VISUALIZE-YOUR-TOOLS.md) | you have tool definitions from somewhere else (OpenAI functions, an MCP `tools/list`) and just want a page — no adoption required (`sk viz --from`) |
 | [`docs/TOOL-VISUALIZER.md`](docs/TOOL-VISUALIZER.md) | you want to *see* the toolset — the catalog, the graph, why a tool is withheld, whether a manifest still tells the truth (`sk viz`) |
 | [`docs/ROADMAP-V10-V16.md`](docs/ROADMAP-V10-V16.md) | you want to know what is planned next, what is deliberately declined, and why |
 | [`docs/SECURITY-MODEL.md`](docs/SECURITY-MODEL.md) | you need to know what is and is *not* enforced |

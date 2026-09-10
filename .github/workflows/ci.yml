@@ -119,14 +119,7 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install -e .
-      - name: Regenerate and diff
-        run: |
-          sk viz --summary -o /tmp/TOOLSET.txt
-          if ! diff -u docs/TOOLSET.txt /tmp/TOOLSET.txt; then
-            echo ""
-            echo "::error::docs/TOOLSET.txt is stale."
-            echo "Run: sk viz --summary -o docs/TOOLSET.txt"
-            echo "Then read the diff above before committing it - it is telling"
-            echo "you the shape of the toolset changed."
-            exit 1
-          fi
+      # V14: this used to be eight lines of hand-rolled diff. `--check` is the
+      # same gate, shipped as a command any project can copy.
+      - name: Snapshot is current
+        run: sk viz --summary --check -o docs/TOOLSET.txt
