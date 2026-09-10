@@ -51,17 +51,48 @@ How to use this server well:
 
 
 class McpBridge:
-    """Holds the adapter state; one per server (and one session context)."""
+    """Holds the adapter state; one per server, many client sessions.
+
+    `--transport streamable-http` serves several clients from one bridge, so
+    notification bookkeeping is per-connection: `sessions` holds every client
+    we have served, and `_digest` is the advertisement they were last told
+    about. A single shared digest would let the first client notified advance
+    it and silently starve the rest, which is the bug this structure exists to
+    prevent (see tests/test_mcp_multisession.py).
+    """
 
     def __init__(self, toolkit: Any) -> None:
         self.toolkit = toolkit
         self.engine = toolkit.engine
-        # the session we last served a request on; notifications (tools/list_changed) have to
-        # go somewhere, and the client that changed the toolset is the one that needs to know
+        # every client currently connected. Notifications go to all of them:
+        # a toolset change is not private to whoever triggered it.
+        self.sessions: list[Any] = []
+        # the session we last served a request on; kept for callers that still
+        # reach for a single session (and for stdio, where there is only one)
         self.session: Any = None
         self.ctx = CallContext.from_config(toolkit.config, session_id=f"mcp-{os.getpid()}")
         self._name_map: dict[str, str] = {}
         self._digest: str | None = None
+
+    # ----------------------------------------------------------------- sessions
+    def track_session(self, session: Any) -> None:
+        """Remember a client so it can be notified of toolset changes.
+
+        Idempotent: `on_list_tools` runs on every tools/list, and a client that
+        polls would otherwise stack up duplicates and get N notifications.
+        Identity comparison, not equality - session objects are not hashable
+        in every mcp version, and two distinct clients must never collapse.
+        """
+        if session is None:
+            return
+        if not any(s is session for s in self.sessions):
+            self.sessions.append(session)
+        self.session = session
+
+    def drop_session(self, session: Any) -> None:
+        self.sessions = [s for s in self.sessions if s is not session]
+        if self.session is session:
+            self.session = self.sessions[-1] if self.sessions else None
 
     # ------------------------------------------------------------------- naming
     def names(self) -> dict[str, str]:
@@ -172,7 +203,7 @@ def build_server(toolkit: Any, *, include_resources: bool = True, include_prompt
 
     # -------------------------------------------------------------------- tools
     async def on_list_tools(ctx: Any, params: Any) -> ListToolsResult:
-        bridge.session = getattr(ctx, "session", None) or bridge.session
+        bridge.track_session(getattr(ctx, "session", None))
         snap = bridge.advertise()
         bridge._digest = snap.digest
         # mcp 2.1.1 lowlevel: for tools/list the params model is
@@ -477,18 +508,42 @@ def _tail_file(path: str, nbytes: int) -> str:
 
 
 async def notify_tools_changed(bridge: McpBridge, session: Any) -> bool:
-    """Send tools/list_changed if the advertisement actually moved."""
+    """Tell every connected client the advertisement moved.
+
+    Returns True if at least one notification was delivered.
+
+    Fan-out, not point-to-point: under streamable-http one bridge serves
+    several clients, and a toolset change is not private to whoever caused it.
+    The digest advances once for the whole fan-out, so a settled change costs
+    exactly one notification per client no matter how many times this is
+    called.
+
+    A send failure means that client is gone; it is dropped rather than
+    retried, and - importantly - it does not abort the fan-out to its peers.
+    """
     if bridge._digest is None:
         return False        # no client has listed yet; a change notification would be noise
     snap = bridge.advertise()
-    if snap.digest == bridge._digest or session is None:
+    if snap.digest == bridge._digest:
         return False
+
+    bridge.track_session(session)
+    targets = list(bridge.sessions)
+    if not targets:
+        return False
+
+    # Advance before sending: a client that reconnects mid-fanout will call
+    # tools/list anyway, and re-entering here must not double-notify.
     bridge._digest = snap.digest
-    try:
-        await session.send_tool_list_changed()
-        return True
-    except Exception:
-        return False
+
+    delivered = 0
+    for target in targets:
+        try:
+            await target.send_tool_list_changed()
+            delivered += 1
+        except Exception:
+            bridge.drop_session(target)
+    return delivered > 0
 
 
 def make_approval_callback(*, auto: bool = False, echo: bool = True) -> Any:

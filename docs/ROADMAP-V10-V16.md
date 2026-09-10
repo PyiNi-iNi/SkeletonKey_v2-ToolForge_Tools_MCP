@@ -12,7 +12,7 @@ Status legend: 🔴 not started · 🟡 in progress · ✅ shipped
 | V9.5 | Performance: the O(n²) explain | ✅ shipped |
 | V10 | Make the suite green (`[mcp]` extra) | ✅ shipped |
 | V11 | Adoption: accept the tools people already have | ✅ |
-| V12 | Live invalidation: HMR → MCP → catalog | 🔴 |
+| V12 | Live invalidation: HMR → MCP → catalog | ✅ (premise corrected) |
 | V13 | `viz.explain` as a tool an agent can call | 🔴 |
 | V14 | CI recipe: the toolset snapshot as a gate | ✅ |
 | V15 | Extract `skeletonkey-viz` | 🔴 |
@@ -156,7 +156,7 @@ survived the guessing adapter, the strong one kills it.
 
 ---
 
-## V12 — Live invalidation 🔴
+## V12 — Live invalidation ✅ (premise corrected)
 
 A real correctness hole found by reading, not by a failing test:
 `notify_tools_changed` exists and `skills/watch.py` calls it, but **nothing in
@@ -174,6 +174,41 @@ Tasks:
 **Acceptance:** a reload that adds a tool produces exactly one
 `tools/list_changed`; one that changes nothing produces none (the existing
 digest check already guards this). The open catalog updates within one poll.
+
+### What actually shipped — and why it is not what this section describes
+
+I wrote this phase from reading the code. Three of its four claims did not
+survive being executed. Measured on a real toolkit:
+
+| Claim in this plan | Measured |
+|---|---|
+| `live/` reloads change the registry, clients never learn | **False.** A live reload does not touch the toolkit registry at all — generation stays put across `live.start` and `live.reload`. `live/` patches a *program's* namespace; it never registers tools. |
+| The mounted catalog needs wiring to the frame condvar | **Already works.** `VizMount` rebuilds from the registry per request and the page polls `/api/digest`; `integrations.load` moved it 81→91 tools with no changes. |
+| Debounce needed | **Already there**, in `FileWatcher._deliver`. |
+| Nothing notifies on registry change | **Mostly false.** Every MCP tool call already calls `notify_tools_changed` afterwards, so `integrations.load` (+10 tools) does notify. |
+
+So the "real correctness hole found by reading" was not real. Reading found a
+plausible story; running it found the story was wrong. Worth remembering: this
+plan asserted a bug confidently enough that I nearly built the fix before
+checking whether the bug existed.
+
+**But the probe found a different hole, which is real.** `McpBridge` was
+written when "one server, one client" was true, and `--transport
+streamable-http` falsified that without the bookkeeping being updated:
+
+- `_digest` was a single shared value. The first client notified advanced it,
+  so every *other* connected client was then told nothing — the digest already
+  matched — and kept serving a stale `tools/list` indefinitely.
+- `session` was a single slot overwritten by whichever client called last, so
+  a notification could go to the wrong client.
+- One dead client raised, and the exception ended the (point-to-point) send.
+
+Fixed: `bridge.sessions` tracks every connected client, `notify_tools_changed`
+fans out to all of them, a failed send drops that client without aborting the
+fan-out, and the digest advances once per settled change so repeated calls
+still cost exactly one notification each. `tests/test_mcp_multisession.py`
+(9 tests) pins it; verified by mutation — reverting the fan-out to
+point-to-point fails two of them.
 
 ---
 
@@ -276,7 +311,8 @@ permanent.
 Then **V11 + V14** together — both small, both convert this from an internal
 tool into something other projects use, and neither depends on the other.
 
-Then **V12** (a real correctness hole) and **V13** (the novel capability).
+Then **V12** (billed as a real correctness hole - the hole turned out to be
+elsewhere; see the phase notes) and **V13** (the novel capability).
 
 **V15** is the strategic bet: highest ceiling, and the one that expires if it
 is not decided. **V16** waits for evidence.
