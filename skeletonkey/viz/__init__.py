@@ -21,21 +21,26 @@ from .model import (
     model_digest,
 )
 from .render import render_html
+from .runtime import ToolRuntime, attach_runtime, find_drift, read_runtime
 from .server import VizServer, serve
 
 __all__ = [
     "Chain",
     "Step",
+    "ToolRuntime",
     "VizEdge",
     "VizModel",
     "VizNode",
     "VizServer",
+    "attach_runtime",
     "build_viz_model",
     "diff_models",
     "explain_model",
     "explain_tool",
+    "find_drift",
     "model_digest",
     "project",
+    "read_runtime",
     "render_html",
     "serve",
 ]

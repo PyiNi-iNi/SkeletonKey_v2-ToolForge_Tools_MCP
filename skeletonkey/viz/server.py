@@ -12,6 +12,7 @@ Routes:
   GET /api/digest    {model_digest, snapshot_digest, registered, advertised, at}
                      - the cheap poll; the page compares it to what it rendered
   GET /api/explain   V4 decision chains: why every tool is (not) advertised
+  GET /api/runtime   V5 ledger overlay: measurements and contract drift
   GET /api/tool/<id> one node, plus its edges
   GET /healthz       {ok, uptime_s, requests}
 
@@ -47,8 +48,10 @@ class VizServer:
 
     def __init__(self, registry: Any, *, host: str = "127.0.0.1", port: int = 0,
                  title: str = "SkeletonKey toolset", tier: str | None = None,
-                 read_only: bool = False, poll_ms: int = 2000) -> None:
+                 read_only: bool = False, poll_ms: int = 2000,
+                 ledger: Any = None) -> None:
         self.registry = registry
+        self.ledger = ledger
         self.host = host
         self.title = title
         self.tier = tier
@@ -106,8 +109,15 @@ class VizServer:
         # The registry is mutable from other threads (skill install, HMR): build
         # under a lock so two in-flight requests cannot interleave a rebuild.
         with self._lock:
-            return build_viz_model(self.registry, tier=self.tier,
-                                   read_only=self.read_only)
+            model = build_viz_model(self.registry, tier=self.tier,
+                                    read_only=self.read_only)
+        if self.ledger is not None:
+            # Re-read per request like the model itself: the ledger grows while
+            # the page is open, and a stale overlay is worse than none.
+            from .runtime import attach_runtime
+
+            attach_runtime(model, self.ledger)
+        return model
 
     def digest_payload(self) -> dict[str, Any]:
         """The cheap poll. Still an honest full build - correctness over ceremony."""
@@ -180,6 +190,9 @@ class VizServer:
                         doc = model.to_json()
                         doc["model_digest"] = model.digest()
                         self._json(200, doc)
+                    elif route == "/api/runtime":
+                        self._json(200, viz.model().runtime or
+                                   {"available": False, "drift": []})
                     elif route == "/api/explain":
                         self._json(200, {k: v.to_json()
                                          for k, v in viz.chains().items()})
@@ -197,8 +210,8 @@ class VizServer:
                     else:
                         self._json(404, {"error": "no such route", "path": route,
                                          "routes": ["/", "/api/model", "/api/digest",
-                                                    "/api/explain", "/api/tool/<id>",
-                                                    "/healthz"]})
+                                                    "/api/explain", "/api/runtime",
+                                                    "/api/tool/<id>", "/healthz"]})
                 except Exception as exc:            # a broken page beats a dead server
                     self._json(500, {"error": type(exc).__name__, "message": str(exc)})
 

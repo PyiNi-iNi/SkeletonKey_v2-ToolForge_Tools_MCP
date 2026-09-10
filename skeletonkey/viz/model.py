@@ -87,10 +87,18 @@ class VizNode:
     input_schema: dict[str, Any] = field(default_factory=dict)
     output_schema: dict[str, Any] | None = None
 
+    # V5 overlay: measured behaviour from the ledger. Empty unless
+    # `runtime.attach_runtime()` filled it in, and omitted from the JSON
+    # entirely when empty, so an overlay-free model serialises exactly as it
+    # did before V5 existed.
+    runtime: dict[str, Any] = field(default_factory=dict)
+
     def to_json(self) -> dict[str, Any]:
         d = asdict(self)
         if d.get("output_schema") is None:
             d.pop("output_schema")
+        if not d.get("runtime"):
+            d.pop("runtime", None)
         return d
 
 
@@ -125,6 +133,9 @@ class VizModel:
     snapshot: dict[str, Any]
     host: dict[str, Any]
     schema_version: int = SCHEMA_VERSION
+    # V5: ledger-derived summary (drift list, feed, busiest/slowest). Empty
+    # unless an overlay was attached.
+    runtime: dict[str, Any] = field(default_factory=dict)
 
     # convenience -------------------------------------------------------
     def node(self, tool_id: str) -> VizNode | None:
@@ -146,6 +157,7 @@ class VizModel:
             "capabilities": self.capabilities,
             "nodes": [n.to_json() for n in self.nodes],
             "edges": [e.to_json() for e in self.edges],
+            **({"runtime": self.runtime} if self.runtime else {}),
         }
 
     def digest(self) -> str:

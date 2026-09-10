@@ -208,6 +208,84 @@ def render_matrix_html(model: Any, rows: str = "group", cols: str = "risk") -> s
 
 # ---------------------------------------------------------------- the latency
 
+def render_runtime_html(model: Any) -> str:
+    """V5: what the ledger measured, and where it contradicts the manifests."""
+    rt = getattr(model, "runtime", None) or {}
+    if not rt.get("available"):
+        return ('<p class="dim">No ledger activity yet. Call some tools and this '
+                'view fills in: call counts, p50/p95 latency, failure codes, and a '
+                'list of manifests whose declared cost no longer matches reality.</p>')
+
+    parts = [
+        f'<div class="stats">'
+        f'<div class="stat"><div class="stat-v">{rt["calls"]}</div>'
+        f'<div class="stat-k">calls recorded</div></div>'
+        f'<div class="stat"><div class="stat-v">{rt["tools_called"]}</div>'
+        f'<div class="stat-k">tools exercised</div></div>'
+        f'<div class="stat"><div class="stat-v'
+        f'{" bad" if rt["failures"] else ""}">{rt["failures"]}</div>'
+        f'<div class="stat-k">failures</div></div>'
+        f'<div class="stat"><div class="stat-v'
+        f'{" warn" if rt["drift_count"] else " ok"}">{rt["drift_count"]}</div>'
+        f'<div class="stat-k">contract drift</div></div></div>'
+    ]
+
+    # The drift list is the reason this view exists: a manifest-accuracy linter.
+    if rt["drift"]:
+        parts.append('<h4 class="mt">contract drift — the manifest disagrees with reality</h4>'
+                     '<ul class="drift">')
+        for row in rt["drift"]:
+            parts.append(
+                f'<li><a data-goto="{_e(row["id"])}">{_e(row["id"])}</a> '
+                f'<span class="badge warn">{_e(row["kind"])}</span> '
+                f'{_e(row["detail"])}</li>'
+            )
+        parts.append("</ul>")
+    else:
+        parts.append('<p class="dim mt">No contract drift: every exercised tool is '
+                     'behaving within its declared envelope.</p>')
+
+    if rt.get("orphans"):
+        parts.append(
+            '<h4 class="mt">called, but no longer registered</h4>'
+            '<p class="dim">The ledger remembers these; the registry does not have '
+            'them now (renamed tool, uninstalled skill, or another workspace\'s '
+            'ledger).</p><ul class="drift">'
+            + "".join(f"<li><code>{_e(o)}</code></li>" for o in rt["orphans"])
+            + "</ul>")
+
+    if rt["busiest"]:
+        parts.append('<h4 class="mt">measured, per tool</h4>'
+                     '<table class="matrix rt"><thead><tr><th>tool</th><th>calls</th>'
+                     '<th>ok</th><th>p50 ms</th><th>p95 ms</th><th>max ms</th>'
+                     '<th>errors</th></tr></thead><tbody>')
+        rows = {r["id"]: r for r in rt["busiest"] + rt["slowest"]}
+        for row in sorted(rows.values(), key=lambda r: -r["calls"]):
+            codes = ", ".join(f"{k}&times;{v}" for k, v in row["error_codes"].items())
+            parts.append(
+                f'<tr><th><a data-goto="{_e(row["id"])}">{_e(row["id"])}</a></th>'
+                f'<td>{row["calls"]}</td>'
+                f'<td>{row["success_rate"]:.0%}</td>'
+                f'<td>{row["p50_ms"]:.0f}</td><td>{row["p95_ms"]:.0f}</td>'
+                f'<td>{row["max_ms"]:.0f}</td><td class="err">{codes or "&middot;"}</td></tr>'
+            )
+        parts.append("</tbody></table>")
+
+    if rt["recent"]:
+        parts.append('<h4 class="mt">recent calls</h4><ul class="feed">')
+        for row in reversed(rt["recent"][-25:]):
+            mark = "ok" if row["ok"] else "bad"
+            err = f' <span class="err">{_e(row["error_code"] or "")}</span>' if not row["ok"] else ""
+            parts.append(
+                f'<li><span class="badge {mark}">{"ok" if row["ok"] else "fail"}</span> '
+                f'<a data-goto="{_e(row["tool"])}">{_e(row["tool"])}</a> '
+                f'<span class="dim">{row["duration_ms"]} ms</span>{err}</li>'
+            )
+        parts.append("</ul>")
+
+    return "".join(parts)
+
+
 def render_latency_html(model: Any) -> str:
     bands = latency_bands(model)
     peak = max((b["count"] for b in bands), default=0) or 1

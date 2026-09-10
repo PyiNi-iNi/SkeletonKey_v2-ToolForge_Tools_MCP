@@ -29,6 +29,7 @@ from .views import (
     render_graph_svg,
     render_latency_html,
     render_matrix_html,
+    render_runtime_html,
     render_treemap_svg,
 )
 
@@ -92,10 +93,24 @@ def _badges(node: Any) -> str:
     return "".join(out)
 
 
+def _runtime_pip(model: VizModel) -> str:
+    """A count on the runtime tab when the linter has something to say."""
+    rt = getattr(model, "runtime", None) or {}
+    if not rt.get("drift_count"):
+        return ""
+    return f' <span class="pip">{rt["drift_count"]}</span>'
+
+
 def _card(node: Any) -> str:
     """One tool card. `data-*` attributes are what the client-side filter reads."""
     haystack = " ".join([node.id, node.title, node.summary, node.capability,
                          " ".join(node.tags)]).lower()
+    rt = getattr(node, "runtime", None) or {}
+    hot = ""
+    if rt.get("calls"):
+        tone = "bad" if rt.get("success_rate", 1) < 1 else "ok"
+        hot = (f'<span class="badge {tone}" title="measured from the ledger">'
+               f'{rt["calls"]}&times; &middot; p95 {rt["p95_ms"]:.0f} ms</span>')
     return (
         f'<article class="card{"" if node.advertised else " withheld"}" '
         f'data-id="{_esc(node.id)}" data-group="{_esc(node.group)}" '
@@ -103,11 +118,12 @@ def _card(node: Any) -> str:
         f'data-adv="{"1" if node.advertised else "0"}" '
         f'data-destructive="{"1" if node.destructive else "0"}" '
         f'data-examples="{node.example_count}" '
+        f'data-calls="{rt.get("calls", 0)}" '
         f'data-text="{_esc(haystack)}" tabindex="0">'
         f'<h3>{_esc(node.title)}</h3>'
         f'<code class="tid">{_esc(node.id)}</code>'
         f'<p class="sum">{_esc(node.summary)}</p>'
-        f'<div class="badges">{_badges(node)}</div>'
+        f'<div class="badges">{_badges(node)}{hot}</div>'
         f'<div class="foot"><span>{_esc(node.capability)}</span>'
         f'<span>{_num(node.typical_latency_ms)} ms &middot; {_num(node.token_cost)} tok</span>'
         f'</div></article>'
@@ -208,6 +224,7 @@ def render_html(model: VizModel, *, title: str = "SkeletonKey toolset",
       <button class="tab" data-view="treemap" role="tab">tokens</button>
       <button class="tab" data-view="matrix" role="tab">matrix</button>
       <button class="tab" data-view="latency" role="tab">latency</button>
+      <button class="tab" data-view="runtime" role="tab">runtime{_runtime_pip(model)}</button>
     </nav>
     <section class="view" id="view-cards">
     <div id="filters">
@@ -244,6 +261,9 @@ def render_html(model: VizModel, *, title: str = "SkeletonKey toolset",
     </section>
     <section class="view" id="view-latency" hidden>
       <div class="canvas">{render_latency_html(model)}</div>
+    </section>
+    <section class="view" id="view-runtime" hidden>
+      <div class="canvas">{render_runtime_html(model)}</div>
     </section>
   </main>
 </div>
@@ -338,6 +358,15 @@ ol.chain li.st-skip { color:var(--dim); }
 ol.chain code { color:var(--accent); }
 ol.chain ul.ev { margin:2px 0 0; padding-left:14px; color:var(--dim); font-size:11px; }
 ol.chain .fix { margin:3px 0 0; color:var(--good); font-size:11px; }
+ul.drift { margin:0; padding-left:18px; }
+ul.drift li { margin:3px 0; }
+ul.feed { margin:0; padding-left:0; list-style:none; font-size:12px; }
+ul.feed li { padding:2px 0; display:flex; gap:8px; align-items:center; }
+table.matrix.rt td { text-align:right; }
+table.matrix.rt th { text-align:left; }
+table.matrix.rt td.err { color:var(--bad); text-align:left; font-size:11px; }
+.pip { background:var(--warn); color:#0d1117; border-radius:8px; padding:0 5px;
+       font-size:10px; font-weight:700; }
 .hypo { background:#9e6a0322; border:1px solid var(--warn); color:var(--warn);
         padding:6px 12px; border-radius:6px; margin-top:8px; font-size:12px; }
 #empty { color:var(--dim); }
@@ -592,7 +621,7 @@ _JS = r"""
   var tabs = Array.prototype.slice.call(document.querySelectorAll(".tab"));
   function show(view) {
     tabs.forEach(function (t) { t.classList.toggle("active", t.dataset.view === view); });
-    ["cards", "graph", "treemap", "matrix", "latency"].forEach(function (v) {
+    ["cards", "graph", "treemap", "matrix", "latency", "runtime"].forEach(function (v) {
       var sec = document.getElementById("view-" + v);
       if (sec) { sec.hidden = v !== view; }
     });
@@ -644,6 +673,10 @@ _JS = r"""
       });
     });
   }
+
+  document.querySelectorAll("[data-goto]").forEach(function (a) {
+    a.addEventListener("click", function () { open(a.dataset.goto); });
+  });
 
   document.querySelectorAll(".tile").forEach(function (tile) {
     tile.addEventListener("click", function () { open(tile.dataset.id); });

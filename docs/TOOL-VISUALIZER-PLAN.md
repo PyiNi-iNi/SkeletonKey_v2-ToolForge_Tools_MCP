@@ -4,11 +4,10 @@
 knows about — what it is, whether it is advertised here and why, what it costs, what it
 touches, how it relates to the others, and what happened the last time it ran.
 
-**Status:** **V0–V4 shipped** — `skeletonkey/viz/` (`model.py`, `render.py`, `server.py`,
-`layout.py`, `views.py`, `explain.py`), `sk viz` in six modes (JSON model, HTML catalog,
-served page, `--explain`/`--why-not`, `--as-host`, `--diff`), five views,
-`schemas/viz-model.schema.json`, 128 tests across five `tests/test_viz_*.py` modules.
-V5–V6 below are still plan.
+**Status:** **V0–V5 shipped** — `skeletonkey/viz/` (`model.py`, `render.py`, `server.py`,
+`layout.py`, `views.py`, `explain.py`, `runtime.py`), `sk viz` in eight modes, six views,
+`schemas/viz-model.schema.json`, 162 tests across six `tests/test_viz_*.py` modules.
+V6 below is still plan.
 
 ## 0. Ground truth (measured on this box, `python -m skeletonkey.cli describe`)
 
@@ -251,7 +250,7 @@ the plain gate receipt when a page was rendered without chains).
 
 ---
 
-## V5 — Runtime overlay: what actually happens
+## V5 — Runtime overlay: what actually happens ✅ SHIPPED
 
 **Deliverables**
 - Read the ledger (`core/ledger.py`, redacted via `core/redact.py`): per-tool call
@@ -265,9 +264,31 @@ the plain gate receipt when a page was rendered without chains).
   `--allow-calls` (default off), routed through `engine.call` with policy intact and
   destructive tools requiring a typed confirmation.
 
-**Acceptance:** overlay is absent and the page still works when no ledger exists;
-redaction test — no credential-shaped string reaches the DOM; `--allow-calls` off means
-no mutating route exists at all (404, not merely hidden).
+**Acceptance (as built):** `tests/test_viz_runtime.py` — 34 tests. Absent-safe against
+every way a ledger can be useless (missing, empty, a directory, a torn last line, one that
+raises) — each yields an empty overlay and an unchanged page. Redaction asserted against a
+planted `ghp_…` in both args and result preview. Read-only asserted by size+mtime, and the
+hash chain still verifies afterwards. An overlay-free model serialises **byte-identically**
+to a V0–V4 one, so nobody who did not ask for V5 sees a changed document. End-to-end: a
+tool that lies about its cost is registered, called for real, and caught.
+
+**The linter is the point.** `find_drift()` reports a tool whose measured p95 exceeds its
+declared `typical_latency_ms` by more than 3× (forgiving on purpose — cold caches and first
+imports cost real time without being a wrong manifest), or that fails more than half the
+time. It refuses to accuse on fewer than 5 calls, because a percentile over two samples is
+an anecdote. `sk viz --drift` exits non-zero when it finds any, so CI can fail a build whose
+manifests have drifted away from reality.
+
+```console
+$ sk viz --runtime -o tools.html   # overlay: counts, p95, failures, feed
+$ sk viz --drift                   # lint only; non-zero exit if drift found
+$ sk viz --serve --runtime         # GET /api/runtime, re-read per request
+```
+
+**Note on `--allow-calls`:** the plan's optional "call this tool" form was **not** built.
+V2 made the server structurally read-only — there is no `do_POST` — and that is a better
+default than a gated mutation surface. A tool-runner belongs behind an explicit decision,
+not bundled into a diagnostic view.
 
 ---
 

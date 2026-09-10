@@ -301,6 +301,10 @@ def main(argv: list[str] | None = None) -> int:
                     help="model what a host of this OS would see (derived, never probed)")
     vz.add_argument("--diff", metavar="MODEL.json", default=None,
                     help="diff this host's model against a saved one")
+    vz.add_argument("--runtime", action="store_true",
+                    help="overlay what the ledger measured, and lint the manifests")
+    vz.add_argument("--drift", action="store_true",
+                    help="print only the contract-drift list and exit (non-zero if any)")
     vz.add_argument("--tier", default=None, choices=["core", "task", "full"],
                     help="build the model for this advertisement tier (default: active tier)")
     vz.add_argument("--read-only", dest="viz_read_only", action="store_true",
@@ -648,7 +652,8 @@ def _dispatch(args: argparse.Namespace, tk: Any, call: Any, cfg: Config) -> int:
             server = VizServer(tk.engine.registry, host=args.host, port=args.port,
                                title=args.title, tier=args.tier,
                                read_only=getattr(args, "viz_read_only", False),
-                               poll_ms=args.poll_ms)
+                               poll_ms=args.poll_ms,
+                               ledger=tk.ledger if args.runtime else None)
             server.start()
             agg = server.model().aggregates
             print(f"viz serving {agg['registered']} tools "
@@ -686,6 +691,28 @@ def _dispatch(args: argparse.Namespace, tk: Any, call: Any, cfg: Config) -> int:
         if args.as_host:
             model.host["hypothetical"] = True
             model.host["os"] = args.as_host
+
+        # V5: the ledger overlay. Absent by default and absent-safe: no ledger
+        # means an empty overlay and a page identical to the one before it.
+        if args.runtime or args.drift:
+            from .viz.runtime import attach_runtime
+
+            attach_runtime(model, tk.ledger)
+
+        if args.drift:
+            rows = (model.runtime or {}).get("drift", [])
+            if args.json or getattr(args, "viz_json", False):
+                print(compact_json({"drift": rows, "count": len(rows)}))
+            elif not (model.runtime or {}).get("available"):
+                print("no ledger activity recorded yet; nothing to lint.")
+            elif not rows:
+                print("no contract drift: every exercised tool is within its "
+                      "declared envelope.")
+            else:
+                for row in rows:
+                    print(f"  {row['kind']:12} {row['id']:28} {row['detail']}")
+                print(f"  {len(rows)} tool(s) whose manifest disagrees with reality")
+            return 1 if rows else 0
         # The output *shape* follows the flag, or the file extension when a path
         # says what it wants: `-o tools.html` is a page, `-o model.json` is data.
         as_json = bool(getattr(args, "viz_json", False)) or args.json
