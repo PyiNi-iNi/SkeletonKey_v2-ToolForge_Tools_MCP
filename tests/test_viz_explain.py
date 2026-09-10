@@ -368,3 +368,52 @@ def test_served_page_carries_the_chains(toolkit):
         with urllib.request.urlopen(srv.url, timeout=10) as resp:
             page = resp.read().decode("utf-8")
         assert '"chains"' in page, "the served drawer should get the chains"
+
+
+# --------------------------------------------------------------------------
+# performance: explain_model must not be O(n^2) in advertise() calls
+# --------------------------------------------------------------------------
+
+def test_explain_model_advertises_once_not_once_per_tool(toolkit):
+    """Regression: explain_model called registry.advertise() per tool, which
+    made a whole-registry explain quadratic (86ms -> 1.8ms when fixed).
+
+    Counting calls rather than timing keeps this deterministic on a noisy CI
+    box: the property is "one snapshot, shared", not "fast on this machine".
+    """
+    reg = toolkit.engine.registry
+    calls = {"n": 0}
+    real = reg.advertise
+
+    def counting(*a, **kw):
+        calls["n"] += 1
+        return real(*a, **kw)
+
+    reg.advertise = counting          # type: ignore[method-assign]
+    try:
+        chains = explain_model(reg)
+    finally:
+        reg.advertise = real          # type: ignore[method-assign]
+
+    assert len(chains) == len(reg.all()) > 10
+    assert calls["n"] == 1, f"advertise() called {calls['n']}x for one explain"
+
+
+def test_shared_snapshot_gives_identical_chains(toolkit):
+    """The optimisation must not change a single answer."""
+    reg = toolkit.engine.registry
+    shared = explain_model(reg)
+    for tool_id, chain in shared.items():
+        alone = explain_tool(reg, tool_id)          # recomputes its own snapshot
+        assert chain.to_json() == alone.to_json(), tool_id
+
+
+def test_shared_snapshot_respects_the_projection(toolkit):
+    """A read-only explain must not silently reuse a full-tier snapshot."""
+    reg = toolkit.engine.registry
+    full = explain_model(reg)
+    ro = explain_model(reg, read_only=True)
+    assert full != ro
+    for tool_id, chain in ro.items():
+        alone = explain_tool(reg, tool_id, read_only=True)
+        assert chain.to_json() == alone.to_json(), tool_id

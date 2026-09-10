@@ -156,6 +156,7 @@ handler at all. Details in [`docs/TOOL-VISUALIZER.md`](docs/TOOL-VISUALIZER.md).
 | [`docs/SKILLS-SPEC.md`](docs/SKILLS-SPEC.md) | you are writing a `SKILL.md` |
 | [`docs/CONNECT-A-HOST.md`](docs/CONNECT-A-HOST.md) | you are wiring a host or debugging an install (`sk wire`, `sk doctor`) |
 | [`docs/TOOL-VISUALIZER.md`](docs/TOOL-VISUALIZER.md) | you want to *see* the toolset — the catalog, the graph, why a tool is withheld, whether a manifest still tells the truth (`sk viz`) |
+| [`docs/ROADMAP-V10-V16.md`](docs/ROADMAP-V10-V16.md) | you want to know what is planned next, what is deliberately declined, and why |
 | [`docs/SECURITY-MODEL.md`](docs/SECURITY-MODEL.md) | you need to know what is and is *not* enforced |
 | [`docs/adr/`](docs/adr) | you are about to disagree with a decision |
 | [`config/skeletonkey.example.toml`](config/skeletonkey.example.toml) | every knob, with its default |

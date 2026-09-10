@@ -276,3 +276,17 @@ def test_no_schemas_and_no_examples_shrink_the_document(toolkit):
     assert all(n.examples == [] for n in lean.nodes)
     # counts survive even when the payload is dropped
     assert sum(n.example_count for n in lean.nodes) == sum(n.example_count for n in full.nodes)
+
+
+def test_token_estimate_memo_invalidates_when_the_doc_changes(toolkit):
+    """toolkit.py rewrites `description` on handler-less skill manifests after
+    registration, so the token memo is keyed on the derived doc string rather
+    than cached blindly. A stale cost would corrupt every budget decision."""
+    man = next(iter(toolkit.engine.registry.all()))
+    first = man.tokens_estimate()
+    assert man.tokens_estimate() == first          # memo hit
+
+    man.description = ("a substantially longer description than whatever this "
+                       "tool had before, added to move the token estimate well "
+                       "clear of its previous value for this assertion")
+    assert man.tokens_estimate() != first, "memo went stale after a doc change"

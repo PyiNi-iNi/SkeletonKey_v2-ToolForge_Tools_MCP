@@ -98,13 +98,22 @@ def _req_text(req: Any) -> str:
 
 def explain_tool(registry: Any, tool_id: str, *, profile: Any = None,
                  tier: str | None = None, read_only: bool = False,
-                 disabled: list[str] | None = None) -> Chain:
-    """Reconstruct the advertise-time decision chain for one tool."""
+                 disabled: list[str] | None = None, _snap: Any = None) -> Chain:
+    """Reconstruct the advertise-time decision chain for one tool.
+
+    `_snap` is an advertise() result already computed for these exact
+    projection arguments. It is an internal optimisation for `explain_model`,
+    which would otherwise recompute the identical whole-registry snapshot once
+    per tool - O(n^2) over a registry where advertise() is the expensive call.
+    Passing a snapshot built with different arguments would silently produce a
+    chain that does not match the projection, so it stays private.
+    """
     man = registry.get(tool_id)
     disabled_set = set(disabled or ())
     prof = profile if profile is not None else getattr(registry, "profile", None)
-    snap = registry.advertise(profile=profile, tier=tier, read_only=read_only,
-                              disabled=disabled or (), include_internal=False)
+    snap = _snap if _snap is not None else registry.advertise(
+        profile=profile, tier=tier, read_only=read_only,
+        disabled=disabled or (), include_internal=False)
     advertised = man.id in set(snap.names)
     steps: list[Step] = []
 
@@ -236,8 +245,17 @@ def explain_tool(registry: Any, tool_id: str, *, profile: Any = None,
 
 
 def explain_model(registry: Any, **kwargs: Any) -> dict[str, Chain]:
-    """A chain for every registered tool, keyed by id."""
-    return {m.id: explain_tool(registry, m.id, **kwargs)
+    """A chain for every registered tool, keyed by id.
+
+    The advertise() snapshot is computed once and shared: it is a pure
+    function of the projection arguments, identical for every tool, and by far
+    the most expensive part of an explain.
+    """
+    snap = registry.advertise(
+        profile=kwargs.get("profile"), tier=kwargs.get("tier"),
+        read_only=kwargs.get("read_only", False),
+        disabled=kwargs.get("disabled") or (), include_internal=False)
+    return {m.id: explain_tool(registry, m.id, _snap=snap, **kwargs)
             for m in sorted(registry.all(), key=lambda m: m.id)}
 
 
