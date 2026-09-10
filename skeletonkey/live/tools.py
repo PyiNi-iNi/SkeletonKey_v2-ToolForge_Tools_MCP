@@ -282,6 +282,10 @@ _spec(
             "host": {"type": "string", "description": "Bind host (default from [live] host)."},
             "port": {"type": "integer", "minimum": 0, "maximum": 65535,
                      "description": "0 = ephemeral; the chosen port is returned."},
+            "viz_url": {"type": "string",
+                        "description": "URL of a running `sk viz --serve` catalog to "
+                                       "cross-link in the panel header. A link only: the "
+                                       "panel never fetches or proxies it."},
         }})
 
 
@@ -437,7 +441,7 @@ def register(reg: Any, *, manager: Any, engine: Any = None) -> dict[str, Any]:
         return {"program": prog.id, "op": op, "scene_version": canvas.version, "frame": frame}
 
     def live_serve(op: str = "start", host: str | None = None,
-                   port: int | None = None) -> dict[str, Any]:
+                   port: int | None = None, viz_url: str | None = None) -> dict[str, Any]:
         if op == "stop":
             panel, manager.panel = manager.panel, None
             if panel is None:
@@ -455,7 +459,8 @@ def register(reg: Any, *, manager: Any, engine: Any = None) -> dict[str, Any]:
                 st["note"] = "already serving"
                 return st
             manager.panel.stop()
-        manager.panel = Panel(manager, host=host, port=int(port), repl_enabled=repl_on)
+        manager.panel = Panel(manager, host=host, port=int(port), repl_enabled=repl_on,
+                              viz_url=viz_url)
         return manager.panel.start()
 
     add("live.start", live_start)

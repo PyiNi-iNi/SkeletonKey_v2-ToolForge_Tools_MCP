@@ -148,6 +148,30 @@ The served page and the written file come from the same renderer; serving only
 adds a banner that polls `/api/digest` and offers a reload when a skill install
 or an HMR swap changes the toolset underneath you.
 
+## The live panel, and why it is a separate server
+
+The HMR loop has its own server — `sk live serve`, the preview panel with the
+frame viewer, error overlay and in-page REPL. The two are cross-linked but
+never merged:
+
+```bash
+sk live serve                                  # panel on :8010
+sk viz --serve --panel http://127.0.0.1:8010/  # catalog links to it
+```
+
+The panel can also link back, via `live.serve {"viz_url": "..."}`. Each
+surfaces its peer in `/healthz` and `/version` respectively.
+
+They stay separate because `POST /repl` on the panel **executes code**, while
+this catalog has no write verb at all — not "no write route", no `do_POST` on
+the handler class. Mounting one into the other would trade a structural
+guarantee for a routing-table promise. The reasoning is
+[ADR-0017](adr/0017-two-servers-one-viewport.md).
+
+The link is a link and nothing more: neither server fetches, proxies or
+iframes the other, and no link is rendered unless you pass one, so the
+offline page and `sk export viz-html` output are unchanged.
+
 ## Security posture
 
 - **No mutating route exists.** The server has no `do_POST`/`PUT`/`DELETE`/

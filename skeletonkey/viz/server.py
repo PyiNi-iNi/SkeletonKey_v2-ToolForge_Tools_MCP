@@ -49,7 +49,7 @@ class VizServer:
     def __init__(self, registry: Any, *, host: str = "127.0.0.1", port: int = 0,
                  title: str = "SkeletonKey toolset", tier: str | None = None,
                  read_only: bool = False, poll_ms: int = 2000,
-                 ledger: Any = None) -> None:
+                 ledger: Any = None, panel_url: str | None = None) -> None:
         self.registry = registry
         self.ledger = ledger
         self.host = host
@@ -57,6 +57,10 @@ class VizServer:
         self.tier = tier
         self.read_only = read_only
         self.poll_ms = int(poll_ms)
+        # Cross-link only. The viz server never proxies to the panel and never
+        # gains a write route by knowing about it: this is a string in a header
+        # link, so the structural read-only guarantee (no do_POST) is untouched.
+        self.panel_url = panel_url
         self.started_at = time.time()
         self.requests = 0
         self._lock = threading.Lock()
@@ -102,6 +106,7 @@ class VizServer:
         return {"serving": bool(self._thread and self._thread.is_alive()),
                 "host": self.host, "port": self.port, "url": self.url,
                 "requests": self.requests,
+                "panel_url": self.panel_url,
                 "uptime_s": round(time.time() - self.started_at, 1)}
 
     # ------------------------------------------------------------------ model
@@ -183,7 +188,8 @@ class VizServer:
                     if route == "/":
                         page = render_html(viz.model(), title=viz.title,
                                            live=True, poll_ms=viz.poll_ms,
-                                           chains=viz.chains())
+                                           chains=viz.chains(),
+                                           panel_url=viz.panel_url)
                         self._send(200, page.encode("utf-8"), "text/html; charset=utf-8")
                     elif route == "/api/model":
                         model = viz.model()

@@ -294,6 +294,9 @@ def main(argv: list[str] | None = None) -> int:
                     help="bind address for --serve (default: loopback only)")
     vz.add_argument("--poll-ms", type=int, default=2000,
                     help="how often the served page checks for drift")
+    vz.add_argument("--panel", metavar="URL", default=None,
+                    help="cross-link the served catalog to a running `sk live serve` "
+                         "panel (a link only; the catalog never drives it)")
     vz.add_argument("--explain", metavar="TOOL", default=None,
                     help="print the gate decision chain for one tool and exit")
     vz.add_argument("--why-not", action="store_true",
@@ -658,7 +661,8 @@ def _dispatch(args: argparse.Namespace, tk: Any, call: Any, cfg: Config) -> int:
                                title=args.title, tier=args.tier,
                                read_only=getattr(args, "viz_read_only", False),
                                poll_ms=args.poll_ms,
-                               ledger=tk.ledger if args.runtime else None)
+                               ledger=tk.ledger if args.runtime else None,
+                               panel_url=getattr(args, "panel", None))
             server.start()
             agg = server.model().aggregates
             print(f"viz serving {agg['registered']} tools "

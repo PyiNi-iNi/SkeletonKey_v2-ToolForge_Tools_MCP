@@ -32,10 +32,14 @@ class Panel:
     """Serves the live preview for a LiveManager. One panel per manager."""
 
     def __init__(self, manager: Any, host: str = "127.0.0.1", port: int = 8010,
-                 *, repl_enabled: bool = True) -> None:
+                 *, repl_enabled: bool = True, viz_url: str | None = None) -> None:
         self.manager = manager
         self.host = host
         self.repl_enabled = repl_enabled
+        # Cross-link to the read-only tool catalog (`sk viz --serve`), if one is
+        # running. A link, not a mount: the two servers stay separate processes
+        # with different trust levels. See ADR-0017.
+        self.viz_url = viz_url
         self._cond = threading.Condition()
         self._pin: str | None = None          # program the page is showing
         self.started_at = time.time()
@@ -79,6 +83,7 @@ class Panel:
         return {"serving": bool(self._thread and self._thread.is_alive()),
                 "host": self.host, "port": self.port, "url": self.url,
                 "repl_enabled": self.repl_enabled, "requests": self.requests,
+                "viz_url": self.viz_url,
                 "sse_clients": self.sse_clients}
 
     def bump(self) -> None:
@@ -177,6 +182,7 @@ class Panel:
             "error": current.frame_error if current else None,
             "watch": (self.manager.watch_status() or {}),
             "uptime_s": round(time.time() - self.started_at, 1),
+            "viz_url": self.viz_url,
         }
 
     # ----------------------------------------------------------------- server
@@ -474,6 +480,7 @@ _PAGE = r"""<!doctype html>
   <span style="flex:1"></span>
   <a href="/view3d" style="color:var(--accent)">3D</a>
   <a href="/agents" style="color:var(--accent)">debugger</a>
+  <a id="vizlink" href="#" style="color:var(--accent);display:none">tools</a>
 </header>
 <pre id="overlay"></pre>
 <div id="stage"><div id="frame"></div></div>
@@ -843,6 +850,10 @@ async function pollPrograms(){
     const v = await (await fetch('/version')).json();
     $('lamp').className='badge live'; $('lamp').innerHTML='&bull; live';
     const w = v.watch||{}; $('watch').textContent = w.watching ? `watcher:${w.backend} · ${ (w.targets||[]).length } targets` : 'watcher off';
+    // cross-link to the read-only catalog, only once the panel reports one
+    const vz = $('vizlink');
+    if (v.viz_url) { vz.href = v.viz_url; vz.style.display = ''; }
+    else { vz.style.display = 'none'; }
     $('plist').innerHTML = (v.programs||[]).map(p => `
       <div class="pcard ${p.id===current?'sel':''}" data-p="${p.id}">
         <div class="pname" onclick="sel('${p.id}')">${esc(p.id)} ${p.error?'<span style="color:var(--bad)">●</span>':''}</div>

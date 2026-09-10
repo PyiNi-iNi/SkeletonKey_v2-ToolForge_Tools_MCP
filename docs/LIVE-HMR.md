@@ -191,6 +191,23 @@ canvas view there (drag/wheel) is local to the viewer and never mutates the
 program's camera — the program's `canvas.camera` stays canonical and can be
 moved from the REPL with `canvas.orbit(...)`.
 
+### Cross-link to the tool catalog
+
+`sk viz --serve` runs a second, read-only server showing the whole toolset.
+Pass each one the other's URL and both headers grow a link:
+
+```bash
+sk live serve                                  # this panel, :8010
+sk viz --serve --panel http://127.0.0.1:8010/  # catalog links here
+```
+
+or `live.serve {"viz_url": "http://127.0.0.1:8011/"}` for the reverse. The
+panel reports its peer in `/version`.
+
+They are deliberately two servers, not one: this panel executes code, the
+catalog structurally cannot. See
+[ADR-0017](adr/0017-two-servers-one-viewport.md).
+
 ## 7. Security posture
 
 - `live.start`, `live.repl`, `live.patch` execute python in-process. They are
