@@ -106,6 +106,26 @@ the catalog would inherit the panel's failure modes.
 
 Two ports to remember, and the developer must pass each URL to the other side
 to get the links. Auto-discovery would remove that friction, and we are
-explicitly declining it (consequence 5). If the friction proves real, the
-right fix is a single supervising command that starts both and tells each
-about the other — not a probe, and not a merge.
+explicitly declining it (consequence 5).
+
+**Resolved in this ADR's own implementation:** the friction was real
+immediately, so `sk dev` was added as the supervising command described
+below — not a probe, and not a merge.
+
+## `sk dev`: the supervisor
+
+```bash
+sk dev                      # catalog + panel, linked
+sk dev app.py               # ... and watch app.py
+sk dev --no-panel           # catalog only
+```
+
+`sk dev` is the one process that legitimately knows both URLs: it created
+them. It starts the catalog first so the real URL can be passed to
+`live.serve` at construction time, then sets the reverse link once the panel
+reports its own (possibly ephemeral) port. It never probes.
+
+This keeps consequence 5 intact. The distinction that matters is between a
+process *discovering* a peer it did not create — the scanning behaviour we
+declined — and a supervisor *introducing* two children it started itself.
+Only the latter is here.

@@ -279,6 +279,20 @@ def main(argv: list[str] | None = None) -> int:
     ex.add_argument("--output", "-o", default=None,
                     help="write output to file instead of stdout")
 
+    dv = sub.add_parser("dev", help="start the whole dev viewport: live panel + tool catalog")
+    dv.add_argument("path", nargs="?", default=None,
+                    help="a python file to watch (optional; omit for catalog only)")
+    dv.add_argument("--host", default=None,
+                    help="bind host for both servers (0.0.0.0 inside a preview sandbox)")
+    dv.add_argument("--panel-port", type=int, default=None, help="live panel port (default 8010)")
+    dv.add_argument("--viz-port", type=int, default=0, help="catalog port (0 = ephemeral)")
+    dv.add_argument("--no-panel", action="store_true", help="catalog only")
+    dv.add_argument("--no-viz", action="store_true", help="panel only")
+    dv.add_argument("--open", dest="dev_open", action="store_true",
+                    help="open the panel in the default browser")
+    dv.add_argument("--runtime", action="store_true",
+                    help="overlay ledger runtime data on the catalog")
+
     vz = sub.add_parser("viz", help="tool visualizer: the whole toolset as a page or a document")
     vz.add_argument("--json", dest="viz_json", action="store_true",
                     help="emit the model as JSON instead of the HTML page")
@@ -585,6 +599,8 @@ def _dispatch(args: argparse.Namespace, tk: Any, call: Any, cfg: Config) -> int:
             else:
                 print(pretty_json(result))
         return 0
+    if cmd == "dev":
+        return _cmd_dev(args, tk, cfg)
     if cmd == "viz":
         from .viz import build_viz_model, render_html
 
@@ -1395,6 +1411,94 @@ def _maybe_serve_hint(res: Any, args: argparse.Namespace, call: Any) -> None:
             print(f"  live: {st['id']} watching {st['path']} "
                   f"({st.get('reloads', 0)} reloads)  -  panel: `sk live serve --wait`",
                   file=sys.stderr)
+
+
+def _cmd_dev(args: argparse.Namespace, tk: Any, cfg: Config) -> int:
+    """`sk dev`: the whole viewport, one command.
+
+    ADR-0017 keeps the live panel and the tool catalog as two servers on
+    purpose - the panel executes code, the catalog structurally cannot - and
+    names *this* as the right answer to the resulting two-URL friction: a
+    supervisor that starts both and tells each about the other. It is not a
+    port probe and not a merge; it is the one process that already knows both
+    URLs because it created them.
+    """
+    import time
+
+    host = args.host or cfg.live.host
+    panel_url = viz_url = None
+    viz_server = None
+    call = tk.engine.call
+
+    # The catalog first, so its real URL can be handed to the panel at
+    # construction time rather than patched in afterwards.
+    if not args.no_viz:
+        from .viz.server import VizServer
+
+        viz_server = VizServer(tk.engine.registry, host=host, port=args.viz_port,
+                               title="SkeletonKey toolset",
+                               ledger=tk.ledger if args.runtime else None)
+        viz_server.start()
+        viz_url = viz_server.url
+
+    try:
+        if not args.no_panel:
+            if args.path:
+                started = call("live.start", {"path": args.path})
+                if not started.ok:
+                    print(f"live.start failed: {started.error}", file=sys.stderr)
+                    return 1
+            payload: dict[str, Any] = {"host": host}
+            if args.panel_port is not None:
+                payload["port"] = args.panel_port
+            if viz_url:
+                payload["viz_url"] = viz_url
+            served = call("live.serve", payload)
+            if not served.ok:
+                print(f"live.serve failed: {served.error}", file=sys.stderr)
+                return 1
+            panel_url = (served.to_dict(max_bytes=None).get("data") or {}).get("url")
+
+            # The catalog is already up, so its link is set after the fact.
+            # This is the one direction that cannot be resolved at build time:
+            # the panel's port may be ephemeral too.
+            if viz_server is not None and panel_url:
+                viz_server.panel_url = panel_url
+
+        if viz_server is None and panel_url is None:
+            print("nothing to serve: --no-panel and --no-viz cancel out", file=sys.stderr)
+            return 2
+
+        print("  dev viewport up:", file=sys.stderr)
+        if panel_url:
+            print(f"    panel   : {panel_url}   (live HMR, REPL - executes code)",
+                  file=sys.stderr)
+        if viz_url:
+            agg = viz_server.model().aggregates
+            print(f"    catalog : {viz_url}   ({agg['registered']} tools, "
+                  f"{agg['advertised']} advertised, read-only)", file=sys.stderr)
+        if panel_url and viz_url:
+            print("    the two headers link to each other; they stay separate "
+                  "servers (ADR-0017)", file=sys.stderr)
+        if args.path:
+            print(f"    watching: {args.path}", file=sys.stderr)
+        print("  Ctrl-C to stop", file=sys.stderr)
+
+        if getattr(args, "dev_open", False):
+            import webbrowser
+
+            webbrowser.open(panel_url or viz_url)
+        try:
+            while True:
+                time.sleep(3600)
+        except KeyboardInterrupt:
+            print("", file=sys.stderr)
+            return 0
+    finally:
+        if viz_server is not None:
+            viz_server.stop()
+        if not args.no_panel:
+            call("live.serve", {"op": "stop"})
 
 
 def _live_wait(res: Any, args: argparse.Namespace) -> int:

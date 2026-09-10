@@ -102,6 +102,16 @@ $ sk skills install ./my-skill                # needs skills.allow_install = tru
 $ sk call skill.my-skill.wordcount '{"path": "notes.txt"}'
 ```
 
+## The dev viewport
+
+```bash
+sk dev app.py       # live HMR panel + read-only tool catalog, cross-linked
+```
+
+Two servers on purpose: the panel runs your code and hot-reloads it on save,
+the catalog is a read-only projection of the toolset that structurally cannot
+write anything ([ADR-0017](docs/adr/0017-two-servers-one-viewport.md)).
+
 ## See the toolset
 
 `sk viz` renders every registered tool — advertised or not — as one self-contained

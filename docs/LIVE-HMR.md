@@ -197,6 +197,12 @@ moved from the REPL with `canvas.orbit(...)`.
 Pass each one the other's URL and both headers grow a link:
 
 ```bash
+sk dev app.py                                  # both servers + watch app.py
+```
+
+or by hand:
+
+```bash
 sk live serve                                  # this panel, :8010
 sk viz --serve --panel http://127.0.0.1:8010/  # catalog links here
 ```

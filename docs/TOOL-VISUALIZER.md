@@ -155,6 +155,12 @@ frame viewer, error overlay and in-page REPL. The two are cross-linked but
 never merged:
 
 ```bash
+sk dev                                         # both, linked, one command
+```
+
+or wire them by hand:
+
+```bash
 sk live serve                                  # panel on :8010
 sk viz --serve --panel http://127.0.0.1:8010/  # catalog links to it
 ```
