@@ -12,6 +12,11 @@ Supported formats:
   the Messages API).
 * ``mcp-manifest`` — A minimal MCP tool listing (``tools`` array with
   inputSchema, matching the MCP ``tools/list`` response shape).
+* ``viz-html`` — The standalone tool-visualizer page (``skeletonkey.viz``):
+  a single self-contained HTML file describing the whole toolset. Unlike the
+  other three it is a projection of the *registry*, not of a manifest list,
+  so it is produced in ``export_from_registry`` rather than by an entry in
+  ``_EXPORTERS``.
 
 Security: the exporter strips secret_args, redacts credential-shaped
 default values in schemas, and never emits approval-only or
@@ -43,7 +48,12 @@ _CREDENTIAL_PATTERNS = [
 _PLACEHOLDER = "***REDACTED***"
 
 # Export format identifiers
-FORMATS = ("openai-tools", "anthropic-tools", "mcp-manifest")
+FORMATS = ("openai-tools", "anthropic-tools", "mcp-manifest", "viz-html")
+
+# The one format that needs the registry rather than a manifest list: the
+# visualizer renders gate receipts and withheld tools, which a list of
+# advertised manifests cannot describe.
+REGISTRY_FORMATS = ("viz-html",)
 
 
 def _redact_schema(schema: dict[str, Any]) -> dict[str, Any]:
@@ -243,6 +253,8 @@ def export_from_registry(
 
     This is the top-level entry point for CLI and API use.
     """
+    if fmt in REGISTRY_FORMATS:
+        return _export_viz_html(registry, tier=tier, read_only=read_only)
     ad = registry.advertise(
         tier=tier,
         read_only=read_only,
@@ -251,6 +263,29 @@ def export_from_registry(
     return export_tools(ad.tools, fmt)
 
 
+def _export_viz_html(registry: Any, *, tier: str | None,
+                     read_only: bool) -> dict[str, Any]:
+    """The visualizer page as an export artifact.
+
+    Kept out of ``_EXPORTERS`` because it takes the registry: the page shows
+    *withheld* tools and the receipts that withheld them, and a list of
+    advertised manifests has already thrown that information away.
+    """
+    from skeletonkey.viz import build_viz_model, render_html
+
+    model = build_viz_model(registry, tier=tier, read_only=read_only)
+    html = render_html(model)
+    result = {
+        "format": "viz-html",
+        "html": html,
+        "count": model.aggregates["advertised"],
+        "registered": model.aggregates["registered"],
+        "digest": model.digest(),
+    }
+    _audit_export({"html": html})
+    return result
+
+
 def list_formats() -> list[str]:
     """Return the available export format identifiers."""
-    return list(_EXPORTERS)
+    return [*_EXPORTERS, *REGISTRY_FORMATS]

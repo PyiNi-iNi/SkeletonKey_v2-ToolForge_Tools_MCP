@@ -365,6 +365,10 @@ def build_server(toolkit: Any, *, include_resources: bool = True, include_prompt
                 Resource(uri="skeletonkey://tools", name="Advertised tools",
                          description="Current tool set with risk class and selected providers.",
                          mimeType="application/json"),
+                Resource(uri="skeletonkey://viz/model", name="Toolset model",
+                         description="Every REGISTERED tool as one document: gate receipts, "
+                                     "withheld reasons, typed relations, token costs.",
+                         mimeType="application/json"),
                 Resource(uri="skeletonkey://journal", name="Change journal",
                          description="Recent journaled mutations with undo tokens.", mimeType="application/json"),
                 Resource(uri="skeletonkey://ledger", name="Call ledger",
@@ -397,6 +401,13 @@ def build_server(toolkit: Any, *, include_resources: bool = True, include_prompt
                 text = compact_json(toolkit.profile.to_dict(include_receipts=False))
             elif uri == "skeletonkey://tools":
                 text = compact_json([m.to_dict(include_schema=False) for m in bridge.advertise().tools])
+            elif uri == "skeletonkey://viz/model":
+                from skeletonkey.viz import build_viz_model
+
+                model = build_viz_model(toolkit.engine.registry)
+                doc = model.to_json()
+                doc["model_digest"] = model.digest()
+                text = compact_json(doc)
             elif uri == "skeletonkey://journal":
                 text = compact_json(toolkit.journal.list(limit=100))
             elif uri == "skeletonkey://ledger":

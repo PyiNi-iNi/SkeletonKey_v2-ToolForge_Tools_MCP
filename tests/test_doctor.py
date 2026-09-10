@@ -16,7 +16,7 @@ import pytest
 from skeletonkey import diagnostics
 from skeletonkey.cli import main as sk_main
 
-EXPECTED_ORDER = ["meta", "config", "roots", "state", "tools", "skills", "profile",
+EXPECTED_ORDER = ["meta", "config", "roots", "state", "tools", "viz", "skills", "profile",
                   "journal", "ledger", "mcp.stdio", "wire"]
 
 

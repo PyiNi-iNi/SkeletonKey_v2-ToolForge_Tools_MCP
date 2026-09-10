@@ -269,7 +269,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="suite file, repeatable (one task per JSON line)")
 
     ex = sub.add_parser("export", help="export tools to external agent formats (openai-tools, anthropic-tools, mcp-manifest)")
-    ex.add_argument("format", choices=["openai-tools", "anthropic-tools", "mcp-manifest", "list"],
+    ex.add_argument("format", choices=["openai-tools", "anthropic-tools", "mcp-manifest",
+                                       "viz-html", "list"],
                     help="export format, or 'list' to show available formats")
     ex.add_argument("--tier", default=None, choices=["core", "task", "full"],
                     help="export tools from this tier (default: full)")
@@ -303,6 +304,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="diff this host's model against a saved one")
     vz.add_argument("--runtime", action="store_true",
                     help="overlay what the ledger measured, and lint the manifests")
+    vz.add_argument("--summary", action="store_true",
+                    help="compact, diff-reviewable text summary (one line per tool)")
     vz.add_argument("--drift", action="store_true",
                     help="print only the contract-drift list and exit (non-zero if any)")
     vz.add_argument("--tier", default=None, choices=["core", "task", "full"],
@@ -566,7 +569,9 @@ def _dispatch(args: argparse.Namespace, tk: Any, call: Any, cfg: Config) -> int:
             tier=args.tier,
             read_only=getattr(args, "export_read_only", False),
         )
-        output = compact_json(result)
+        # viz-html is a document, not a payload: emit the page itself so
+        # `sk export viz-html -o tools.html` is directly openable.
+        output = result["html"] if fmt == "viz-html" else compact_json(result)
         if args.output:
             with open(args.output, "w", encoding="utf-8") as fh:
                 fh.write(output)
@@ -716,7 +721,7 @@ def _dispatch(args: argparse.Namespace, tk: Any, call: Any, cfg: Config) -> int:
         # The output *shape* follows the flag, or the file extension when a path
         # says what it wants: `-o tools.html` is a page, `-o model.json` is data.
         as_json = bool(getattr(args, "viz_json", False)) or args.json
-        if args.output and args.output.lower().endswith((".html", ".htm")):
+        if args.summary or (args.output and args.output.lower().endswith((".html", ".htm"))):
             as_json = False
         elif args.output and args.output.lower().endswith(".json"):
             as_json = True
@@ -725,7 +730,11 @@ def _dispatch(args: argparse.Namespace, tk: Any, call: Any, cfg: Config) -> int:
             # terminal is not a browser. `-o page.html` is the page path.
             as_json = True
 
-        if as_json:
+        if args.summary:
+            from .viz import summary_lines
+
+            output = summary_lines(model)
+        elif as_json:
             doc = model.to_json()
             doc["model_digest"] = model.digest()
             output = compact_json(doc) if args.json else pretty_json(doc)

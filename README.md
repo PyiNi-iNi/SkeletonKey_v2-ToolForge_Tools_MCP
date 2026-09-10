@@ -102,6 +102,36 @@ $ sk skills install ./my-skill                # needs skills.allow_install = tru
 $ sk call skill.my-skill.wordcount '{"path": "notes.txt"}'
 ```
 
+## See the toolset
+
+`sk viz` renders every registered tool — advertised or not — as one self-contained
+page: no npm, no CDN, no build step, opens from `file://` with the network off.
+
+```console
+$ sk viz -o tools.html      # catalog, graph, token treemap, matrix, latency, runtime
+$ sk viz --serve            # the same page, and it notices when the toolset changes
+$ sk viz --why-not          # every withheld tool, the rule that withheld it, the fix
+$ sk viz --drift            # lint the manifests against the ledger; non-zero if drifted
+```
+
+Four things it answers that nothing else did:
+
+- **what is here** — 81 registered / 79 advertised, 11 groups, 74 capabilities, all
+  filterable, with schemas and worked examples one click away;
+- **why you cannot call this** — a 10-step decision chain mirroring
+  `Registry.gate()`, each step carrying its evidence and an actionable fix
+  (`sk viz --explain shell.run`);
+- **what another host would see** — `--as-host windows` derives a profile without
+  re-probing, and `--diff` compares two hosts or two commits;
+- **whether a manifest still tells the truth** — the runtime overlay reads the
+  ledger and flags tools whose measured p95 outruns their declared
+  `typical_latency_ms` by more than 3×. `sk viz --drift` exits non-zero, so manifest
+  accuracy can be a CI gate.
+
+It is a read-only projection of `advertise()` and holds no facts of its own
+([ADR-0016](docs/adr/0016-visualizer-is-a-projection.md)); the server has no POST
+handler at all. Details in [`docs/TOOL-VISUALIZER.md`](docs/TOOL-VISUALIZER.md).
+
 ## Documentation
 
 | Doc | Read it when |
@@ -113,6 +143,7 @@ $ sk call skill.my-skill.wordcount '{"path": "notes.txt"}'
 | [`docs/SHELL-DIALECTS.md`](docs/SHELL-DIALECTS.md) | bash vs pwsh vs python behaviour |
 | [`docs/SKILLS-SPEC.md`](docs/SKILLS-SPEC.md) | you are writing a `SKILL.md` |
 | [`docs/CONNECT-A-HOST.md`](docs/CONNECT-A-HOST.md) | you are wiring a host or debugging an install (`sk wire`, `sk doctor`) |
+| [`docs/TOOL-VISUALIZER.md`](docs/TOOL-VISUALIZER.md) | you want to *see* the toolset — the catalog, the graph, why a tool is withheld, whether a manifest still tells the truth (`sk viz`) |
 | [`docs/SECURITY-MODEL.md`](docs/SECURITY-MODEL.md) | you need to know what is and is *not* enforced |
 | [`docs/adr/`](docs/adr) | you are about to disagree with a decision |
 | [`config/skeletonkey.example.toml`](config/skeletonkey.example.toml) | every knob, with its default |

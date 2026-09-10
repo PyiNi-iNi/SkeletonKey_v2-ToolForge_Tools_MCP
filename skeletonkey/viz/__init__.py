@@ -19,6 +19,7 @@ from .model import (
     VizNode,
     build_viz_model,
     model_digest,
+    summary_lines,
 )
 from .render import render_html
 from .runtime import ToolRuntime, attach_runtime, find_drift, read_runtime
@@ -43,4 +44,5 @@ __all__ = [
     "read_runtime",
     "render_html",
     "serve",
+    "summary_lines",
 ]

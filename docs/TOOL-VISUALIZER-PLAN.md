@@ -292,7 +292,7 @@ not bundled into a diagnostic view.
 
 ---
 
-## V6 — Ship it
+## V6 — Ship it ✅ SHIPPED
 
 **Deliverables**
 - `docs/TOOL-VISUALIZER.md`: routes, model schema, screenshots, embedding guide.
