@@ -108,9 +108,11 @@ $ sk call skill.my-skill.wordcount '{"path": "notes.txt"}'
 sk dev app.py       # live HMR panel + read-only tool catalog, cross-linked
 ```
 
-Two servers on purpose: the panel runs your code and hot-reloads it on save,
-the catalog is a read-only projection of the toolset that structurally cannot
-write anything ([ADR-0017](docs/adr/0017-two-servers-one-viewport.md)).
+One server, two surfaces: the panel runs your code and hot-reloads it on save
+at `/`, and the read-only tool catalog is mounted at `/tools`. Keep it on
+loopback - the REPL executes code, and the catalog now shares its bind
+([ADR-0018](docs/adr/0018-mount-the-catalog-in-the-panel.md)). `sk dev
+--two-servers` splits them back apart.
 
 ## See the toolset
 

@@ -155,8 +155,17 @@ frame viewer, error overlay and in-page REPL. The two are cross-linked but
 never merged:
 
 ```bash
-sk dev                                         # both, linked, one command
+sk dev                     # one server: panel at /, catalog at /tools
+sk dev --two-servers       # two servers, cross-linked (ADR-0017 mode)
 ```
+
+The default merges them onto one port. That is a real trade: mounted, the
+catalog's read-only-ness is a guard clause plus
+[tests](../tests/test_viz_mount.py) rather than the absence of any write verb,
+and **anything that can reach `/tools` can reach the REPL**, because they are
+one bind. Keep it on loopback. If you need a catalog you can expose safely,
+use `sk export viz-html` or the standalone `sk viz --serve` - both unchanged.
+[ADR-0018](adr/0018-mount-the-catalog-in-the-panel.md) has the full comparison.
 
 or wire them by hand:
 

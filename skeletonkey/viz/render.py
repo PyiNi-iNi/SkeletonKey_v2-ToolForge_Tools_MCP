@@ -183,7 +183,7 @@ def _header(model: VizModel, title: str, panel_url: str | None = None) -> str:
 def render_html(model: VizModel, *, title: str = "SkeletonKey toolset",
                 embed_model: bool = True, live: bool = False,
                 poll_ms: int = 2000, chains: dict[str, Any] | None = None,
-                panel_url: str | None = None) -> str:
+                panel_url: str | None = None, api_base: str | None = None) -> str:
     """Render the whole model as one standalone HTML document.
 
     `live=True` adds the drift banner: the page polls `/api/digest` and, when
@@ -193,6 +193,11 @@ def render_html(model: VizModel, *, title: str = "SkeletonKey toolset",
 
     `chains` (V4) is the `explain_model()` output: when present, the drawer
     shows the full gate decision chain instead of just the gate's own prose.
+
+    `api_base` (V9) is the absolute path the live routes hang off when the
+    catalog is mounted inside another server (ADR-0018). Relative fetches would
+    "work" only when the URL happens to carry a trailing slash, which is a
+    footgun; an explicit base makes /tools and /tools/ behave identically.
 
     `panel_url` (V7) cross-links to a running `live.serve` panel. It is a link
     and nothing more - the catalog never embeds, proxies or drives the panel,
@@ -206,8 +211,11 @@ def render_html(model: VizModel, *, title: str = "SkeletonKey toolset",
                          for k, v in chains.items()}
     cards = "".join(_card(n) for n in sorted(model.nodes, key=lambda n: (n.group, n.id)))
     payload = _json_for_script(doc) if embed_model else "null"
+    # "api/digest" relative resolves differently at /tools vs /tools/; an
+    # explicit base removes that class of bug when mounted (ADR-0018).
+    base = (api_base.rstrip("/") + "/") if api_base else ""
     live_cfg = _json_for_script({"live": bool(live), "pollMs": int(poll_ms),
-                                 "digest": doc["model_digest"]})
+                                 "digest": doc["model_digest"], "apiBase": base})
 
     return f"""<!doctype html>
 <html lang="en">
@@ -711,7 +719,7 @@ _JS = r"""
     });
     var misses = 0;
     setInterval(function () {
-      fetch("api/digest", { cache: "no-store" }).then(function (r) {
+      fetch((CFG.apiBase || "") + "api/digest", { cache: "no-store" }).then(function (r) {
         return r.json();
       }).then(function (d) {
         misses = 0;

@@ -1,7 +1,12 @@
 # ADR 0017: Two servers, one viewport
 
 Date: 2026-09-09
-Status: accepted
+Status: superseded in part by [ADR-0018](0018-mount-the-catalog-in-the-panel.md)
+
+> **Update (2026-09-09):** the default is now a single merged server, with
+> the catalog mounted at `/tools`. The two-server arrangement described here
+> is still supported (`sk dev --two-servers`, `sk viz --serve`) and is still
+> the stronger posture - ADR-0018 records exactly what the merge gave up.
 Affects: `skeletonkey/viz/server.py`, `skeletonkey/viz/render.py`,
 `skeletonkey/live/panel.py`, `skeletonkey/live/tools.py` (`live.serve`),
 `skeletonkey/cli.py` (`sk viz --panel`), `tests/test_viewport_link.py`,

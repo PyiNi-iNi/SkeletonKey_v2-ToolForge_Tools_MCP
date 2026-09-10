@@ -197,8 +197,12 @@ moved from the REPL with `canvas.orbit(...)`.
 Pass each one the other's URL and both headers grow a link:
 
 ```bash
-sk dev app.py                                  # both servers + watch app.py
+sk dev app.py                # one server: panel + catalog at /tools
+sk dev app.py --two-servers  # separate catalog server (ADR-0017)
 ```
+
+Mounted, the catalog shares this server's bind - so exposing it exposes
+`/repl` too. See [ADR-0018](adr/0018-mount-the-catalog-in-the-panel.md).
 
 or by hand:
 

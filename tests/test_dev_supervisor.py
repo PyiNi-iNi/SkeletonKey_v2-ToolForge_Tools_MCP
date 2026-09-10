@@ -99,32 +99,67 @@ def ws(tmp_path: Path) -> Path:
 # --------------------------------------------------------------------------
 
 @pytest.mark.slow
-def test_dev_starts_both_servers_and_links_them(ws):
+def test_dev_mounts_the_catalog_on_one_port_by_default(ws):
+    """ADR-0018: the default is one server, catalog at /tools."""
     dev = _Dev(ws)
     try:
-        assert _wait_for(dev.viz + "healthz"), "catalog never came up"
         assert _wait_for(dev.panel + "version"), "panel never came up"
 
-        # catalog knows the panel
-        _s, body = _get(dev.viz + "healthz")
-        assert json.loads(body)["panel_url"] == dev.panel
-
-        # panel knows the catalog
         _s, body = _get(dev.panel + "version")
-        assert json.loads(body)["viz_url"] == dev.viz
+        assert json.loads(body)["viz_mounted_at"] == "/tools"
 
-        # and the link is actually rendered, not merely recorded
-        _s, page = _get(dev.viz)
-        assert 'class="panel-link"' in page
-        assert dev.panel in page
+        # the catalog is served from the SAME port
+        status, page = _get(dev.panel + "tools")
+        assert status == 200
+        assert "SkeletonKey" in page
+
+        # and nothing is listening on the separate catalog port
+        with pytest.raises(urllib.error.URLError):
+            urllib.request.urlopen(dev.viz, timeout=2)
     finally:
         dev.close()
 
 
 @pytest.mark.slow
-def test_the_supervised_catalog_is_still_read_only(ws):
-    """The supervisor must not become the thing that grants write access."""
+def test_the_mounted_catalog_still_refuses_writes(ws):
+    """The guard that replaces the structural guarantee, end to end."""
     dev = _Dev(ws)
+    try:
+        assert _wait_for(dev.panel + "version")
+        for path in ("tools", "tools/api/model", "tools/healthz"):
+            req = urllib.request.Request(dev.panel + path, data=b"{}", method="POST")
+            with pytest.raises(urllib.error.HTTPError) as exc:
+                urllib.request.urlopen(req, timeout=5)
+            assert exc.value.code == 405, path
+    finally:
+        dev.close()
+
+
+@pytest.mark.slow
+def test_two_servers_mode_still_works_and_links_both_ways(ws):
+    """ADR-0017 mode remains supported and is still the stronger posture."""
+    dev = _Dev(ws, "--two-servers")
+    try:
+        assert _wait_for(dev.viz + "healthz"), "catalog never came up"
+        assert _wait_for(dev.panel + "version"), "panel never came up"
+
+        _s, body = _get(dev.viz + "healthz")
+        assert json.loads(body)["panel_url"] == dev.panel
+
+        _s, body = _get(dev.panel + "version")
+        assert json.loads(body)["viz_url"] == dev.viz
+        assert json.loads(body)["viz_mounted_at"] is None
+
+        _s, page = _get(dev.viz)
+        assert 'class="panel-link"' in page
+    finally:
+        dev.close()
+
+
+@pytest.mark.slow
+def test_the_standalone_catalog_is_still_structurally_read_only(ws):
+    """--two-servers must keep the property the merge gave up."""
+    dev = _Dev(ws, "--two-servers")
     try:
         assert _wait_for(dev.viz + "healthz")
         req = urllib.request.Request(dev.viz, data=b"{}", method="POST")

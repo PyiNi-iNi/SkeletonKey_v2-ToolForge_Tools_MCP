@@ -286,6 +286,10 @@ def main(argv: list[str] | None = None) -> int:
                     help="bind host for both servers (0.0.0.0 inside a preview sandbox)")
     dv.add_argument("--panel-port", type=int, default=None, help="live panel port (default 8010)")
     dv.add_argument("--viz-port", type=int, default=0, help="catalog port (0 = ephemeral)")
+    dv.add_argument("--two-servers", action="store_true",
+                    help="run the catalog as a separate server on --viz-port and "
+                         "cross-link it, instead of mounting it at /tools "
+                         "(ADR-0017 mode: read-only is then structural)")
     dv.add_argument("--no-panel", action="store_true", help="catalog only")
     dv.add_argument("--no-viz", action="store_true", help="panel only")
     dv.add_argument("--open", dest="dev_open", action="store_true",
@@ -1416,23 +1420,33 @@ def _maybe_serve_hint(res: Any, args: argparse.Namespace, call: Any) -> None:
 def _cmd_dev(args: argparse.Namespace, tk: Any, cfg: Config) -> int:
     """`sk dev`: the whole viewport, one command.
 
-    ADR-0017 keeps the live panel and the tool catalog as two servers on
-    purpose - the panel executes code, the catalog structurally cannot - and
-    names *this* as the right answer to the resulting two-URL friction: a
-    supervisor that starts both and tells each about the other. It is not a
-    port probe and not a merge; it is the one process that already knows both
-    URLs because it created them.
+    Default is the merged server (ADR-0018): the live panel serves the
+    read-only tool catalog at /tools, so there is one process, one port and
+    one URL. `--two-servers` restores the ADR-0017 arrangement, where the
+    catalog runs standalone and its read-only-ness is structural rather than
+    guarded - which is the stronger property, and still available to anyone
+    who wants it.
     """
     import time
 
     host = args.host or cfg.live.host
     panel_url = viz_url = None
     viz_server = None
+    mounted = not args.two_servers and not args.no_viz and not args.no_panel
     call = tk.engine.call
 
-    # The catalog first, so its real URL can be handed to the panel at
-    # construction time rather than patched in afterwards.
-    if not args.no_viz:
+    # Separate-server mode: the catalog comes up first so its real URL can be
+    # handed to live.serve at construction time.
+    if args.two_servers and not args.no_viz:
+        from .viz.server import VizServer
+
+        viz_server = VizServer(tk.engine.registry, host=host, port=args.viz_port,
+                               title="SkeletonKey toolset",
+                               ledger=tk.ledger if args.runtime else None)
+        viz_server.start()
+        viz_url = viz_server.url
+    elif args.no_panel and not args.no_viz:
+        # No panel to mount into, so the catalog must stand alone regardless.
         from .viz.server import VizServer
 
         viz_server = VizServer(tk.engine.registry, host=host, port=args.viz_port,
@@ -1453,15 +1467,14 @@ def _cmd_dev(args: argparse.Namespace, tk: Any, cfg: Config) -> int:
                 payload["port"] = args.panel_port
             if viz_url:
                 payload["viz_url"] = viz_url
+            if mounted:
+                payload["mount_tools"] = True
             served = call("live.serve", payload)
             if not served.ok:
                 print(f"live.serve failed: {served.error}", file=sys.stderr)
                 return 1
             panel_url = (served.to_dict(max_bytes=None).get("data") or {}).get("url")
 
-            # The catalog is already up, so its link is set after the fact.
-            # This is the one direction that cannot be resolved at build time:
-            # the panel's port may be ephemeral too.
             if viz_server is not None and panel_url:
                 viz_server.panel_url = panel_url
 
@@ -1473,13 +1486,18 @@ def _cmd_dev(args: argparse.Namespace, tk: Any, cfg: Config) -> int:
         if panel_url:
             print(f"    panel   : {panel_url}   (live HMR, REPL - executes code)",
                   file=sys.stderr)
-        if viz_url:
+        if mounted and panel_url:
+            reg = tk.engine.registry
+            print(f"    catalog : {panel_url}tools   "
+                  f"({len(reg.all())} tools, read-only, same server)", file=sys.stderr)
+        elif viz_url:
             agg = viz_server.model().aggregates
             print(f"    catalog : {viz_url}   ({agg['registered']} tools, "
-                  f"{agg['advertised']} advertised, read-only)", file=sys.stderr)
-        if panel_url and viz_url:
-            print("    the two headers link to each other; they stay separate "
-                  "servers (ADR-0017)", file=sys.stderr)
+                  f"{agg['advertised']} advertised, separate read-only server)",
+                  file=sys.stderr)
+            if panel_url:
+                print("    two servers: the catalog cannot write, structurally "
+                      "(ADR-0017)", file=sys.stderr)
         if args.path:
             print(f"    watching: {args.path}", file=sys.stderr)
         print("  Ctrl-C to stop", file=sys.stderr)
