@@ -134,6 +134,11 @@ def _header(model: VizModel, title: str) -> str:
     if agg["withheld"]:
         causes = ", ".join(f"{v}&nbsp;{_esc(k)}" for k, v in agg["withheld_by"].items())
         withheld_note = f'<span class="dim"> ({causes})</span>'
+    hypo = ""
+    if host.get("hypothetical"):
+        hypo = (f'<p class="hypo">Hypothetical {_esc(host.get("os"))} host: this is what '
+                f'such a box <em>would</em> advertise, derived from this host\'s profile. '
+                f'Nothing was probed.</p>')
     return (
         f'<header><div class="hrow"><h1>{_esc(title)}</h1>'
         f'<span class="dim">{_esc(where)} &middot; tier {_esc(model.snapshot["tier"])} '
@@ -149,7 +154,7 @@ def _header(model: VizModel, title: str) -> str:
         f'{_stat("relations", _num(len(model.edges)))}'
         f'</div><p class="sub">Every registered tool is listed, advertised or not'
         f'{withheld_note}. Click a card for the schema, examples and the gate receipt.</p>'
-        f'</header>'
+        f'{hypo}</header>'
     )
 
 
@@ -157,16 +162,22 @@ def _header(model: VizModel, title: str) -> str:
 
 def render_html(model: VizModel, *, title: str = "SkeletonKey toolset",
                 embed_model: bool = True, live: bool = False,
-                poll_ms: int = 2000) -> str:
+                poll_ms: int = 2000, chains: dict[str, Any] | None = None) -> str:
     """Render the whole model as one standalone HTML document.
 
     `live=True` adds the drift banner: the page polls `/api/digest` and, when
     the toolset changes underneath it, says so instead of quietly showing a
     stale catalog. The served page (V2) is otherwise byte-for-byte the file you
     get from `sk viz -o tools.html` - one renderer, not two.
+
+    `chains` (V4) is the `explain_model()` output: when present, the drawer
+    shows the full gate decision chain instead of just the gate's own prose.
     """
     doc = model.to_json()
     doc["model_digest"] = model.digest()
+    if chains:
+        doc["chains"] = {k: (v.to_json() if hasattr(v, "to_json") else v)
+                         for k, v in chains.items()}
     cards = "".join(_card(n) for n in sorted(model.nodes, key=lambda n: (n.group, n.id)))
     payload = _json_for_script(doc) if embed_model else "null"
     live_cfg = _json_for_script({"live": bool(live), "pollMs": int(poll_ms),
@@ -315,6 +326,20 @@ input,select,button { background:#0d1117; color:var(--fg); border:1px solid var(
 #detail a { color:var(--accent); cursor:pointer; text-decoration:none; }
 #detail a:hover { text-decoration:underline; }
 .gate-bad { color:var(--warn); }
+ol.chain { margin:0; padding-left:0; list-style:none; font-size:12px; }
+ol.chain li { padding:3px 0 3px 22px; position:relative; border-left:1px solid var(--line);
+              margin-left:6px; }
+ol.chain .mk { position:absolute; left:6px; }
+ol.chain li.st-pass .mk { color:var(--good); }
+ol.chain li.st-fail { color:var(--bad); }
+ol.chain li.st-fail .mk { color:var(--bad); }
+ol.chain li.st-note .mk { color:var(--warn); }
+ol.chain li.st-skip { color:var(--dim); }
+ol.chain code { color:var(--accent); }
+ol.chain ul.ev { margin:2px 0 0; padding-left:14px; color:var(--dim); font-size:11px; }
+ol.chain .fix { margin:3px 0 0; color:var(--good); font-size:11px; }
+.hypo { background:#9e6a0322; border:1px solid var(--warn); color:var(--warn);
+        padding:6px 12px; border-radius:6px; margin-top:8px; font-size:12px; }
 #empty { color:var(--dim); }
 #tabs { display:flex; gap:4px; margin-bottom:12px; border-bottom:1px solid var(--line); }
 .tab { background:none; border:none; border-bottom:2px solid transparent; border-radius:0;
@@ -428,7 +453,38 @@ _JS = r"""
     ? "<tr><td>" + esc(k) + "</td><td>" + esc(v) + "</td></tr>" : ""; }
   function pre(obj) { return "<pre>" + esc(JSON.stringify(obj, null, 2)) + "</pre>"; }
 
+  // V4: the decision chain, when the model carries one for this tool.
+  var CHAINS = (MODEL && MODEL.chains) || {};
+  var MARK = { pass: "✓", fail: "✕", note: "·", skip: "–" };
+
+  function chainBlock(n) {
+    var chain = CHAINS[n.id];
+    if (!chain) { return ""; }
+    var out = "<h4>" + (n.advertised ? "how it got here" : "why you cannot call this here") +
+      "</h4><p class='" + (n.advertised ? "" : "gate-bad") + "'>" + esc(chain.verdict) +
+      "</p><ol class='chain'>";
+    chain.steps.forEach(function (s) {
+      out += "<li class='st-" + esc(s.outcome) + "'><span class='mk'>" +
+        (MARK[s.outcome] || "?") + "</span><code>" + esc(s.rule) + "</code> " +
+        esc(s.detail || "");
+      if (s.evidence && s.evidence.length) {
+        out += "<ul class='ev'>" + s.evidence.map(function (e) {
+          return "<li>" + esc(e) + "</li>";
+        }).join("") + "</ul>";
+      }
+      if (s.fix && s.outcome === "fail") {
+        out += "<p class='fix'>fix: " + esc(s.fix) + "</p>";
+      }
+      out += "</li>";
+    });
+    return out + "</ol>";
+  }
+
   function gateBlock(n) {
+    // Prefer the full chain; fall back to the gate's own prose when the model
+    // was built without one (a plain `sk viz -o tools.html`).
+    var chain = chainBlock(n);
+    if (chain) { return chain; }
     if (n.advertised) {
       return "<h4>exposure</h4><p>Advertised on this host.</p>";
     }

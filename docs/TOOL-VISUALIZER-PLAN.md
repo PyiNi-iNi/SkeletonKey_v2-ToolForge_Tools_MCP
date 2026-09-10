@@ -4,11 +4,11 @@
 knows about — what it is, whether it is advertised here and why, what it costs, what it
 touches, how it relates to the others, and what happened the last time it ran.
 
-**Status:** **V0–V3 shipped** — `skeletonkey/viz/` (`model.py`, `render.py`, `server.py`,
-`layout.py`, `views.py`), `sk viz` in three modes (JSON model, standalone HTML catalog,
-served page with drift detection), five views (cards, graph, tokens, matrix, latency),
-`schemas/viz-model.schema.json`, 96 tests across four `tests/test_viz_*.py` modules.
-V4–V6 below are still plan.
+**Status:** **V0–V4 shipped** — `skeletonkey/viz/` (`model.py`, `render.py`, `server.py`,
+`layout.py`, `views.py`, `explain.py`), `sk viz` in six modes (JSON model, HTML catalog,
+served page, `--explain`/`--why-not`, `--as-host`, `--diff`), five views,
+`schemas/viz-model.schema.json`, 128 tests across five `tests/test_viz_*.py` modules.
+V5–V6 below are still plan.
 
 ## 0. Ground truth (measured on this box, `python -m skeletonkey.cli describe`)
 
@@ -202,7 +202,7 @@ the V1 detail drawer.
 
 ---
 
-## V4 — Why-not: the gating explainer
+## V4 — Why-not: the gating explainer ✅ SHIPPED
 
 *The most valuable question about a tool is why you cannot call it.*
 
@@ -217,8 +217,37 @@ the V1 detail drawer.
 - Diff mode: `sk viz --diff other-model.json` shows added/removed/changed tools between
   two snapshots (two hosts, two commits, before/after a skill install).
 
-**Acceptance:** for the 2 currently-withheld tools the chain names the exact deciding
-rule; property test — a tool is advertised in the model iff the explainer chain passes.
+**Acceptance (as built):** `tests/test_viz_explain.py` — 32 tests. The load-bearing one is
+the IFF property, asserted for *every* registered tool under the default projection,
+read-only, all three tiers, disabled ids, an unmet requirement, and all three hypothetical
+hosts:
+
+> a tool is advertised **if and only if** its chain has no failing step.
+
+The explainer mirrors `Registry.gate()`/`advertise()`, and a mirror is a liability — two
+implementations of one rule drift silently. The IFF test is what makes the mirror safe: if
+the registry's gating changes and `explain.py` does not, it fails. The rule *order* is
+pinned by its own test, and `tools.disable` short-circuits exactly like the registry does.
+
+**The chain** is 10 steps with outcomes `pass | fail | note | skip`, each carrying evidence
+and — on failure — an actionable `fix`. `manifest.advertised` records at step 2 and defers
+the verdict to `internal` at step 8, mirroring where the registry really enforces it.
+
+**Hypothetical hosts are pure**, and tested for it: the live profile is never mutated,
+nothing is re-probed, and the derived profile is stamped `fingerprint=hypothetical:<os>`
+with a "not probed" warning so nothing downstream can mistake it for real. `python` stays
+in every OS's shell set — it is a first-class dialect on every target, and dropping it
+would fake a failure no real host has.
+
+```console
+$ sk viz --explain shell.run          # the 10-step chain for one tool
+$ sk viz --why-not                    # every withheld tool, with fixes
+$ sk viz --as-host windows -o w.json  # what a Windows box would advertise
+$ sk viz --diff w.json                # against this host, or another commit
+```
+
+Served too: `GET /api/explain`, and the drawer renders the chain inline (falling back to
+the plain gate receipt when a page was rendered without chains).
 
 ---
 

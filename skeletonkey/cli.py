@@ -293,6 +293,14 @@ def main(argv: list[str] | None = None) -> int:
                     help="bind address for --serve (default: loopback only)")
     vz.add_argument("--poll-ms", type=int, default=2000,
                     help="how often the served page checks for drift")
+    vz.add_argument("--explain", metavar="TOOL", default=None,
+                    help="print the gate decision chain for one tool and exit")
+    vz.add_argument("--why-not", action="store_true",
+                    help="print the decision chain for every withheld tool and exit")
+    vz.add_argument("--as-host", default=None, choices=["windows", "linux", "darwin"],
+                    help="model what a host of this OS would see (derived, never probed)")
+    vz.add_argument("--diff", metavar="MODEL.json", default=None,
+                    help="diff this host's model against a saved one")
     vz.add_argument("--tier", default=None, choices=["core", "task", "full"],
                     help="build the model for this advertisement tier (default: active tier)")
     vz.add_argument("--read-only", dest="viz_read_only", action="store_true",
@@ -568,6 +576,72 @@ def _dispatch(args: argparse.Namespace, tk: Any, call: Any, cfg: Config) -> int:
     if cmd == "viz":
         from .viz import build_viz_model, render_html
 
+        # ---- V4: the why-not surfaces, which answer and exit -----------------
+        if args.explain or args.why_not:
+            from .viz.explain import explain_model, explain_tool
+
+            # `sk viz --json` sets the subparser's flag; `sk --json viz` sets the
+            # global one. Both mean the same thing to a caller, so honour either.
+            want_json = args.json or getattr(args, "viz_json", False)
+            common = {"tier": args.tier,
+                      "read_only": getattr(args, "viz_read_only", False)}
+            if args.explain:
+                chains = {args.explain: explain_tool(tk.engine.registry,
+                                                     args.explain, **common)}
+            else:
+                chains = {k: v for k, v in
+                          explain_model(tk.engine.registry, **common).items()
+                          if not v.advertised}
+            if want_json:
+                print(compact_json({k: v.to_json() for k, v in chains.items()}))
+                return 0
+            if not chains:
+                print("every registered tool is advertised on this host.")
+                return 0
+            marks = {"pass": "  ok  ", "fail": " FAIL ", "note": " note ", "skip": "  --  "}
+            for tool_id, chain in chains.items():
+                head = "advertised" if chain.advertised else "WITHHELD"
+                print(f"\n{tool_id}  [{head}]")
+                print(f"  {chain.verdict}")
+                for step in chain.steps:
+                    print(f"  {marks.get(step.outcome, '  ?   ')} {step.rule:22} "
+                          f"{step.detail}")
+                    for line in step.evidence:
+                        print(f"           - {line}")
+                    if step.fix and step.outcome == "fail":
+                        print(f"           fix: {step.fix}")
+            return 0
+
+        if args.diff:
+            from .viz.explain import diff_models
+
+            with open(args.diff, encoding="utf-8") as fh:
+                saved = json.load(fh)
+            current = build_viz_model(
+                tk.engine.registry, tier=args.tier,
+                read_only=getattr(args, "viz_read_only", False))
+            report = diff_models(saved, current)
+            if args.json or getattr(args, "viz_json", False):
+                print(compact_json(report))
+                return 0
+            if report["same"]:
+                print(f"no change ({report['digest']['to']})")
+                return 0
+            for tool_id in report["added"]:
+                print(f"  + {tool_id}")
+            for tool_id in report["removed"]:
+                print(f"  - {tool_id}")
+            for row in report["changed"]:
+                bits = ", ".join(f"{k} {v['from']}->{v['to']}"
+                                 for k, v in row["changes"].items())
+                print(f"  ~ {row['id']}: {bits}")
+            for row in report["exposure"]:
+                arrow = "now advertised" if row["to"] else f"now withheld ({row['why']})"
+                print(f"  ! {row['id']}: {arrow}")
+            tok = report["tokens"]
+            print(f"  tokens {tok['from']} -> {tok['to']} ({tok['delta']:+d})")
+            return 0
+
         if args.serve:
             from .viz.server import VizServer
 
@@ -595,13 +669,23 @@ def _dispatch(args: argparse.Namespace, tk: Any, call: Any, cfg: Config) -> int:
                 server.stop()
             return 0
 
+        if args.as_host:
+            from .viz.explain import hypothetical_profile
+
+            profile = hypothetical_profile(tk.engine.registry.profile, args.as_host)
+        else:
+            profile = None
         model = build_viz_model(
             tk.engine.registry,
+            profile=profile,
             tier=args.tier,
             read_only=getattr(args, "viz_read_only", False),
             include_schemas=not args.no_schemas,
             include_examples=not args.no_examples,
         )
+        if args.as_host:
+            model.host["hypothetical"] = True
+            model.host["os"] = args.as_host
         # The output *shape* follows the flag, or the file extension when a path
         # says what it wants: `-o tools.html` is a page, `-o model.json` is data.
         as_json = bool(getattr(args, "viz_json", False)) or args.json

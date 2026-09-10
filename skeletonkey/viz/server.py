@@ -11,6 +11,7 @@ Routes:
   GET /api/model     the whole V0 model as JSON
   GET /api/digest    {model_digest, snapshot_digest, registered, advertised, at}
                      - the cheap poll; the page compares it to what it rendered
+  GET /api/explain   V4 decision chains: why every tool is (not) advertised
   GET /api/tool/<id> one node, plus its edges
   GET /healthz       {ok, uptime_s, requests}
 
@@ -118,6 +119,14 @@ class VizServer:
                 "tokens": model.snapshot["tokens"],
                 "at": round(time.time(), 3)}
 
+    def chains(self) -> dict[str, Any]:
+        """V4 decision chains for every tool, for the drawer's why-not panel."""
+        from .explain import explain_model
+
+        with self._lock:
+            return explain_model(self.registry, tier=self.tier,
+                                 read_only=self.read_only)
+
     def tool_payload(self, tool_id: str) -> dict[str, Any] | None:
         model = self.model()
         node = model.node(tool_id)
@@ -163,13 +172,17 @@ class VizServer:
                 try:
                     if route == "/":
                         page = render_html(viz.model(), title=viz.title,
-                                           live=True, poll_ms=viz.poll_ms)
+                                           live=True, poll_ms=viz.poll_ms,
+                                           chains=viz.chains())
                         self._send(200, page.encode("utf-8"), "text/html; charset=utf-8")
                     elif route == "/api/model":
                         model = viz.model()
                         doc = model.to_json()
                         doc["model_digest"] = model.digest()
                         self._json(200, doc)
+                    elif route == "/api/explain":
+                        self._json(200, {k: v.to_json()
+                                         for k, v in viz.chains().items()})
                     elif route == "/api/digest":
                         self._json(200, viz.digest_payload())
                     elif route.startswith("/api/tool/"):
@@ -184,7 +197,8 @@ class VizServer:
                     else:
                         self._json(404, {"error": "no such route", "path": route,
                                          "routes": ["/", "/api/model", "/api/digest",
-                                                    "/api/tool/<id>", "/healthz"]})
+                                                    "/api/explain", "/api/tool/<id>",
+                                                    "/healthz"]})
                 except Exception as exc:            # a broken page beats a dead server
                     self._json(500, {"error": type(exc).__name__, "message": str(exc)})
 

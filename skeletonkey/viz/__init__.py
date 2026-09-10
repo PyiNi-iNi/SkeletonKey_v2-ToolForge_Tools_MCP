@@ -12,6 +12,7 @@ model is testable without a browser, and `sk viz --json` prints it.
 
 from __future__ import annotations
 
+from .explain import Chain, Step, diff_models, explain_model, explain_tool, project
 from .model import (
     VizEdge,
     VizModel,
@@ -23,12 +24,18 @@ from .render import render_html
 from .server import VizServer, serve
 
 __all__ = [
+    "Chain",
+    "Step",
     "VizEdge",
     "VizModel",
     "VizNode",
     "VizServer",
     "build_viz_model",
+    "diff_models",
+    "explain_model",
+    "explain_tool",
     "model_digest",
+    "project",
     "render_html",
     "serve",
 ]
