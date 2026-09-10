@@ -24,6 +24,13 @@ from typing import Any
 from skeletonkey.core.util import stable_json
 
 from .model import VizModel
+from .views import (
+    render_graph_legend,
+    render_graph_svg,
+    render_latency_html,
+    render_matrix_html,
+    render_treemap_svg,
+)
 
 # Risk classes get a colour each; anything unknown falls back to the neutral one.
 _RISK_COLOURS = {
@@ -184,6 +191,14 @@ def render_html(model: VizModel, *, title: str = "SkeletonKey toolset",
 <div class="layout">
   <nav id="rail">{_group_rail(model)}</nav>
   <main>
+    <nav id="tabs" role="tablist">
+      <button class="tab active" data-view="cards" role="tab">cards</button>
+      <button class="tab" data-view="graph" role="tab">graph</button>
+      <button class="tab" data-view="treemap" role="tab">tokens</button>
+      <button class="tab" data-view="matrix" role="tab">matrix</button>
+      <button class="tab" data-view="latency" role="tab">latency</button>
+    </nav>
+    <section class="view" id="view-cards">
     <div id="filters">
       <input id="q" type="search" placeholder="search id, title, capability, tag&hellip;  ( / )"
              autocomplete="off" spellcheck="false">
@@ -201,6 +216,24 @@ def render_html(model: VizModel, *, title: str = "SkeletonKey toolset",
     </div>
     <div id="grid">{cards}</div>
     <p id="empty" hidden>Nothing matches that filter.</p>
+    </section>
+    <section class="view" id="view-graph" hidden>
+      {render_graph_legend(model)}
+      <div class="canvas">{render_graph_svg(model)}</div>
+    </section>
+    <section class="view" id="view-treemap" hidden>
+      <p class="dim">Area = tokens this tool spends of the
+        {_num(model.snapshot["tokens"])}-token advertisement. Click a tile for the tool.</p>
+      <div class="canvas">{render_treemap_svg(model)}</div>
+    </section>
+    <section class="view" id="view-matrix" hidden>
+      <div class="canvas">{render_matrix_html(model, "group", "risk")}</div>
+      <h4 class="mt">capability &times; provider</h4>
+      <div class="canvas">{render_matrix_html(model, "tier", "risk")}</div>
+    </section>
+    <section class="view" id="view-latency" hidden>
+      <div class="canvas">{render_latency_html(model)}</div>
+    </section>
   </main>
 </div>
 <aside id="drawer" hidden aria-label="tool detail"><button id="close">close &times;</button>
@@ -283,6 +316,45 @@ input,select,button { background:#0d1117; color:var(--fg); border:1px solid var(
 #detail a:hover { text-decoration:underline; }
 .gate-bad { color:var(--warn); }
 #empty { color:var(--dim); }
+#tabs { display:flex; gap:4px; margin-bottom:12px; border-bottom:1px solid var(--line); }
+.tab { background:none; border:none; border-bottom:2px solid transparent; border-radius:0;
+       color:var(--dim); padding:6px 12px; cursor:pointer; font:inherit; }
+.tab:hover { color:var(--fg); }
+.tab.active { color:var(--accent); border-bottom-color:var(--accent); }
+.canvas { background:var(--panel); border:1px solid var(--line); border-radius:8px;
+          padding:8px; overflow:auto; }
+.canvas svg { display:block; width:100%; height:auto; }
+h4.mt { margin:18px 0 6px; font-size:11px; text-transform:uppercase;
+        letter-spacing:.07em; color:var(--dim); }
+.legend { display:flex; flex-direction:column; gap:5px; margin-bottom:8px; font-size:11px; }
+.legend-row { display:flex; gap:12px; flex-wrap:wrap; align-items:center; }
+.sw { display:flex; gap:5px; align-items:center; color:var(--dim); cursor:pointer; }
+.sw i { width:9px; height:9px; border-radius:50%; display:inline-block; }
+.disc-label { font-size:11px; font-family:inherit; }
+.disc-n { opacity:.6; }
+.gnode { cursor:pointer; }
+.gnode:hover, .gnode:focus { stroke-width:3; outline:none; }
+.glyph { font-size:9px; fill:#0d1117; font-weight:700; font-family:inherit; }
+.edges { pointer-events:none; }
+.edges[hidden] { display:none; }
+svg.dim-others .gnode:not(.hot) { fill-opacity:.12; stroke-opacity:.2; }
+svg.dim-others .edges line:not(.hot) { stroke-opacity:.05; }
+.tile { cursor:pointer; }
+.tile:hover rect, .tile:focus rect { fill-opacity:.6; stroke-width:2; outline:none; }
+.tile-label { font-size:9px; fill:var(--fg); font-family:inherit; opacity:.85; }
+table.matrix { border-collapse:collapse; font-size:12px; }
+table.matrix th { color:var(--dim); font-weight:400; padding:3px 8px; text-align:left;
+                  white-space:nowrap; }
+table.matrix th.corner { color:var(--fg); }
+table.matrix td { padding:3px 8px; text-align:right; border:1px solid var(--line);
+                  min-width:44px; }
+table.matrix td.zero { color:#30363d; text-align:center; }
+.lat-row { display:flex; align-items:center; gap:10px; margin:4px 0; }
+.lat-k { width:96px; color:var(--dim); text-align:right; }
+.lat-bar { flex:1; background:#0d1117; border:1px solid var(--line); border-radius:4px;
+           height:14px; overflow:hidden; }
+.lat-bar i { display:block; height:100%; background:var(--accent); opacity:.55; }
+.lat-n { width:34px; }
 #drift { position:sticky; top:0; z-index:4; padding:8px 14px; background:#9e6a0322;
          border-bottom:1px solid var(--warn); color:var(--warn); display:flex;
          gap:10px; align-items:center; flex-wrap:wrap; }
@@ -458,6 +530,70 @@ _JS = r"""
   document.addEventListener("keydown", function (e) {
     if (e.key === "Escape") { close(); }
     if (e.key === "/" && document.activeElement !== q) { e.preventDefault(); q.focus(); }
+  });
+
+  // ---- views (V3) ---------------------------------------------------------
+  var tabs = Array.prototype.slice.call(document.querySelectorAll(".tab"));
+  function show(view) {
+    tabs.forEach(function (t) { t.classList.toggle("active", t.dataset.view === view); });
+    ["cards", "graph", "treemap", "matrix", "latency"].forEach(function (v) {
+      var sec = document.getElementById("view-" + v);
+      if (sec) { sec.hidden = v !== view; }
+    });
+  }
+  tabs.forEach(function (t) {
+    t.addEventListener("click", function () { show(t.dataset.view); });
+  });
+
+  // edge-kind toggles: one class flip per <g>, no relayout
+  var svg = document.getElementById("graph-svg");
+  document.querySelectorAll(".edge-toggle").forEach(function (box) {
+    function sync() {
+      var g = svg && svg.querySelector(".edge-" + box.dataset.kind);
+      if (g) { g.hidden = !box.checked; }
+    }
+    box.addEventListener("change", sync);
+    sync();
+  });
+
+  // hover/focus a node: light up its neighbourhood, dim everything else
+  if (svg) {
+    var lines = Array.prototype.slice.call(svg.querySelectorAll(".edges line"));
+    var gnodes = Array.prototype.slice.call(svg.querySelectorAll(".gnode"));
+    function highlight(id) {
+      if (!id) {
+        svg.classList.remove("dim-others");
+        lines.forEach(function (l) { l.classList.remove("hot"); });
+        gnodes.forEach(function (n) { n.classList.remove("hot"); });
+        return;
+      }
+      var near = {};
+      near[id] = true;
+      lines.forEach(function (l) {
+        var hit = l.dataset.a === id || l.dataset.b === id;
+        l.classList.toggle("hot", hit);
+        if (hit) { near[l.dataset.a] = true; near[l.dataset.b] = true; }
+      });
+      gnodes.forEach(function (n) { n.classList.toggle("hot", !!near[n.dataset.id]); });
+      svg.classList.add("dim-others");
+    }
+    gnodes.forEach(function (n) {
+      n.addEventListener("mouseenter", function () { highlight(n.dataset.id); });
+      n.addEventListener("mouseleave", function () { highlight(null); });
+      n.addEventListener("focus", function () { highlight(n.dataset.id); });
+      n.addEventListener("blur", function () { highlight(null); });
+      n.addEventListener("click", function () { open(n.dataset.id); });
+      n.addEventListener("keydown", function (e) {
+        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(n.dataset.id); }
+      });
+    });
+  }
+
+  document.querySelectorAll(".tile").forEach(function (tile) {
+    tile.addEventListener("click", function () { open(tile.dataset.id); });
+    tile.addEventListener("keydown", function (e) {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(tile.dataset.id); }
+    });
   });
 
   apply();

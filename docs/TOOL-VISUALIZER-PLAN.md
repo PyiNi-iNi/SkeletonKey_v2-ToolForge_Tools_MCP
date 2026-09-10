@@ -4,11 +4,11 @@
 knows about — what it is, whether it is advertised here and why, what it costs, what it
 touches, how it relates to the others, and what happened the last time it ran.
 
-**Status:** **V0 + V1 + V2 shipped** — `skeletonkey/viz/` (`model.py`, `render.py`,
-`server.py`), `sk viz` in three modes (JSON model, standalone HTML catalog, served page
-with drift detection), `schemas/viz-model.schema.json`, 60 tests across
-`tests/test_viz_model.py`, `tests/test_viz_render.py` and `tests/test_viz_server.py`.
-V3–V6 below are still plan.
+**Status:** **V0–V3 shipped** — `skeletonkey/viz/` (`model.py`, `render.py`, `server.py`,
+`layout.py`, `views.py`), `sk viz` in three modes (JSON model, standalone HTML catalog,
+served page with drift detection), five views (cards, graph, tokens, matrix, latency),
+`schemas/viz-model.schema.json`, 96 tests across four `tests/test_viz_*.py` modules.
+V4–V6 below are still plan.
 
 ## 0. Ground truth (measured on this box, `python -m skeletonkey.cli describe`)
 
@@ -158,7 +158,7 @@ goes away it says that instead, once, after three misses.
 
 ---
 
-## V3 — The graph view (the actual "visualizer")
+## V3 — The graph view (the actual "visualizer") ✅ SHIPPED
 
 **Deliverables**
 - Force-directed / grouped layout over the four edge kinds, vendored layout code, SVG
@@ -174,9 +174,31 @@ goes away it says that instead, once, after three misses.
   - **Timeline** — `typical_latency_ms` distribution, log scale.
 - Keyboard: `/` search, `j/k` walk, `Esc` close. Prefers-reduced-motion honoured.
 
-**Acceptance:** deterministic layout under a seeded RNG (snapshot test on node
-positions); no node overlaps beyond a tolerance; graph renders with JS-disabled
-fallback = the V1 card grid.
+**Acceptance (as built):** `tests/test_viz_layout.py` — 34 tests. Zero node overlaps and
+zero *group-disc* overlaps; everything inside the canvas; every node inside its own
+cluster; disc radius monotone in membership and node radius monotone in token cost;
+deterministic and independent of input ordering (no RNG at all, so no seed to fix);
+degenerate shapes — 0, 1, 2 tools, one group of 200, 10×100 — all lay out cleanly; 1000
+nodes in well under the budget; treemap tiles never go negative and area is proportional
+to value; SVG parses as XML; hostile ids cannot inject script. Plus two tests in
+`test_viz_render.py` proving **all five views are server-rendered markup** — script only
+toggles visibility, so JS-disabled still shows the catalog.
+
+**The layout, and the defect it fixed.** Groups are packed *around* a ring: a disc of
+radius `r` centred on a ring of radius `R` subtends `2·asin(r/R)`, and the discs are
+tangent exactly when those angles sum to 2π, so the code bisects for the scale that fits.
+The obvious first cut — size each cluster by its angular share — put `fs` and
+`integrations` at ~200 px radii overlapping by 185 px, and the graph read as one blob.
+`test_group_discs_do_not_overlap` caught it and keeps it fixed. Inside each disc, members
+are placed on a Vogel phyllotaxis spiral (even fill, collision-free at any count, no
+simulation), then a bounded, deterministic relaxation nudges apart the few near-touching
+pairs at disc boundaries. No RNG, no cooling schedule, no vendored force library.
+
+**Encoding:** colour = group, ring = risk, size = token cost (area-proportional), dashed
+outline = withheld here, `!` glyph = destructive — so risk and destructiveness survive
+greyscale and colour blindness. Edge kinds toggle independently; hover or keyboard-focus a
+node to light its neighbourhood and dim the rest; click any node or treemap tile to open
+the V1 detail drawer.
 
 ---
 

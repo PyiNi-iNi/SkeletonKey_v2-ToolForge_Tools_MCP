@@ -245,6 +245,30 @@ def test_embed_model_false_drops_the_payload_but_keeps_the_catalog(model):
     assert p.errors == []
 
 
+def test_all_views_are_in_the_markup_without_running_any_js(model, page, parsed):
+    """V3's views must be server-rendered, not built by script.
+
+    This is the JS-disabled degradation the plan promised: the cards, the graph
+    SVG, the treemap, the matrix and the latency bands are all real markup in
+    the delivered file. Script only toggles which one is visible.
+    """
+    for view in ("cards", "graph", "treemap", "matrix", "latency"):
+        assert f'id="view-{view}"' in page, f"the {view} view is missing from the markup"
+        assert f'data-view="{view}"' in page, f"the {view} tab is missing"
+    assert page.count('class="gnode"') == len(model.nodes)
+    assert page.count("<line ") == len(model.edges)
+    assert '<table class="matrix"' in page
+    assert 'class="tile"' in page
+    assert parsed.errors == [] and parsed.stack == []
+
+
+def test_only_the_cards_view_is_visible_before_script_runs(page):
+    """With no JS, a browser shows the catalog - not five stacked views."""
+    assert '<section class="view" id="view-cards">' in page
+    for view in ("graph", "treemap", "matrix", "latency"):
+        assert f'<section class="view" id="view-{view}" hidden>' in page
+
+
 def test_cli_writes_a_page_for_html_and_data_for_json(tmp_path):
     html_out = tmp_path / "tools.html"
     json_out = tmp_path / "model.json"
