@@ -176,6 +176,9 @@ def test_config_keys_named_in_docs_exist(toolkit):
         for m in CONFIG_RE.finditer(text):
             tok = m.group(1)
             line = text[: m.start()].count("\n") + 1
+            if tok.rsplit(".", 1)[1] in FILE_EXT:
+                continue  # `tools.json`/`tools.html` are filenames, not config
+                          # keys - the same guard the tool-name check above uses
             if tok in tools or tok in PENDING:
                 continue  # `fs.patch` is a tool in the `fs` namespace; `fs.redo` is a cited
                           # roadmap name - both belong to the other check, not this one
