@@ -13,10 +13,15 @@ from pathlib import Path
 
 import pytest
 
+# These drive a real MCP server, so they need the optional [mcp] extra.
+# Absent it they skip rather than fail - see the note in tests/conftest.py.
+from _extras import HAS_MCP, NO_MCP_REASON
+
 from skeletonkey.core.config import Config
 from skeletonkey.toolkit import build
 from tests.remote_helpers import write_remote_root
 
+pytestmark = pytest.mark.skipif(not HAS_MCP, reason=NO_MCP_REASON)
 
 def _cfg(root: Path, remote_root: Path, **remote_extra: dict) -> Config:
     cfg = Config.load(cwd=str(root), overrides={

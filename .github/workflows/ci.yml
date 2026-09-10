@@ -1,0 +1,132 @@
+name: CI
+
+# The repo went a long time with no CI, and the cost was a suite that "always
+# had 27 failures" - which turned out to be an unprovisioned environment, not
+# broken code. Nobody could tell, because nothing ever ran it clean. So this
+# workflow exists mainly to make that class of mistake impossible to sustain.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------------
+  # The claim ADR-0001 makes: the core installs and works with NO
+  # dependencies. That is a promise to anyone running in a locked-down
+  # sandbox, and it is only true if something checks it on a clean box.
+  core-purity:
+    name: core imports with zero dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install the core alone
+        run: pip install -e .
+
+      - name: No third-party packages may have been pulled in
+        run: |
+          python - <<'PY'
+          import json, subprocess, sys
+          allowed = {
+              # the package itself, plus what pip/venv always ship
+              "skeletonkey-toolforge", "pip", "setuptools", "wheel",
+          }
+          out = subprocess.run([sys.executable, "-m", "pip", "list",
+                                "--format=json", "--not-required"],
+                               capture_output=True, text=True).stdout
+          got = {p["name"].lower() for p in json.loads(out)}
+          extra = {n for n in got if n not in allowed}
+          if extra:
+              raise SystemExit(f"core install pulled in dependencies: {sorted(extra)}")
+          print("clean:", sorted(got))
+          PY
+
+      - name: The CLI works without the extras
+        run: |
+          sk --version
+          sk tools list >/dev/null
+          sk viz --summary | head -20
+          sk export openai-tools >/dev/null
+
+  # ---------------------------------------------------------------------
+  # The full suite, on both supported interpreters.
+  test:
+    name: tests (py${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install with every extra
+        run: pip install -e ".[mcp,watch,dev]"
+
+      # The `sk` console script must be on PATH: several integration tests
+      # shell out to it, and they fail confusingly when it is missing.
+      - name: The console script is installed
+        run: |
+          which sk
+          sk --version
+
+      - name: Lint
+        run: ruff check .
+
+      - name: Test
+        run: pytest -q
+
+  # ---------------------------------------------------------------------
+  # Without [mcp], the MCP tests must SKIP, never fail. A skip is honest
+  # about an absent optional dependency; a failure is noise that trains
+  # people to ignore a red suite.
+  test-no-extras:
+    name: tests without optional extras
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install core + test tooling only (no mcp, no watchfiles)
+        run: pip install -e . pytest pytest-asyncio
+
+      - name: Test - must be green, with MCP tests skipped not failed
+        run: pytest -q -m "not slow"
+
+  # ---------------------------------------------------------------------
+  # docs/TOOLSET.txt is a committed projection of the live registry. If a
+  # change moves the toolset, the diff belongs in the same PR.
+  toolset-snapshot:
+    name: the committed toolset snapshot is current
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -e .
+      - name: Regenerate and diff
+        run: |
+          sk viz --summary -o /tmp/TOOLSET.txt
+          if ! diff -u docs/TOOLSET.txt /tmp/TOOLSET.txt; then
+            echo ""
+            echo "::error::docs/TOOLSET.txt is stale."
+            echo "Run: sk viz --summary -o docs/TOOLSET.txt"
+            echo "Then read the diff above before committing it - it is telling"
+            echo "you the shape of the toolset changed."
+            exit 1
+          fi

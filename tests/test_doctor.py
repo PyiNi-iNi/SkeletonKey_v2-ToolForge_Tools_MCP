@@ -12,9 +12,16 @@ import json
 import os
 
 import pytest
+from _extras import HAS_MCP, NO_MCP_REASON
 
 from skeletonkey import diagnostics
 from skeletonkey.cli import main as sk_main
+
+# Most of this file works without the optional [mcp] extra; only the checks
+# that stand up a real stdio server need it. Those are marked individually
+# rather than skipping the module, so the rest keeps its coverage on a core-
+# only install.
+needs_mcp = pytest.mark.skipif(not HAS_MCP, reason=NO_MCP_REASON)
 
 EXPECTED_ORDER = ["meta", "config", "roots", "state", "tools", "viz", "skills", "profile",
                   "journal", "ledger", "mcp.stdio", "wire"]
@@ -27,6 +34,7 @@ def ws(tmp_path):
     return str(w)
 
 
+@needs_mcp
 def test_doctor_is_healthy_end_to_end_on_a_fresh_workspace(tmp_path):
     rep = diagnostics.doctor(cwd=ws(tmp_path), env=dict(os.environ))
     assert rep["schema"] == diagnostics.SCHEMA
@@ -41,6 +49,7 @@ def test_doctor_is_healthy_end_to_end_on_a_fresh_workspace(tmp_path):
     assert not (tmp_path / "ws" / ".sk").exists()
 
 
+@needs_mcp
 def test_probe_stdio_directly_proves_exposed_and_callable(tmp_path):
     rep = diagnostics.probe_stdio()
     assert rep["ok"] is True, rep.get("error")

@@ -10,6 +10,8 @@ Phase 0 and Phase 1 are implemented; the roadmap for P2–P7 is [`PLAN.md`](PLAN
 ```bash
 pip install -e .            # core has zero mandatory dependencies (ADR-0001)
 pip install -e ".[mcp,dev]" # + MCP server + pytest/ruff
+                            # install with -e: some tests shell out to `sk`
+                            # see CONTRIBUTING.md if the suite is not green
 ```
 
 ## Drop it into any project
