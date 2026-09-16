@@ -54,13 +54,13 @@ skeletonkey-mcp = "skeletonkey.mcp.__main__:main"
 lexical-tfidf = "skeletonkey.core.semantic:make_builtin_backend"
 
 [tool.hatch.build.targets.wheel]
-packages = ["skeletonkey"]
+packages = ["skeletonkey", "features"]
 
 [tool.hatch.build.targets.sdist]
-include = ["skeletonkey", "schemas", "skills", "docs", "tests", "config", "PLAN.md"]
+include = ["skeletonkey", "features", "schemas", "skills", "docs", "tests", "config", "PLAN.md"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "features"]
 asyncio_mode = "auto"
 addopts = "-q --strict-markers"
 markers = [

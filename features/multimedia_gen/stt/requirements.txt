@@ -1,0 +1,6 @@
+# stt heavy runtimes (mock needs none)
+#
+# faster-whisper>=1.0     # recommended: CTranslate2 backend, 4x faster on CPU
+# # or:
+# openai-whisper>=20231117
+# torch>=2.2              # for openai-whisper / GPU inference

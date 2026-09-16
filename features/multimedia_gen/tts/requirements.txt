@@ -1,0 +1,8 @@
+# tts heavy runtimes (mock needs none)
+#
+# transformers>=4.40        # Microsoft Speech T5 (speecht5_hifigan + T5)
+# torch>=2.2
+# numpy>=1.26
+#
+# Voice cloning uses the same stack (speaker conditioning on the
+# reference sample); no extra deps.

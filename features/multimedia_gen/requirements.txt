@@ -1,0 +1,16 @@
+# Optional heavy runtimes for multimedia_gen (see sub-folders):
+#
+# image_gen/
+#   diffusers>=0.26          # Stable Diffusion + Flux pipelines
+#   torch>=2.2               # CUDA for GPU hosts
+#   accelerate>=0.28
+#   (PlaygroundAI is key-only — no extra deps)
+#
+# stt/
+#   faster-whisper>=1.0      # CTranslate2 Whisper (fast on CPU+GPU)
+#   # or: openai-whisper>=20231117
+#
+# tts/
+#   transformers>=4.40       # Microsoft Speech T5 (speecht5_hifigan)
+#   torch>=2.2
+#   numpy>=1.26              # waveform assembly
