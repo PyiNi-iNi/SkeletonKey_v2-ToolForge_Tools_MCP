@@ -1,0 +1,10 @@
+# Optional reward model for features/evaluator.
+# The heuristic reward is stdlib-only; install this for a learned
+# reward model:
+
+# transformers>=4.40
+# torch>=2.2
+#
+# Example reward checkpoints (any sequence-classification RM):
+#   openai/Llama-2-7b-reward
+#   Anthropic/hh-rlhf (sentiment proxy)

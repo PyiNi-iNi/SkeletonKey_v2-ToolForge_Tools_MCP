@@ -1,0 +1,12 @@
+# Optional heavy parsers for document_processor. The core works with none
+# of these (see features/document_processor/README.md for the fallbacks).
+
+# --- rich extractors (lazy, pick what you need) ----------------------------
+# pypdf>=4.0              # real PDF text extraction (fallback scans raw text ops)
+# openpyxl>=3.1           # xlsx via openpyxl (fallback uses stdlib zipfile + XML)
+# pandas>=2.0             # optional dataframe path in csv/excel agents
+
+# --- OCR ---------------------------------------------------------------
+# docling>=2.0            # DocTR OCR pipeline (docling[ocr]) or
+# docling-ocr>=0.0        # standalone DocTR
+# pillow>=10.0            # image loading for OCR

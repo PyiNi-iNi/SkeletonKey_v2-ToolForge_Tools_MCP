@@ -1,0 +1,14 @@
+# Optional heavy backends for db_manager (pick one vector store + the
+# embedder). The core works with none of these installed (SQLite + hashing
+# embedder). GPU builds install torch with CUDA; CPU builds use the
+# `cpu` index as noted in README.md.
+
+# --- vector backends (pick one) -------------------------------------------
+# faiss-cpu>=1.8        # lightweight exact/IVF index, great for <10M vectors
+# chromadb>=0.5         # hosted-API + persistent local client
+# weaviate-client>=4.0  # requires a running Weaviate service
+
+# --- embedding engine -------------------------------------------------------
+# sentence-transformers>=2.6   # MiniLM-class sentence encoders (default:
+                               #   all-MiniLM-L6-v2, 384d)
+# transformers>=4.40           # base library pulled in by the above

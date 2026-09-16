@@ -1,0 +1,7 @@
+# Optional extras for agent_framework (core is stdlib-only)
+#
+# pandas>=2.0               # optional fast path inside CSVAgent (auto-detected)
+# ddgs>=0.0.5  or duckduckgo-search>=4.0   # cleaner web search client;
+#                                         # the built-in HTML path needs no deps
+# autogen>=0.2              # optional: bridge local conversations to the
+#                           # official AutoGen runtime (features/agent_framework/autogen.py)

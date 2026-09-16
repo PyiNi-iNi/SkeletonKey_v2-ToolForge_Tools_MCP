@@ -1,0 +1,10 @@
+# api_proxy core has NO extra dependencies (it composes the other
+# features: inference_engine + db_manager + common).
+#
+# Optional GPU-side constrained decoding (strict schema at decode time):
+#   vllm>=0.4                  # or front an existing vLLM server
+#   outlines>=0.0.43           # xgrammar/jsonschema constrained sampling
+#
+# Optional: jsonschema (full JSON-Schema when available; the built-in
+# subset validator is used otherwise).
+#   jsonschema>=4.20

@@ -1,0 +1,6 @@
+# Optional UI runtime for ui_manager. Auth, state, and bake-off cores are
+# stdlib-only; Gradio is needed only for the browser UI.
+
+# gradio>=4.20          # browser UI (Gradio blocks app in features/ui_manager/app.py)
+# itsdangerous>=2.1     # optional signed-session cookies (we default to opaque
+                        #   server-side sessions, so this stays optional)

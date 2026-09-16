@@ -1,0 +1,8 @@
+# image_gen heavy runtimes (pick one; mock needs none)
+#
+# diffusers>=0.26       # StableDiffusionPipeline + FluxPipeline
+# torch>=2.2            # CUDA build on GPU hosts (cpu wheel otherwise)
+# accelerate>=0.28
+# safetensors>=0.4
+#
+# PlaygroundAI: key-only, no extra deps (SK_IMAGEGEN_PLAYGROUND_KEY)

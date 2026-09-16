@@ -1,0 +1,6 @@
+# Optional local vision runtime for vision_engine.
+# Cloud providers (OpenAI/Anthropic/Gemini) only need API keys + stdlib.
+
+# transformers>=4.40          # LLaVa (LLaVA-1.5 / llava-hf models)
+# torch>=2.2                  # CUDA for GPU, CPU wheel otherwise
+# pillow>=10.0                # image decoding for local LLaVa
