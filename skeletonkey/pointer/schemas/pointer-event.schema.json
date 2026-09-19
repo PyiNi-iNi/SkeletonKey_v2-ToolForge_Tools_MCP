@@ -1,0 +1,78 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Pointer Event Schema",
+  "type": "object",
+  "required": ["timestamp", "source", "x", "y"],
+  "properties": {
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp when the event was recorded"
+    },
+    "source": {
+      "type": "string",
+      "enum": ["virtual", "physical"],
+      "description": "Origin of the pointer event: 'virtual' (AI-driven) or 'physical' (mouse/human)"
+    },
+    "x": {
+      "type": "integer",
+      "description": "X coordinate in pixels (screen-relative or window-relative)"
+    },
+    "y": {
+      "type": "integer",
+      "description": "Y coordinate in pixels (screen-relative or window-relative)"
+    },
+    "cursor_type": {
+      "type": "string",
+      "enum": ["arrow", "ibeam", "resize", "hand", "text", "crosshair", "wait", "help", "not-allowed"],
+      "description": "Current cursor visual type"
+    },
+    "cursor": {
+      "type": "object",
+      "properties": {
+        "id": {"type": "string", "description": "Optional cursor identifier"},
+        "hotspot_x": {"type": "integer", "description": "Hotspot X offset within cursor image"},
+        "hotspot_y": {"type": "integer", "description": "Hotspot Y offset within cursor image"}
+      },
+      "description": "Detailed cursor information"
+    },
+    "button_state": {
+      "type": "object",
+      "properties": {
+        "left": {"type": "boolean", "description": "Left mouse button pressed"},
+        "right": {"type": "boolean", "description": "Right mouse button pressed"},
+        "middle": {"type": "boolean", "description": "Middle/mousewheel button pressed"}
+      },
+      "description": "Current state of mouse buttons",
+      "additionalProperties": false
+    },
+    "modifier_keys": {
+      "type": "object",
+      "properties": {
+        "ctrl": {"type": "boolean", "description": "Control key state"},
+        "shift": {"type": "boolean", "description": "Shift key state"},
+        "alt": {"type": "boolean", "description": "Alt key state"},
+        "meta": {"type": "boolean", "description": "Meta/Command key state"}
+      },
+      "description": "Current state of modifier keys",
+      "additionalProperties": false
+    },
+    "element_under_cursor": {
+      "type": "object",
+      "properties": {
+        "id": {"type": "string", "description": "Accessibility element ID"},
+        "role": {"type": "string", "description": "ARIA role of the element"},
+        "name": {"type": "string", "description": "Accessible name of the element"},
+        "class": {"type": "string", "description": "CSS class or native class name"}
+      },
+      "description": "GUI element under the pointer, if identifiable",
+      "additionalProperties": false
+    },
+    "screen_id": {
+      "type": "string",
+      "description": "Identifier of the screen/monitor (for multi-monitor setups)",
+      "default": "primary"
+    }
+  },
+  "additionalProperties": false
+}
