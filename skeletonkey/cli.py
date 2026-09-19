@@ -11,6 +11,7 @@ import argparse
 import json
 import os
 import sys
+import time
 from typing import Any
 
 from . import __version__
@@ -268,7 +269,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="suite file, repeatable (one task per JSON line)")
 
     ex = sub.add_parser("export", help="export tools to external agent formats (openai-tools, anthropic-tools, mcp-manifest)")
-    ex.add_argument("format", choices=["openai-tools", "anthropic-tools", "mcp-manifest", "list"],
+    ex.add_argument("format", choices=["openai-tools", "anthropic-tools", "mcp-manifest",
+                                       "viz-html", "list"],
                     help="export format, or 'list' to show available formats")
     ex.add_argument("--tier", default=None, choices=["core", "task", "full"],
                     help="export tools from this tier (default: full)")
@@ -276,6 +278,72 @@ def main(argv: list[str] | None = None) -> int:
                     help="export only read-only tools")
     ex.add_argument("--output", "-o", default=None,
                     help="write output to file instead of stdout")
+
+    dv = sub.add_parser("dev", help="start the whole dev viewport: live panel + tool catalog")
+    dv.add_argument("path", nargs="?", default=None,
+                    help="a python file to watch (optional; omit for catalog only)")
+    dv.add_argument("--host", default=None,
+                    help="bind host for both servers (0.0.0.0 inside a preview sandbox)")
+    dv.add_argument("--panel-port", type=int, default=None, help="live panel port (default 8010)")
+    dv.add_argument("--viz-port", type=int, default=0, help="catalog port (0 = ephemeral)")
+    dv.add_argument("--two-servers", action="store_true",
+                    help="run the catalog as a separate server on --viz-port and "
+                         "cross-link it, instead of mounting it at /tools "
+                         "(ADR-0017 mode: read-only is then structural)")
+    dv.add_argument("--no-panel", action="store_true", help="catalog only")
+    dv.add_argument("--no-viz", action="store_true", help="panel only")
+    dv.add_argument("--open", dest="dev_open", action="store_true",
+                    help="open the panel in the default browser")
+    dv.add_argument("--runtime", action="store_true",
+                    help="overlay ledger runtime data on the catalog")
+
+    vz = sub.add_parser("viz", help="tool visualizer: the whole toolset as a page or a document")
+    vz.add_argument("--json", dest="viz_json", action="store_true",
+                    help="emit the model as JSON instead of the HTML page")
+    vz.add_argument("--title", default="SkeletonKey toolset",
+                    help="page title for the HTML catalog")
+    vz.add_argument("--open", dest="viz_open", action="store_true",
+                    help="open the page in the default browser (with --serve too)")
+    vz.add_argument("--serve", action="store_true",
+                    help="serve the catalog and watch for toolset drift")
+    vz.add_argument("--port", type=int, default=0,
+                    help="port for --serve (default: an unused one)")
+    vz.add_argument("--host", default="127.0.0.1",
+                    help="bind address for --serve (default: loopback only)")
+    vz.add_argument("--poll-ms", type=int, default=2000,
+                    help="how often the served page checks for drift")
+    vz.add_argument("--panel", metavar="URL", default=None,
+                    help="cross-link the served catalog to a running `sk live serve` "
+                         "panel (a link only; the catalog never drives it)")
+    vz.add_argument("--explain", metavar="TOOL", default=None,
+                    help="print the gate decision chain for one tool and exit")
+    vz.add_argument("--why-not", action="store_true",
+                    help="print the decision chain for every withheld tool and exit")
+    vz.add_argument("--as-host", default=None, choices=["windows", "linux", "darwin"],
+                    help="model what a host of this OS would see (derived, never probed)")
+    vz.add_argument("--diff", metavar="MODEL.json", default=None,
+                    help="diff this host's model against a saved one")
+    vz.add_argument("--runtime", action="store_true",
+                    help="overlay what the ledger measured, and lint the manifests")
+    vz.add_argument("--summary", action="store_true",
+                    help="compact, diff-reviewable text summary (one line per tool)")
+    vz.add_argument("--check", action="store_true",
+                    help="with --summary and -o: exit 1 and print a diff if the file "
+                         "is stale, instead of rewriting it (for CI)")
+    vz.add_argument("--from", dest="viz_from", metavar="FILE", default=None,
+                    help="visualise a tool list from a JSON file (OpenAI functions, "
+                         "an MCP tools/list, or a plain list) instead of this registry")
+    vz.add_argument("--drift", action="store_true",
+                    help="print only the contract-drift list and exit (non-zero if any)")
+    vz.add_argument("--tier", default=None, choices=["core", "task", "full"],
+                    help="build the model for this advertisement tier (default: active tier)")
+    vz.add_argument("--read-only", dest="viz_read_only", action="store_true",
+                    help="model the toolset as a read-only host would see it")
+    vz.add_argument("--no-schemas", action="store_true",
+                    help="omit input/output schemas (smaller document)")
+    vz.add_argument("--no-examples", action="store_true", help="omit worked examples")
+    vz.add_argument("--output", "-o", default=None,
+                    help="write to a file (.json implies --json; .html the page)")
 
     args = ap.parse_args(argv)
     if args.cmd == "doctor":
@@ -528,7 +596,9 @@ def _dispatch(args: argparse.Namespace, tk: Any, call: Any, cfg: Config) -> int:
             tier=args.tier,
             read_only=getattr(args, "export_read_only", False),
         )
-        output = compact_json(result)
+        # viz-html is a document, not a payload: emit the page itself so
+        # `sk export viz-html -o tools.html` is directly openable.
+        output = result["html"] if fmt == "viz-html" else compact_json(result)
         if args.output:
             with open(args.output, "w", encoding="utf-8") as fh:
                 fh.write(output)
@@ -538,6 +608,233 @@ def _dispatch(args: argparse.Namespace, tk: Any, call: Any, cfg: Config) -> int:
                 print(output)
             else:
                 print(pretty_json(result))
+        return 0
+    if cmd == "dev":
+        return _cmd_dev(args, tk, cfg)
+    if cmd == "viz":
+        from .viz import build_viz_model, render_html
+
+        # --from lets you point the visualiser at somebody else's tool list:
+        # an OpenAI function array, an MCP tools/list, a plain list of dicts.
+        # It is adapted into a real Registry (viz/adapt.py) so every downstream
+        # surface - explain, diff, serve, summary - works identically rather
+        # than through a second, weaker code path.
+        viz_registry = tk.engine.registry
+        if getattr(args, "viz_from", None):
+            from .viz.adapt import as_registry
+
+            try:
+                with open(args.viz_from, encoding="utf-8") as fh:
+                    raw = json.load(fh)
+            except (OSError, ValueError) as exc:
+                print(f"cannot read {args.viz_from}: {exc}", file=sys.stderr)
+                return 2
+            try:
+                viz_registry = as_registry(raw)
+            except (TypeError, ValueError) as exc:
+                print(f"cannot adapt {args.viz_from}: {exc}", file=sys.stderr)
+                return 2
+
+        # ---- V4: the why-not surfaces, which answer and exit -----------------
+        if args.explain or args.why_not:
+            from .viz.explain import explain_model, explain_tool
+
+            # `sk viz --json` sets the subparser's flag; `sk --json viz` sets the
+            # global one. Both mean the same thing to a caller, so honour either.
+            want_json = args.json or getattr(args, "viz_json", False)
+            common = {"tier": args.tier,
+                      "read_only": getattr(args, "viz_read_only", False)}
+            if args.explain:
+                chains = {args.explain: explain_tool(viz_registry,
+                                                     args.explain, **common)}
+            else:
+                chains = {k: v for k, v in
+                          explain_model(viz_registry, **common).items()
+                          if not v.advertised}
+            if want_json:
+                print(compact_json({k: v.to_json() for k, v in chains.items()}))
+                return 0
+            if not chains:
+                print("every registered tool is advertised on this host.")
+                return 0
+            marks = {"pass": "  ok  ", "fail": " FAIL ", "note": " note ", "skip": "  --  "}
+            for tool_id, chain in chains.items():
+                head = "advertised" if chain.advertised else "WITHHELD"
+                print(f"\n{tool_id}  [{head}]")
+                print(f"  {chain.verdict}")
+                for step in chain.steps:
+                    print(f"  {marks.get(step.outcome, '  ?   ')} {step.rule:22} "
+                          f"{step.detail}")
+                    for line in step.evidence:
+                        print(f"           - {line}")
+                    if step.fix and step.outcome == "fail":
+                        print(f"           fix: {step.fix}")
+            return 0
+
+        if args.diff:
+            from .viz.explain import diff_models
+
+            with open(args.diff, encoding="utf-8") as fh:
+                saved = json.load(fh)
+            current = build_viz_model(
+                viz_registry, tier=args.tier,
+                read_only=getattr(args, "viz_read_only", False))
+            report = diff_models(saved, current)
+            if args.json or getattr(args, "viz_json", False):
+                print(compact_json(report))
+                return 0
+            if report["same"]:
+                print(f"no change ({report['digest']['to']})")
+                return 0
+            for tool_id in report["added"]:
+                print(f"  + {tool_id}")
+            for tool_id in report["removed"]:
+                print(f"  - {tool_id}")
+            for row in report["changed"]:
+                bits = ", ".join(f"{k} {v['from']}->{v['to']}"
+                                 for k, v in row["changes"].items())
+                print(f"  ~ {row['id']}: {bits}")
+            for row in report["exposure"]:
+                arrow = "now advertised" if row["to"] else f"now withheld ({row['why']})"
+                print(f"  ! {row['id']}: {arrow}")
+            tok = report["tokens"]
+            print(f"  tokens {tok['from']} -> {tok['to']} ({tok['delta']:+d})")
+            return 0
+
+        if args.serve:
+            from .viz.server import VizServer
+
+            server = VizServer(viz_registry, host=args.host, port=args.port,
+                               title=args.title, tier=args.tier,
+                               read_only=getattr(args, "viz_read_only", False),
+                               poll_ms=args.poll_ms,
+                               ledger=tk.ledger if args.runtime else None,
+                               panel_url=getattr(args, "panel", None))
+            server.start()
+            agg = server.model().aggregates
+            print(f"viz serving {agg['registered']} tools "
+                  f"({agg['advertised']} advertised) at {server.url}", file=sys.stderr)
+            print("  routes: / /api/model /api/digest /api/tool/<id> /healthz",
+                  file=sys.stderr)
+            print("  ctrl-c to stop", file=sys.stderr)
+            if getattr(args, "viz_open", False):
+                import webbrowser
+
+                webbrowser.open(server.url)
+            try:
+                while True:
+                    time.sleep(0.5)
+            except KeyboardInterrupt:
+                print("", file=sys.stderr)
+            finally:
+                server.stop()
+            return 0
+
+        if args.as_host:
+            from .viz.explain import hypothetical_profile
+
+            profile = hypothetical_profile(viz_registry.profile, args.as_host)
+        else:
+            profile = None
+        model = build_viz_model(
+            viz_registry,
+            profile=profile,
+            tier=args.tier,
+            read_only=getattr(args, "viz_read_only", False),
+            include_schemas=not args.no_schemas,
+            include_examples=not args.no_examples,
+        )
+        if args.as_host:
+            model.host["hypothetical"] = True
+            model.host["os"] = args.as_host
+
+        # V5: the ledger overlay. Absent by default and absent-safe: no ledger
+        # means an empty overlay and a page identical to the one before it.
+        if args.runtime or args.drift:
+            from .viz.runtime import attach_runtime
+
+            attach_runtime(model, tk.ledger)
+
+        if args.drift:
+            rows = (model.runtime or {}).get("drift", [])
+            if args.json or getattr(args, "viz_json", False):
+                print(compact_json({"drift": rows, "count": len(rows)}))
+            elif not (model.runtime or {}).get("available"):
+                print("no ledger activity recorded yet; nothing to lint.")
+            elif not rows:
+                print("no contract drift: every exercised tool is within its "
+                      "declared envelope.")
+            else:
+                for row in rows:
+                    print(f"  {row['kind']:12} {row['id']:28} {row['detail']}")
+                print(f"  {len(rows)} tool(s) whose manifest disagrees with reality")
+            return 1 if rows else 0
+        # The output *shape* follows the flag, or the file extension when a path
+        # says what it wants: `-o tools.html` is a page, `-o model.json` is data.
+        as_json = bool(getattr(args, "viz_json", False)) or args.json
+        if args.summary or (args.output and args.output.lower().endswith((".html", ".htm"))):
+            as_json = False
+        elif args.output and args.output.lower().endswith(".json"):
+            as_json = True
+        elif not args.output and not as_json:
+            # No file and no format asked for: stdout gets JSON, because a
+            # terminal is not a browser. `-o page.html` is the page path.
+            as_json = True
+
+        if args.summary:
+            from .viz import summary_lines
+
+            output = summary_lines(model)
+            # --check turns the snapshot into a CI gate: no rewrite, exit 1
+            # and show the diff. The diff is the point - it tells a reviewer
+            # the SHAPE of the toolset moved, which is the thing worth
+            # noticing, not merely that a file is out of date.
+            if args.check:
+                if not args.output:
+                    print("--check needs -o FILE (the snapshot to compare against)",
+                          file=sys.stderr)
+                    return 2
+                try:
+                    with open(args.output, encoding="utf-8") as fh:
+                        on_disk = fh.read()
+                except OSError:
+                    print(f"{args.output} does not exist; generate it with "
+                          f"`sk viz --summary -o {args.output}`", file=sys.stderr)
+                    return 1
+                if on_disk.strip() == output.strip():
+                    print(f"{args.output} is current", file=sys.stderr)
+                    return 0
+                import difflib
+
+                diff = difflib.unified_diff(
+                    on_disk.splitlines(), output.splitlines(),
+                    fromfile=f"{args.output} (committed)", tofile="live registry",
+                    lineterm="", n=2)
+                print("\n".join(diff))
+                print(f"\n{args.output} is stale. Regenerate with:\n"
+                      f"  sk viz --summary -o {args.output}\n"
+                      f"Read the diff above before committing it.", file=sys.stderr)
+                return 1
+        elif as_json:
+            doc = model.to_json()
+            doc["model_digest"] = model.digest()
+            output = compact_json(doc) if args.json else pretty_json(doc)
+        else:
+            output = render_html(model, title=args.title)
+
+        agg = model.aggregates
+        if args.output:
+            with open(args.output, "w", encoding="utf-8") as fh:
+                fh.write(output if output.endswith("\n") else output + "\n")
+            print(f"viz {'model' if as_json else 'page'}: {agg['registered']} tools "
+                  f"({agg['advertised']} advertised, {agg['withheld']} withheld), "
+                  f"{len(model.edges)} relations -> {args.output}", file=sys.stderr)
+            if getattr(args, "viz_open", False):
+                import webbrowser
+
+                webbrowser.open(f"file://{os.path.abspath(args.output)}")
+        else:
+            print(output)
         return 0
     if cmd == "skills":
         if args.action == "list":
@@ -1175,6 +1472,108 @@ def _maybe_serve_hint(res: Any, args: argparse.Namespace, call: Any) -> None:
             print(f"  live: {st['id']} watching {st['path']} "
                   f"({st.get('reloads', 0)} reloads)  -  panel: `sk live serve --wait`",
                   file=sys.stderr)
+
+
+def _cmd_dev(args: argparse.Namespace, tk: Any, cfg: Config) -> int:
+    """`sk dev`: the whole viewport, one command.
+
+    Default is the merged server (ADR-0018): the live panel serves the
+    read-only tool catalog at /tools, so there is one process, one port and
+    one URL. `--two-servers` restores the ADR-0017 arrangement, where the
+    catalog runs standalone and its read-only-ness is structural rather than
+    guarded - which is the stronger property, and still available to anyone
+    who wants it.
+    """
+    import time
+
+    host = args.host or cfg.live.host
+    panel_url = viz_url = None
+    viz_server = None
+    mounted = not args.two_servers and not args.no_viz and not args.no_panel
+    call = tk.engine.call
+
+    # Separate-server mode: the catalog comes up first so its real URL can be
+    # handed to live.serve at construction time.
+    if args.two_servers and not args.no_viz:
+        from .viz.server import VizServer
+
+        viz_server = VizServer(tk.engine.registry, host=host, port=args.viz_port,
+                               title="SkeletonKey toolset",
+                               ledger=tk.ledger if args.runtime else None)
+        viz_server.start()
+        viz_url = viz_server.url
+    elif args.no_panel and not args.no_viz:
+        # No panel to mount into, so the catalog must stand alone regardless.
+        from .viz.server import VizServer
+
+        viz_server = VizServer(tk.engine.registry, host=host, port=args.viz_port,
+                               title="SkeletonKey toolset",
+                               ledger=tk.ledger if args.runtime else None)
+        viz_server.start()
+        viz_url = viz_server.url
+
+    try:
+        if not args.no_panel:
+            if args.path:
+                started = call("live.start", {"path": args.path})
+                if not started.ok:
+                    print(f"live.start failed: {started.error}", file=sys.stderr)
+                    return 1
+            payload: dict[str, Any] = {"host": host}
+            if args.panel_port is not None:
+                payload["port"] = args.panel_port
+            if viz_url:
+                payload["viz_url"] = viz_url
+            if mounted:
+                payload["mount_tools"] = True
+            served = call("live.serve", payload)
+            if not served.ok:
+                print(f"live.serve failed: {served.error}", file=sys.stderr)
+                return 1
+            panel_url = (served.to_dict(max_bytes=None).get("data") or {}).get("url")
+
+            if viz_server is not None and panel_url:
+                viz_server.panel_url = panel_url
+
+        if viz_server is None and panel_url is None:
+            print("nothing to serve: --no-panel and --no-viz cancel out", file=sys.stderr)
+            return 2
+
+        print("  dev viewport up:", file=sys.stderr)
+        if panel_url:
+            print(f"    panel   : {panel_url}   (live HMR, REPL - executes code)",
+                  file=sys.stderr)
+        if mounted and panel_url:
+            reg = tk.engine.registry
+            print(f"    catalog : {panel_url}tools   "
+                  f"({len(reg.all())} tools, read-only, same server)", file=sys.stderr)
+        elif viz_url:
+            agg = viz_server.model().aggregates
+            print(f"    catalog : {viz_url}   ({agg['registered']} tools, "
+                  f"{agg['advertised']} advertised, separate read-only server)",
+                  file=sys.stderr)
+            if panel_url:
+                print("    two servers: the catalog cannot write, structurally "
+                      "(ADR-0017)", file=sys.stderr)
+        if args.path:
+            print(f"    watching: {args.path}", file=sys.stderr)
+        print("  Ctrl-C to stop", file=sys.stderr)
+
+        if getattr(args, "dev_open", False):
+            import webbrowser
+
+            webbrowser.open(panel_url or viz_url)
+        try:
+            while True:
+                time.sleep(3600)
+        except KeyboardInterrupt:
+            print("", file=sys.stderr)
+            return 0
+    finally:
+        if viz_server is not None:
+            viz_server.stop()
+        if not args.no_panel:
+            call("live.serve", {"op": "stop"})
 
 
 def _live_wait(res: Any, args: argparse.Namespace) -> int:

@@ -141,6 +141,24 @@ def doctor(*, cwd: str | None = None, config_path: str | None = None,
             gated=gated, load_errors=list(tk.registry.load_errors)[:10],
             seconds=round(time.monotonic() - t0, 3))
 
+        # The visualizer must account for every registered tool, not just the
+        # advertised ones. A model that has lost a tool is a broken projection,
+        # and the doctor is where a broken projection should surface.
+        try:
+            from skeletonkey.viz import build_viz_model
+
+            model = build_viz_model(tk.registry)
+            viz_ok = len(model.nodes) == len(tk.registry.all())
+            add("viz", viz_ok, nodes=len(model.nodes),
+                registered=len(tk.registry.all()),
+                advertised=model.aggregates["advertised"],
+                withheld=model.aggregates["withheld"],
+                edges=len(model.edges), digest=model.digest(),
+                **({} if viz_ok else
+                   {"error": "the viz model does not cover every registered tool"}))
+        except Exception as exc:
+            add("viz", False, error=f"{type(exc).__name__}: {exc}")
+
         skills = tk.skills.discover()
         add("skills", not tk.skills.errors, discovered=[s.name for s in skills],
             errors=list(tk.skills.errors)[:10])

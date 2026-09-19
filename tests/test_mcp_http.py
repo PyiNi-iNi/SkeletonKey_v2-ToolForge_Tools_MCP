@@ -21,6 +21,12 @@ import urllib.request
 
 import pytest
 
+# These drive a real MCP server, so they need the optional [mcp] extra.
+# Absent it they skip rather than fail - see the note in tests/conftest.py.
+from _extras import HAS_MCP, NO_MCP_REASON
+
+pytestmark = pytest.mark.skipif(not HAS_MCP, reason=NO_MCP_REASON)
+
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PROTOCOL = "2025-06-18"
 

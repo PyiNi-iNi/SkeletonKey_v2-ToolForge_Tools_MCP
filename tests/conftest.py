@@ -9,11 +9,22 @@ import sys
 
 import pytest
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# These imports must follow the sys.path setup below, so E402 is expected here
+# rather than a mistake: a checkout that has not been `pip install -e`'d still
+# has to find both `skeletonkey` and the test helpers.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.dirname(_HERE))   # the repo, for `skeletonkey`
+sys.path.insert(0, _HERE)                    # this dir, for `_extras` etc.
 
-from skeletonkey.core.config import Config
-from skeletonkey.core.profile import CapabilityProfile, Prober, ShellProbe
-from skeletonkey.toolkit import Toolkit, build
+from _extras import HAS_MCP, NO_MCP_REASON  # noqa: E402,F401  (re-export)
+
+from skeletonkey.core.config import Config  # noqa: E402
+from skeletonkey.core.profile import (  # noqa: E402
+    CapabilityProfile,
+    Prober,
+    ShellProbe,
+)
+from skeletonkey.toolkit import Toolkit, build  # noqa: E402
 
 
 @pytest.fixture

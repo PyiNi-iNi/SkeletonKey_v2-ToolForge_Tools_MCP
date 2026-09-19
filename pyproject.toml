@@ -28,6 +28,10 @@ dependencies = []
 
 [project.optional-dependencies]
 mcp = ["mcp>=2.1,<3"]
+# Only the MCP tests are async, so the asyncio plugin travels with that extra.
+# Installing [dev] without [mcp] then emits an "Unknown config option:
+# asyncio_mode" warning, which is accurate and harmless.
+test-mcp = ["skeletonkey-toolforge[mcp]", "pytest-asyncio>=1.0"]
 watch = ["watchfiles>=0.21"]
 all = ["skeletonkey-toolforge[mcp,watch]"]
 dev = [

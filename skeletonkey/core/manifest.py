@@ -155,8 +155,25 @@ class ToolManifest:
         return RISK_ORDER[self.risk] >= RISK_ORDER.get(level, 99)
 
     def tokens_estimate(self) -> int:
+        """Token cost of this tool's one-line doc.
+
+        Memoised against the doc string itself rather than cached blindly:
+        `toolkit.py` rewrites `description` on handler-less skill manifests
+        after registration, so a plain cache would go stale. Keying on the
+        derived text makes staleness impossible while still collapsing the
+        hot path - advertise() calls this once per tool per budget pass, and
+        an explain over the whole registry used to recompute it tens of
+        thousands of times.
+        """
         from .util import estimate_tokens
-        return estimate_tokens(self.compact_doc())
+
+        doc = self.compact_doc()
+        cached = self.__dict__.get("_tokens_cache")
+        if cached is not None and cached[0] == doc:
+            return cached[1]
+        n = estimate_tokens(doc)
+        self.__dict__["_tokens_cache"] = (doc, n)
+        return n
 
     def effective_timeout(self, requested: float | None) -> float:
         cap = float(self.timeout_s)

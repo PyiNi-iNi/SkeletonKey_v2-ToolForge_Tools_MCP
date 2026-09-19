@@ -282,6 +282,15 @@ _spec(
             "host": {"type": "string", "description": "Bind host (default from [live] host)."},
             "port": {"type": "integer", "minimum": 0, "maximum": 65535,
                      "description": "0 = ephemeral; the chosen port is returned."},
+            "mount_tools": {"type": "boolean", "default": False,
+                            "description": "Serve the read-only tool catalog from this "
+                                           "same server under /tools (ADR-0018). One port "
+                                           "instead of two; see the ADR for what that "
+                                           "costs."},
+            "viz_url": {"type": "string",
+                        "description": "URL of a running `sk viz --serve` catalog to "
+                                       "cross-link in the panel header. A link only: the "
+                                       "panel never fetches or proxies it."},
         }})
 
 
@@ -437,7 +446,8 @@ def register(reg: Any, *, manager: Any, engine: Any = None) -> dict[str, Any]:
         return {"program": prog.id, "op": op, "scene_version": canvas.version, "frame": frame}
 
     def live_serve(op: str = "start", host: str | None = None,
-                   port: int | None = None) -> dict[str, Any]:
+                   port: int | None = None, viz_url: str | None = None,
+                   mount_tools: bool = False) -> dict[str, Any]:
         if op == "stop":
             panel, manager.panel = manager.panel, None
             if panel is None:
@@ -455,7 +465,19 @@ def register(reg: Any, *, manager: Any, engine: Any = None) -> dict[str, Any]:
                 st["note"] = "already serving"
                 return st
             manager.panel.stop()
-        manager.panel = Panel(manager, host=host, port=int(port), repl_enabled=repl_on)
+        mount = None
+        if mount_tools:
+            from ..viz.mount import VizMount
+
+            # The mount gets a callable returning the registry - not the
+            # engine, not the toolkit. It cannot reach anything mutable even
+            # if a future route is added carelessly (ADR-0018).
+            eng = getattr(manager, "_engine", None)
+            if eng is not None:
+                mount = VizMount(lambda: eng.registry,
+                                 ledger_provider=lambda: getattr(eng, "ledger", None))
+        manager.panel = Panel(manager, host=host, port=int(port), repl_enabled=repl_on,
+                              viz_url=viz_url, viz_mount=mount)
         return manager.panel.start()
 
     add("live.start", live_start)

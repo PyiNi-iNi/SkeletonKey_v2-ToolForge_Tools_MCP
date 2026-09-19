@@ -10,6 +10,8 @@ Phase 0 and Phase 1 are implemented; the roadmap for P2–P7 is [`PLAN.md`](PLAN
 ```bash
 pip install -e .            # core has zero mandatory dependencies (ADR-0001)
 pip install -e ".[mcp,dev]" # + MCP server + pytest/ruff
+                            # install with -e: some tests shell out to `sk`
+                            # see CONTRIBUTING.md if the suite is not green
 ```
 
 ## Drop it into any project
@@ -102,6 +104,48 @@ $ sk skills install ./my-skill                # needs skills.allow_install = tru
 $ sk call skill.my-skill.wordcount '{"path": "notes.txt"}'
 ```
 
+## The dev viewport
+
+```bash
+sk dev app.py       # live HMR panel + read-only tool catalog, cross-linked
+```
+
+One server, two surfaces: the panel runs your code and hot-reloads it on save
+at `/`, and the read-only tool catalog is mounted at `/tools`. Keep it on
+loopback - the REPL executes code, and the catalog now shares its bind
+([ADR-0018](docs/adr/0018-mount-the-catalog-in-the-panel.md)). `sk dev
+--two-servers` splits them back apart.
+
+## See the toolset
+
+`sk viz` renders every registered tool — advertised or not — as one self-contained
+page: no npm, no CDN, no build step, opens from `file://` with the network off.
+
+```console
+$ sk viz -o tools.html      # catalog, graph, token treemap, matrix, latency, runtime
+$ sk viz --serve            # the same page, and it notices when the toolset changes
+$ sk viz --why-not          # every withheld tool, the rule that withheld it, the fix
+$ sk viz --drift            # lint the manifests against the ledger; non-zero if drifted
+```
+
+Four things it answers that nothing else did:
+
+- **what is here** — 81 registered / 79 advertised, 11 groups, 74 capabilities, all
+  filterable, with schemas and worked examples one click away;
+- **why you cannot call this** — a 10-step decision chain mirroring
+  `Registry.gate()`, each step carrying its evidence and an actionable fix
+  (`sk viz --explain shell.run`);
+- **what another host would see** — `--as-host windows` derives a profile without
+  re-probing, and `--diff` compares two hosts or two commits;
+- **whether a manifest still tells the truth** — the runtime overlay reads the
+  ledger and flags tools whose measured p95 outruns their declared
+  `typical_latency_ms` by more than 3×. `sk viz --drift` exits non-zero, so manifest
+  accuracy can be a CI gate.
+
+It is a read-only projection of `advertise()` and holds no facts of its own
+([ADR-0016](docs/adr/0016-visualizer-is-a-projection.md)); the server has no POST
+handler at all. Details in [`docs/TOOL-VISUALIZER.md`](docs/TOOL-VISUALIZER.md).
+
 ## Documentation
 
 | Doc | Read it when |
@@ -113,6 +157,9 @@ $ sk call skill.my-skill.wordcount '{"path": "notes.txt"}'
 | [`docs/SHELL-DIALECTS.md`](docs/SHELL-DIALECTS.md) | bash vs pwsh vs python behaviour |
 | [`docs/SKILLS-SPEC.md`](docs/SKILLS-SPEC.md) | you are writing a `SKILL.md` |
 | [`docs/CONNECT-A-HOST.md`](docs/CONNECT-A-HOST.md) | you are wiring a host or debugging an install (`sk wire`, `sk doctor`) |
+| [`docs/VISUALIZE-YOUR-TOOLS.md`](docs/VISUALIZE-YOUR-TOOLS.md) | you have tool definitions from somewhere else (OpenAI functions, an MCP `tools/list`) and just want a page — no adoption required (`sk viz --from`) |
+| [`docs/TOOL-VISUALIZER.md`](docs/TOOL-VISUALIZER.md) | you want to *see* the toolset — the catalog, the graph, why a tool is withheld, whether a manifest still tells the truth (`sk viz`) |
+| [`docs/ROADMAP-V10-V16.md`](docs/ROADMAP-V10-V16.md) | you want to know what is planned next, what is deliberately declined, and why |
 | [`docs/SECURITY-MODEL.md`](docs/SECURITY-MODEL.md) | you need to know what is and is *not* enforced |
 | [`docs/adr/`](docs/adr) | you are about to disagree with a decision |
 | [`config/skeletonkey.example.toml`](config/skeletonkey.example.toml) | every knob, with its default |
