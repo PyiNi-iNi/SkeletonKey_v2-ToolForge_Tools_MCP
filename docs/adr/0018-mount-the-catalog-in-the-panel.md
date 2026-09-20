@@ -78,10 +78,12 @@ execution at all.
    arrangement, which remains supported and is still the stronger posture.
    `sk viz --serve` also still runs the standalone, structurally read-only
    server — that code path is not deleted.
-2. **Do not expose a mounted panel beyond loopback.** This was already true of
-   the panel (`/repl` executes code) but it is now also true of the catalog,
-   which was previously safe to expose. `panel_repl = false` reduces but does
-   not eliminate the exposure: `/api/control` still mutates.
+2. **Do not expose a mounted panel beyond loopback by default.** This was
+   already true of the panel (`/repl` and `/api/control` mutate live state) and
+   is now also true of the catalog. `panel_repl = false` refuses both mutation
+   routes, but any remote opt-in still requires `allow_remote`, a 32-byte auth
+   token, an origin policy, and an accurate `public_base_url` when the bind is
+   wildcarded.
 3. **`tests/test_viz_mount.py` is load-bearing.** Weakening or skipping it
    silently removes the property, with nothing in the class shape left to
    notice. It says so at the top of the file.

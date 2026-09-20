@@ -32,10 +32,15 @@ def watchfiles_available() -> bool:
     return importlib.util.find_spec("watchfiles") is not None
 
 
-def _signature(path: str, *, deep: bool) -> str | None:
+def _signature(path: str, *, deep: bool, max_source_bytes: int | None = None) -> str | None:
     """Cheap identity for 'did this file change': stat tuple, optionally
-    salted with a content hash so same-mtime writes (tests, `cp -p`) still
-    register. None = gone."""
+    salted with a bounded content hash so same-mtime writes (tests, `cp -p`)
+    still register. None = gone.
+
+    The polling watcher is itself a source reader. Its hash window therefore
+    obeys the live source cap; an oversized file is identified from metadata
+    and left for ``LiveProgram`` to reject without reading its contents here.
+    """
     try:
         st = os.stat(path)
     except OSError:
@@ -43,9 +48,13 @@ def _signature(path: str, *, deep: bool) -> str | None:
     sig = f"{st.st_mtime_ns}:{st.st_size}"
     if deep:
         try:
-            with open(path, "rb") as fh:
-                sig += ":" + hashlib.sha1(fh.read(1_000_000)).hexdigest()[:12]
-        except OSError:
+            if max_source_bytes is not None and st.st_size > max_source_bytes:
+                sig += f":oversize:{max_source_bytes}"
+            else:
+                cap = 1_000_000 if max_source_bytes is None else max(1, int(max_source_bytes))
+                with open(path, "rb") as fh:
+                    sig += ":" + hashlib.sha1(fh.read(cap)).hexdigest()[:12]
+        except (OSError, TypeError, ValueError):
             return None
     return sig
 
@@ -55,9 +64,11 @@ class PollBackend:
     synchronous by design: `scan()` returns the changed/absent/new paths since
     the previous scan and advances the snapshot. No threads in here."""
 
-    def __init__(self, targets: list[str], *, deep_hash: bool = True) -> None:
+    def __init__(self, targets: list[str], *, deep_hash: bool = True,
+                 max_source_bytes: int | None = None) -> None:
         self.targets = [os.path.abspath(t) for t in targets]
         self.deep_hash = deep_hash
+        self.max_source_bytes = max_source_bytes
         self.known: dict[str, str] = {}       # path -> signature
         self.missing: set[str] = set()        # waited-for files not yet created
         self._primed = False                  # first scan is the baseline, never an event
@@ -66,7 +77,8 @@ class PollBackend:
         found: dict[str, str] = {}
         for target in self.targets:
             if os.path.isfile(target):
-                sig = _signature(target, deep=self.deep_hash)
+                sig = _signature(target, deep=self.deep_hash,
+                                  max_source_bytes=self.max_source_bytes)
                 if sig is not None:
                     found[os.path.abspath(target)] = sig
             elif os.path.isdir(target):
@@ -78,7 +90,8 @@ class PollBackend:
                         if not fn.endswith(".py"):
                             continue
                         p = os.path.join(dirpath, fn)
-                        sig = _signature(p, deep=self.deep_hash)
+                        sig = _signature(p, deep=self.deep_hash,
+                                          max_source_bytes=self.max_source_bytes)
                         if sig is not None:
                             found[p] = sig
             else:
@@ -117,9 +130,10 @@ class FileWatcher:
 
     def __init__(self, targets: list[str], on_change: Callable[[list[str]], Any], *,
                  interval_s: float = 0.35, debounce_s: float = 0.12,
-                 backend: str = "auto") -> None:
+                 backend: str = "auto", max_source_bytes: int | None = None) -> None:
         self.targets = [os.path.abspath(t) for t in targets]
         self.on_change = on_change
+        self.max_source_bytes = max_source_bytes
         self.interval_s = max(0.05, float(interval_s))
         self.debounce_s = max(0.0, float(debounce_s))
         if backend == "auto":
@@ -168,7 +182,7 @@ class FileWatcher:
             del self.errors[:-10]
 
     def _run_poll(self) -> None:
-        backend = PollBackend(self.targets)
+        backend = PollBackend(self.targets, max_source_bytes=self.max_source_bytes)
         backend.scan()                          # baseline: startup is not a change
         while not self._stop.wait(self.interval_s):
             try:
@@ -213,6 +227,7 @@ class FileWatcher:
     def status(self) -> dict[str, Any]:
         return {"backend": self.backend, "running": self.running, "targets": self.targets,
                 "interval_s": self.interval_s, "debounce_s": self.debounce_s,
+                "max_source_bytes": self.max_source_bytes,
                 "batches": self.events, "last_batch": self.last_batch,
                 "watchfiles_installed": watchfiles_available(),
                 **({"errors": list(self.errors)} if self.errors else {})}

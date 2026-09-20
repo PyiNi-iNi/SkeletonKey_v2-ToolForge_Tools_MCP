@@ -118,6 +118,10 @@ class E:
                        "Set overwrite=true if that is intended.")
     TOO_LARGE = ErrorCode("TOO_LARGE", ErrorClass.EXECUTION, False, "Input/output exceeds a configured size limit.",
                           "Page with offset/limit_lines, or raise the budget.")
+    PARTIAL_APPLY = ErrorCode(
+        "PARTIAL_APPLY", ErrorClass.EXECUTION, True,
+        "A multi-file mutation failed and could not be completed atomically.",
+        "Inspect error.details.rollback and resolve any conflicts before retrying.")
 
     # ---- internal
     INTERNAL = ErrorCode("INTERNAL", ErrorClass.INTERNAL, False, "Unexpected error inside SkeletonKey.",

@@ -53,6 +53,7 @@ reshape whatever the 3-way merge produced.
 from __future__ import annotations
 
 import ast
+import builtins
 import contextlib
 import io
 import os
@@ -132,6 +133,11 @@ def _import_roots(tree: ast.AST) -> list[str]:
             roots.extend(alias.name for alias in node.names)
         elif isinstance(node, ast.ImportFrom) and not node.level and node.module:
             roots.append(node.module)
+            # ``from package import module`` causes Python to read the child
+            # module as well; include the candidate so the source cap covers
+            # package trees before import machinery executes them.
+            roots.extend(f"{node.module}.{alias.name}" for alias in node.names
+                         if alias.name != "*")
     seen: dict[str, None] = {}
     for r in roots:
         seen.setdefault(r)
@@ -139,6 +145,36 @@ def _import_roots(tree: ast.AST) -> list[str]:
 
 
 _MISSING = object()
+_IMPORT_LIMIT_LOCK = threading.RLock()
+
+
+class _BoundedImportFinder:
+    """Preflight same-tree imports made through importlib as well as syntax."""
+
+    def __init__(self, program: "LiveProgram", source_dir: str) -> None:
+        self.program = program
+        self.source_dir = source_dir
+
+    def find_spec(self, fullname: str, path: Any = None, target: Any = None) -> Any:
+        found = self.program._dependency_path(fullname, self.source_dir)
+        if found and found != self.program.path:
+            self.program._read_dependency_source(found)
+        return None
+
+
+@contextlib.contextmanager
+def _bounded_imports(program: "LiveProgram", source_dir: str):
+    """Install the source-cap finder around any user-code execution."""
+    finder = _BoundedImportFinder(program, source_dir)
+    with _IMPORT_LIMIT_LOCK:
+        sys.meta_path.insert(0, finder)
+        try:
+            yield
+        finally:
+            try:
+                sys.meta_path.remove(finder)
+            except ValueError:  # defensive if an import hook edited the list
+                pass
 
 
 # ------------------------------------------------------------------- program
@@ -149,7 +185,7 @@ class LiveProgram:
 
     def __init__(self, pid: str, path: str, *, display: str | None = None,
                  canvas_size: tuple[int, int] = (420, 320), keep: list[str] | None = None,
-                 argv: list[str] | None = None) -> None:
+                 argv: list[str] | None = None, max_source_bytes: int | None = 400_000) -> None:
         self.id = pid
         self.path = os.path.abspath(path)
         self.display = display or os.path.basename(path)
@@ -182,21 +218,100 @@ class LiveProgram:
         self.render_ms = 0.0
         self.last_source_sha = ""
         self.auto_render = True
+        self.max_source_bytes = max_source_bytes
 
     # ------------------------------------------------------------------ load
-    def _read_source(self) -> str:
-        with open(self.path, encoding="utf-8") as fh:
-            return fh.read()
+    def _read_source_path(self, path: str) -> str:
+        """Read source with a hard byte cap, including files that grow mid-read."""
+        limit = self.max_source_bytes
+        if limit is None:
+            limit = 400_000
+        try:
+            limit = int(limit)
+        except (TypeError, ValueError) as exc:
+            raise SkeletonKeyError(E.BAD_ARGS, "live max_source_bytes must be an integer",
+                                   details={"limit": limit}) from exc
+        if limit <= 0:
+            raise SkeletonKeyError(E.BAD_ARGS, "live max_source_bytes must be greater than zero",
+                                   details={"limit": limit})
+        try:
+            with open(path, "rb") as fh:
+                raw = fh.read(limit + 1)
+        except OSError:
+            raise
+        if len(raw) > limit:
+            raise SkeletonKeyError(
+                E.TOO_LARGE,
+                f"source {os.path.basename(path)!r} is larger than the live source cap",
+                details={"path": path, "bytes_read": len(raw), "limit": limit,
+                         "hint": "raise [live] max_source_bytes or split the program/dependency"},
+            )
+        try:
+            return raw.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise SkeletonKeyError(
+                E.PARSE, f"source is not valid UTF-8: {exc}",
+                details={"path": path, "encoding": "utf-8"},
+            ) from exc
 
-    def _exec_source(self, source: str, ns: dict[str, Any]) -> tuple[list[str], str]:
+    def _read_source(self) -> str:
+        return self._read_source_path(self.path)
+
+    def _read_dependency_source(self, path: str) -> str:
+        return self._read_source_path(path)
+
+    def _dependency_path(self, root: str, source_dir: str) -> str | None:
+        cand = os.path.join(source_dir, *root.split("."))
+        path = cand + ".py"
+        pkg_init = os.path.join(cand, "__init__.py")
+        found = path if os.path.isfile(path) else (pkg_init if os.path.isfile(pkg_init) else None)
+        return os.path.abspath(found) if found else None
+
+    def _check_dependency_sources(self, roots: list[str], *, source_dir: str) -> None:
+        """Preflight same-tree imports before Python's import machinery reads them."""
+        for root in roots:
+            found = self._dependency_path(root, source_dir)
+            if found and found != self.path:
+                # The returned text is intentionally discarded. The important
+                # property is that a dependency is measured against the same
+                # hard cap before ``exec`` can ask Python to import it.
+                self._read_dependency_source(found)
+
+    def _exec_source(self, source: str, ns: dict[str, Any], *,
+                     source_dir: str | None = None) -> tuple[list[str], str]:
         """Exec the module body in `ns`; returns (import_roots, captured output).
-        Import roots feed the dependency tracker."""
+        Import roots feed the dependency tracker and same-tree source files are
+        bounded before Python's import machinery gets to read them."""
         tree = ast.parse(source, filename=self.path)
         roots = _import_roots(tree)
+        import_dir = source_dir or os.path.dirname(self.path)
+        self._check_dependency_sources(roots, source_dir=import_dir)
+
+        # Static AST scanning catches normal imports before exec. The wrapper
+        # also covers dynamic/import-from child loads made by module code or a
+        # later REPL command, while leaving stdlib/site-packages untouched.
+        original_import = builtins.__import__
+
+        def bounded_import(name: str, globals_: Any = None, locals_: Any = None,
+                           fromlist: tuple[str, ...] = (), level: int = 0) -> Any:
+            if level == 0 and name:
+                candidates = [name]
+                candidates.extend(f"{name}.{item}" for item in (fromlist or ())
+                                 if item and item != "*")
+                for candidate in candidates:
+                    found = self._dependency_path(candidate, import_dir)
+                    if found and found != self.path:
+                        self._read_dependency_source(found)
+            return original_import(name, globals_, locals_, fromlist, level)
+
+        builtins_map = dict(vars(builtins))
+        builtins_map["__import__"] = bounded_import
+        ns["__builtins__"] = builtins_map
         out = io.StringIO()
-        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
-            code = compile(tree, self.path, "exec")
-            exec(code, ns)
+        with _bounded_imports(self, import_dir):
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+                code = compile(tree, self.path, "exec")
+                exec(code, ns)
         return roots, out.getvalue()
 
     def load_initial(self, *, guard_s: float | None = 10.0) -> dict[str, Any]:
@@ -264,6 +379,13 @@ class LiveProgram:
             t0 = time.monotonic()
             try:
                 source = self._read_source()
+            except SkeletonKeyError as exc:
+                report.ok = False
+                report.error = {"code": exc.code, "message": str(exc),
+                                **({"details": exc.details} if exc.details else {})}
+                self._remember(report, reason, t0)
+                self.failed_reloads += 1
+                return report
             except OSError as exc:
                 report.ok = False
                 report.error = {"code": E.ENOENT.code, "message": str(exc)}
@@ -285,6 +407,12 @@ class LiveProgram:
             except LiveTimeout as exc:
                 report.ok = False
                 report.error = {"code": E.TIMEOUT.code, "message": str(exc)}
+                self._failed(report, reason, t0)
+                return report
+            except SkeletonKeyError as exc:
+                report.ok = False
+                report.error = {"code": exc.code, "message": str(exc),
+                                **({"details": exc.details} if exc.details else {})}
                 self._failed(report, reason, t0)
                 return report
             except Exception as exc:
@@ -461,8 +589,14 @@ class LiveProgram:
                                 "message": f"{mod_name!r} is not in sys.modules (never imported?)"}
                 return report
             try:
-                with open(entry["path"], encoding="utf-8") as fh:
-                    source = fh.read()
+                source = self._read_dependency_source(entry["path"])
+            except SkeletonKeyError as exc:
+                report.ok = False
+                report.error = {"code": exc.code, "message": str(exc),
+                                **({"details": exc.details} if exc.details else {})}
+                self.frame_error = dict(report.error)
+                self.frame_version += 1
+                return report
             except OSError as exc:
                 report.ok = False
                 report.error = {"code": E.ENOENT.code, "message": str(exc)}
@@ -472,7 +606,14 @@ class LiveProgram:
                                        "__builtins__": __builtins__}
             try:
                 with _Guarded(guard_s):
-                    self._exec_source(source, scratch)
+                    self._exec_source(source, scratch, source_dir=os.path.dirname(entry["path"]))
+            except SkeletonKeyError as exc:
+                report.ok = False
+                report.error = {"code": exc.code, "message": str(exc),
+                                **({"details": exc.details} if exc.details else {})}
+                self.frame_error = dict(report.error)
+                self.frame_version += 1
+                return report
             except Exception as exc:
                 report.ok = False
                 code = E.PARSE.code if isinstance(exc, SyntaxError) else (
@@ -576,16 +717,20 @@ class LiveProgram:
                     use_eval = False
             before = set(self.ns)
             try:
-                with _Guarded(guard_s), contextlib.redirect_stdout(stdout), \
-                        contextlib.redirect_stderr(stdout):
-                    if use_eval:
-                        value = eval(compile(code, "<live-repl>", "eval"), self.ns)
-                        if value is not None:
-                            self.ns["_"] = value
-                    else:
-                        exec(compile(code, "<live-repl>", "exec"), self.ns)
+                with _bounded_imports(self, os.path.dirname(self.path)):
+                    with _Guarded(guard_s), contextlib.redirect_stdout(stdout), \
+                            contextlib.redirect_stderr(stdout):
+                        if use_eval:
+                            value = eval(compile(code, "<live-repl>", "eval"), self.ns)
+                            if value is not None:
+                                self.ns["_"] = value
+                        else:
+                            exec(compile(code, "<live-repl>", "exec"), self.ns)
             except LiveTimeout as exc:
                 error = {"code": E.TIMEOUT.code, "message": str(exc)}
+            except SkeletonKeyError as exc:
+                error = {"code": exc.code, "message": str(exc),
+                         **({"details": exc.details} if exc.details else {})}
             except Exception as exc:
                 error = {"code": type(exc).__name__,
                          "message": f"{type(exc).__name__}: {exc}",
@@ -905,7 +1050,8 @@ class LiveManager:
                 prog_id = f"{base}-{n}"
                 n += 1
             prog = LiveProgram(prog_id, abs_path, display=self._display_of(abs_path),
-                               canvas_size=canvas_size, keep=keep, argv=argv)
+                               canvas_size=canvas_size, keep=keep, argv=argv,
+                               max_source_bytes=int(self._cfg("max_source_bytes", 400_000)))
             prog.auto_render = auto_render
             data = prog.load_initial(
                 guard_s=guard_s if guard_s is not None else float(self._cfg("exec_guard_s", 10.0)))
@@ -957,7 +1103,8 @@ class LiveManager:
                 self.watcher = FileWatcher(
                     self._watch_targets(), self._on_files_changed,
                     interval_s=float(self._cfg("watch_interval_s", 0.35)),
-                    debounce_s=float(self._cfg("debounce_ms", 120)) / 1000.0)
+                    debounce_s=float(self._cfg("debounce_ms", 120)) / 1000.0,
+                    max_source_bytes=int(self._cfg("max_source_bytes", 400_000)))
                 self.watcher.start()
             else:
                 self.watcher.targets = self._watch_targets()
@@ -1014,7 +1161,13 @@ class LiveManager:
         self._broadcast()
 
     def add_frame_listener(self, fn: Any) -> None:
-        self._frame_listeners.append(fn)
+        with self._map_lock:
+            if fn not in self._frame_listeners:
+                self._frame_listeners.append(fn)
+
+    def remove_frame_listener(self, fn: Any) -> None:
+        with self._map_lock:
+            self._frame_listeners = [item for item in self._frame_listeners if item != fn]
 
     def _broadcast(self) -> None:
         for fn in list(self._frame_listeners):
@@ -1036,6 +1189,7 @@ class LiveManager:
                 "watch_interval_s": float(self._cfg("watch_interval_s", 0.35)),
                 "debounce_ms": int(self._cfg("debounce_ms", 120)),
                 "max_programs": int(self._cfg("max_programs", 8)),
+                "max_source_bytes": int(self._cfg("max_source_bytes", 400_000)),
                 "exec_guard_s": float(self._cfg("exec_guard_s", 10.0)),
                 "auto_render_default": bool(self._cfg("auto_render", True)),
             },

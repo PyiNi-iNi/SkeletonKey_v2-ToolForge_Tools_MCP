@@ -12,6 +12,7 @@ Routes (all JSON except the frame and the page):
                    page uses when EventSource survives the network path)
   POST /repl       {program, code, mode} -> LiveREPL result (the in-page
                    console; only when [live] panel_repl is true)
+  POST /api/control HMR controls (same panel_repl fence as /repl)
 
 Threading model: `ThreadingHTTPServer` on a daemon thread; every render bumps
 a condition variable that SSE subscribers wait on. The polling route alone is
@@ -21,11 +22,23 @@ sufficient for the full experience - SSE just lowers latency when available.
 from __future__ import annotations
 
 import json
-import os
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
+
+from ..core.http_security import (
+    HttpAccessPolicy,
+    advertised_url,
+    bind_url,
+    bootstrap_cookie,
+    inject_auth_bootstrap,
+    token_fingerprint,
+)
+
+
+class _ReusableHTTPServer(ThreadingHTTPServer):
+    allow_reuse_address = True
 
 
 class Panel:
@@ -33,10 +46,20 @@ class Panel:
 
     def __init__(self, manager: Any, host: str = "127.0.0.1", port: int = 8010,
                  *, repl_enabled: bool = True, viz_url: str | None = None,
-                 viz_mount: Any = None) -> None:
+                 viz_mount: Any = None, allow_remote: bool = False,
+                 auth_token: str = "", allowed_origins: list[str] | tuple[str, ...] = (),
+                 public_base_url: str = "", max_body_bytes: int = 64_000,
+                 access: HttpAccessPolicy | None = None) -> None:
         self.manager = manager
         self.host = host
         self.repl_enabled = repl_enabled
+        self.max_body_bytes = int(max_body_bytes)
+        if self.max_body_bytes <= 0:
+            raise ValueError("max_body_bytes must be greater than zero")
+        self.access = access or HttpAccessPolicy(
+            host=host, allow_remote=bool(allow_remote), auth_token=auth_token,
+            allowed_origins=tuple(allowed_origins), public_base_url=public_base_url)
+        self.public_base_url = public_base_url
         # Two ways to reach the tool catalog, and they are not equivalent.
         #
         # `viz_url` is ADR-0017: a link to a SEPARATE server, which is read-only
@@ -54,47 +77,95 @@ class Panel:
         self.started_at = time.time()
         self.requests = 0
         self.sse_clients = 0
-        self._server = ThreadingHTTPServer((host, int(port)), self._handler_class())
-        self._server.daemon_threads = True
+        self._requested_port = int(port)
+        self._bound_port = int(port)
+        self._server: _ReusableHTTPServer | None = None
         self._thread: threading.Thread | None = None
+        self._listener_attached = False
+        self._stopping = threading.Event()
+        self._make_server()
+
+    def _make_server(self) -> None:
+        self._server = _ReusableHTTPServer((self.host, self._requested_port), self._handler_class())
+        self._server.daemon_threads = True
+        self._bound_port = int(self._server.server_address[1])
 
     # ------------------------------------------------------------------ state
     @property
     def port(self) -> int:
-        return int(self._server.server_address[1])
+        if self._server is not None:
+            return int(self._server.server_address[1])
+        return self._bound_port
+
+    @property
+    def advertised_url(self) -> str | None:
+        return advertised_url(self.host, self.port, self.public_base_url)
 
     @property
     def url(self) -> str:
-        shown_host = "127.0.0.1" if self.host in ("0.0.0.0", "", "::") else self.host
-        return f"http://{shown_host}:{self.port}/"
+        # For a wildcard bind this is deliberately the bind URL, not the old
+        # and incorrect fiction that 0.0.0.0 is reachable at loopback.
+        return self.advertised_url or bind_url(self.host, self.port)
 
     def start(self) -> dict[str, Any]:
         if self._thread and self._thread.is_alive():
             return self.status()
+        if self._server is None:
+            self._make_server()
+        self._stopping.clear()
         self._thread = threading.Thread(target=self._server.serve_forever,
                                         name="sk-live-panel", daemon=True,
                                         kwargs={"poll_interval": 0.4})
         self._thread.start()
-        self.manager.add_frame_listener(self.bump)
+        if not self._listener_attached:
+            add = getattr(self.manager, "add_frame_listener", None)
+            if callable(add):
+                self._listener_attached = True
+                try:
+                    add(self.bump)
+                except Exception:
+                    self.stop()
+                    raise
         return self.status()
 
     def stop(self) -> None:
-        if self._thread is None:
+        thread = self._thread
+        if thread is None:
+            self._stopping.set()
+            if self._server is not None:
+                self._server.server_close()
+                self._server = None
             return
+        self._stopping.set()
+        with self._cond:
+            self._cond.notify_all()
+        remove = getattr(self.manager, "remove_frame_listener", None)
+        if self._listener_attached and callable(remove):
+            remove(self.bump)
+        self._listener_attached = False
+        assert self._server is not None
         self._server.shutdown()
         self._server.server_close()
-        self._thread.join(timeout=2.0)
+        thread.join(timeout=2.0)
         self._thread = None
+        self._server = None
         with self._cond:
             self._cond.notify_all()
 
     def status(self) -> dict[str, Any]:
         return {"serving": bool(self._thread and self._thread.is_alive()),
                 "host": self.host, "port": self.port, "url": self.url,
+                "advertised_url": self.advertised_url,
                 "repl_enabled": self.repl_enabled, "requests": self.requests,
                 "viz_url": self.viz_url,
                 "viz_mounted_at": (self.viz_mount.prefix if self.viz_mount else None),
-                "sse_clients": self.sse_clients}
+                "sse_clients": self.sse_clients,
+                "security": {"remote": self.access.remote,
+                             "auth_required": self.access.requires_auth,
+                             "token_fingerprint": token_fingerprint(self.access.auth_token),
+                             "allowed_origins": list(self.access.allowed_origins),
+                             "public_base_url": self.public_base_url or None,
+                             "max_body_bytes": self.max_body_bytes}}
 
     def bump(self) -> None:
         """A render happened somewhere; wake SSE clients."""
@@ -130,32 +201,25 @@ class Panel:
         return out
 
     def _engine_activity(self, limit: int = 30) -> list[dict[str, Any]]:
-        """Recent tool calls from the ledger tail - the engine's own activity
-        feed. Best-effort JSONL read; the debugger shows an empty rail rather
-        than an error when no engine/ledger is attached."""
+        """Recent calls through the engine's public ledger API.
+
+        The panel used to look for a private ``_ledger`` attribute and then
+        manually parse a tail of JSONL. ``Engine.ledger`` is the supported
+        attachment point; using ``Ledger.read`` also avoids emitting malformed
+        or partially-written records as activity.
+        """
         eng = getattr(self.manager, "_engine", None)
-        ledger = getattr(eng, "_ledger", None)
-        path = getattr(ledger, "path", None)
-        if not path or not os.path.isfile(path):
+        ledger = getattr(eng, "ledger", None)
+        reader = getattr(ledger, "read", None)
+        if not callable(reader):
             return []
         try:
-            rows: list[dict[str, Any]] = []
-            with open(path, "rb") as fh:
-                fh.seek(0, 2)
-                size = fh.tell()
-                fh.seek(max(0, size - 64_000))
-                tail = fh.read().decode("utf-8", "replace")
-            for line in tail.splitlines()[1 if size > 64_000 else 0:]:
-                try:
-                    row = json.loads(line)
-                except ValueError:
-                    continue
-                rows.append({"tool": row.get("tool", row.get("tool_name", "?")),
-                             "ok": row.get("ok"),
-                             "ms": row.get("duration_ms"),
-                             "at": row.get("at", row.get("ts", ""))})
-            return rows[-limit:][::-1]
-        except OSError:
+            entries = list(reader(limit=max(1, int(limit)), tail=True))
+            return [{"tool": row.tool, "ok": row.ok, "ms": row.duration_ms,
+                     "at": row.ts, "seq": row.seq,
+                     **({"error_code": row.error_code} if row.error_code else {})}
+                    for row in reversed(entries)]
+        except (OSError, TypeError, ValueError, AttributeError):
             return []
 
     def _state_payload(self, prog: Any) -> dict[str, Any]:
@@ -215,15 +279,99 @@ class Panel:
                 self.send_header("Content-Type", ctype)
                 self.send_header("Content-Length", str(len(body)))
                 self.send_header("Cache-Control", "no-store")
-                self.send_header("Access-Control-Allow-Origin", "*")
+                origin = str(self.headers.get("Origin") or "").strip()
+                if origin and panel.access.origin_allowed(self.headers):
+                    # Never use wildcard CORS for an execution-capable panel.
+                    self.send_header("Access-Control-Allow-Origin", origin)
+                    self.send_header("Vary", "Origin")
+                cookie = bootstrap_cookie(
+                    panel.access.token_from_request(self.headers, self.path),
+                    secure=panel.public_base_url.lower().startswith("https://"))
+                if cookie:
+                    self.send_header("Set-Cookie", cookie)
                 for k, v in (extra or {}).items():
                     self.send_header(k, v)
                 self.end_headers()
-                self.wfile.write(body)
+                try:
+                    self.wfile.write(body)
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    pass
 
-            def _json(self, status: int, obj: Any) -> None:
+            def _json(self, status: int, obj: Any,
+                      extra: dict[str, str] | None = None) -> None:
                 data = json.dumps(obj, default=str).encode("utf-8", "replace")
-                self._send(status, data, "application/json; charset=utf-8")
+                self._send(status, data, "application/json; charset=utf-8", extra)
+
+            def _authorize(self) -> bool:
+                refused = panel.access.check(self.headers, self.path)
+                if refused is None:
+                    return True
+                status, message = refused
+                extra = {"WWW-Authenticate": 'Bearer realm="skeletonkey-preview"'} \
+                    if status == 401 else None
+                self._json(status, {"error": message,
+                                    "code": "AUTH_REQUIRED" if status == 401 else "ORIGIN_DENIED"},
+                           extra=extra)
+                self.close_connection = True
+                return False
+
+            def _read_json(self) -> dict[str, Any] | None:
+                raw_length = self.headers.get("Content-Length")
+                if raw_length is None:
+                    self._json(411, {"error": "Content-Length is required",
+                                     "code": "LENGTH_REQUIRED"})
+                    self.close_connection = True
+                    return None
+                try:
+                    length = int(raw_length)
+                except (TypeError, ValueError):
+                    self._json(400, {"error": "Content-Length must be an integer",
+                                     "code": "BAD_CONTENT_LENGTH"})
+                    self.close_connection = True
+                    return None
+                if length < 0:
+                    self._json(400, {"error": "Content-Length cannot be negative",
+                                     "code": "BAD_CONTENT_LENGTH"})
+                    self.close_connection = True
+                    return None
+                if length > panel.max_body_bytes:
+                    self._json(413, {"error": "request body exceeds the panel limit",
+                                     "code": "BODY_TOO_LARGE",
+                                     "bytes": length,
+                                     "limit": panel.max_body_bytes})
+                    self.close_connection = True
+                    return None
+                data = self.rfile.read(length)
+                if len(data) != length:
+                    self._json(400, {"error": "request body ended before Content-Length",
+                                     "code": "TRUNCATED_BODY"})
+                    self.close_connection = True
+                    return None
+                try:
+                    value = json.loads(data or b"{}")
+                except (UnicodeDecodeError, ValueError, TypeError):
+                    self._json(400, {"error": "body must be JSON", "code": "BAD_JSON"})
+                    return None
+                if not isinstance(value, dict):
+                    self._json(400, {"error": "body must be a JSON object", "code": "BAD_JSON"})
+                    return None
+                return value
+
+            def _page(self, source: str) -> bytes:
+                if not panel.repl_enabled:
+                    source = source.replace('<body>', '<body class="read-only">', 1)
+                    source = source.replace('</style>',
+                                            '.read-only button { display:none; }\n</style>', 1)
+                    source = source.replace('<div id="repl">',
+                                            '<div id="repl" style="display:none">', 1)
+                    source = source.replace('<div id="bar">',
+                                            '<div id="bar" style="display:none">', 1)
+                    source = source.replace('<h3>repl</h3>',
+                                            '<h3>repl (disabled)</h3>', 1)
+                    source = source.replace(
+                        "panel ready · edit the file or talk to it here · `help()` in the repl for names",
+                        "panel ready · read-only mode (panel_repl=false)", 1)
+                return inject_auth_bootstrap(source).encode("utf-8")
 
             def _param(self, name: str) -> str | None:
                 from urllib.parse import parse_qs, urlparse
@@ -234,8 +382,21 @@ class Panel:
 
             # -------------------------------------------------------------- GET
             def do_GET(self) -> None:
+                try:
+                    self._do_GET()
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    self.close_connection = True
+                except Exception as exc:
+                    self._json(500, {"error": "panel request failed",
+                                     "code": "INTERNAL",
+                                     "type": type(exc).__name__,
+                                     "message": str(exc)})
+
+            def _do_GET(self) -> None:
                 from urllib.parse import urlparse
 
+                if not self._authorize():
+                    return
                 route = urlparse(self.path).path.rstrip("/") or "/"
                 # The mounted catalog claims its whole prefix (ADR-0018). It
                 # answers GET/HEAD only, and enforces that itself.
@@ -245,11 +406,11 @@ class Panel:
                     return
                 if route == "/":
                     panel._pin = None
-                    self._send(200, _PAGE.encode("utf-8"), "text/html; charset=utf-8")
+                    self._send(200, self._page(_PAGE), "text/html; charset=utf-8")
                 elif route == "/view3d":
-                    self._send(200, _PAGE_3D.encode("utf-8"), "text/html; charset=utf-8")
+                    self._send(200, self._page(_PAGE_3D), "text/html; charset=utf-8")
                 elif route == "/agents":
-                    self._send(200, _PAGE_AGENTS.encode("utf-8"), "text/html; charset=utf-8")
+                    self._send(200, self._page(_PAGE_AGENTS), "text/html; charset=utf-8")
                 elif route == "/version":
                     self._json(200, panel._version_payload())
                 elif route == "/frame.svg":
@@ -297,9 +458,11 @@ class Panel:
                 panel.sse_clients += 1
                 last = -1
                 try:
-                    while True:
+                    while not panel._stopping.is_set():
                         with panel._cond:
                             panel._cond.wait(timeout=15.0)
+                        if panel._stopping.is_set():
+                            break
                         payload = panel._version_payload()
                         if payload["version"] == last:
                             # heartbeat keeps proxies from reaping the stream
@@ -315,10 +478,41 @@ class Panel:
                 finally:
                     panel.sse_clients -= 1
 
+            # ---------------------------------------------------------- OPTIONS
+            def do_OPTIONS(self) -> None:
+                # CORS preflight cannot carry the eventual Bearer header. It
+                # may pass the origin gate; the actual GET/POST still must
+                # authenticate normally.
+                if not panel.access.origin_allowed(self.headers):
+                    self._json(403, {"error": "request origin is not allowlisted",
+                                     "code": "ORIGIN_DENIED"})
+                    self.close_connection = True
+                    return
+                methods = "GET, OPTIONS, POST" if panel.repl_enabled else "GET, OPTIONS"
+                self._send(204, b"", "text/plain; charset=utf-8", {
+                    "Allow": methods,
+                    "Access-Control-Allow-Methods": methods,
+                    "Access-Control-Allow-Headers": "Authorization, Content-Type, X-SkeletonKey-Token",
+                    "Access-Control-Max-Age": "300",
+                })
+
             # ------------------------------------------------------------- POST
             def do_POST(self) -> None:
+                try:
+                    self._do_POST()
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    self.close_connection = True
+                except Exception as exc:
+                    self._json(500, {"error": "panel request failed",
+                                     "code": "INTERNAL",
+                                     "type": type(exc).__name__,
+                                     "message": str(exc)})
+
+            def _do_POST(self) -> None:
                 from urllib.parse import urlparse
 
+                if not self._authorize():
+                    return
                 # ADR-0018 fence. The catalog is read-only, and on a merged
                 # server that is no longer guaranteed by the absence of this
                 # method - so it is guaranteed here, first, before any route
@@ -326,28 +520,24 @@ class Panel:
                 if panel.viz_mount is not None and panel.viz_mount.owns(self.path):
                     self._json(405, {"error": "the tool catalog is read-only",
                                      "path": urlparse(self.path).path})
+                    self.close_connection = True
                     return
                 route = urlparse(self.path).path.rstrip("/")
+                if route in ("/api/control", "/repl") and not panel.repl_enabled:
+                    self._json(403, {"error": "panel mutations disabled ([live] panel_repl = false)",
+                                     "code": "PANEL_MUTATIONS_DISABLED",
+                                     "routes": ["/repl", "/api/control"]})
+                    self.close_connection = True
+                    return
                 if route == "/api/control":
                     self._control()
                     return
                 if route != "/repl":
                     self._json(404, {"error": "no such route"})
+                    self.close_connection = True
                     return
-                if not panel.repl_enabled:
-                    self._json(403, {"error": "panel REPL disabled ([live] panel_repl = false)"})
-                    return
-                try:
-                    length = int(self.headers.get("Content-Length") or 0)
-                except ValueError:
-                    length = 0
-                if length > 64_000:
-                    self._json(413, {"error": "repl payload too large"})
-                    return
-                try:
-                    body = json.loads(self.rfile.read(max(0, length)) or b"{}")
-                except ValueError:
-                    self._json(400, {"error": "body must be JSON"})
+                body = self._read_json()
+                if body is None:
                     return
                 code = str(body.get("code", ""))
                 if not code.strip():
@@ -372,11 +562,8 @@ class Panel:
                 commands (`sk live ... --via-panel`): the served process owns
                 live state, so both surfaces speak to it here. Same code paths
                 as the live.* tools - the panel is a client, not a back door."""
-                try:
-                    length = int(self.headers.get("Content-Length") or 0)
-                    body = json.loads(self.rfile.read(max(0, length)) or b"{}")
-                except (ValueError, TypeError):
-                    self._json(400, {"error": "body must be JSON"})
+                body = self._read_json()
+                if body is None:
                     return
                 action = str(body.get("action", ""))
                 pid = body.get("program")

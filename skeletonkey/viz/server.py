@@ -34,8 +34,20 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
+from ..core.http_security import (
+    HttpAccessPolicy,
+    advertised_url,
+    bind_url,
+    bootstrap_cookie,
+    inject_auth_bootstrap,
+    token_fingerprint,
+)
 from .model import build_viz_model
 from .render import render_html
+
+
+class _ReusableHTTPServer(ThreadingHTTPServer):
+    allow_reuse_address = True
 
 
 class VizServer:
@@ -49,10 +61,18 @@ class VizServer:
     def __init__(self, registry: Any, *, host: str = "127.0.0.1", port: int = 0,
                  title: str = "SkeletonKey toolset", tier: str | None = None,
                  read_only: bool = False, poll_ms: int = 2000,
-                 ledger: Any = None, panel_url: str | None = None) -> None:
+                 ledger: Any = None, panel_url: str | None = None,
+                 allow_remote: bool = False, auth_token: str = "",
+                 allowed_origins: list[str] | tuple[str, ...] = (),
+                 public_base_url: str = "",
+                 access: HttpAccessPolicy | None = None) -> None:
         self.registry = registry
         self.ledger = ledger
         self.host = host
+        self.public_base_url = public_base_url
+        self.access = access or HttpAccessPolicy(
+            host=host, allow_remote=bool(allow_remote), auth_token=auth_token,
+            allowed_origins=tuple(allowed_origins), public_base_url=public_base_url)
         self.title = title
         self.tier = tier
         self.read_only = read_only
@@ -64,23 +84,38 @@ class VizServer:
         self.started_at = time.time()
         self.requests = 0
         self._lock = threading.Lock()
-        self._server = ThreadingHTTPServer((host, int(port)), self._handler_class())
-        self._server.daemon_threads = True
+        self._requested_port = int(port)
+        self._bound_port = int(port)
+        self._server: _ReusableHTTPServer | None = None
         self._thread: threading.Thread | None = None
+        self._make_server()
+
+    def _make_server(self) -> None:
+        self._server = _ReusableHTTPServer((self.host, self._requested_port), self._handler_class())
+        self._server.daemon_threads = True
+        self._bound_port = int(self._server.server_address[1])
 
     # ------------------------------------------------------------------ state
     @property
     def port(self) -> int:
-        return int(self._server.server_address[1])
+        if self._server is not None:
+            return int(self._server.server_address[1])
+        return self._bound_port
+
+    @property
+    def advertised_url(self) -> str | None:
+        return advertised_url(self.host, self.port, self.public_base_url)
 
     @property
     def url(self) -> str:
-        shown = "127.0.0.1" if self.host in ("0.0.0.0", "", "::") else self.host
-        return f"http://{shown}:{self.port}/"
+        return self.advertised_url or bind_url(self.host, self.port)
 
     def start(self) -> dict[str, Any]:
         if self._thread and self._thread.is_alive():
             return self.status()
+        if self._server is None:
+            self._make_server()
+        assert self._server is not None
         self._thread = threading.Thread(target=self._server.serve_forever,
                                         name="sk-viz", daemon=True,
                                         kwargs={"poll_interval": 0.3})
@@ -88,12 +123,18 @@ class VizServer:
         return self.status()
 
     def stop(self) -> None:
-        if self._thread is None:
+        thread = self._thread
+        if thread is None:
+            if self._server is not None:
+                self._server.server_close()
+                self._server = None
             return
+        assert self._server is not None
         self._server.shutdown()
         self._server.server_close()
-        self._thread.join(timeout=3.0)
+        thread.join(timeout=3.0)
         self._thread = None
+        self._server = None
 
     def __enter__(self) -> VizServer:
         self.start()
@@ -105,8 +146,14 @@ class VizServer:
     def status(self) -> dict[str, Any]:
         return {"serving": bool(self._thread and self._thread.is_alive()),
                 "host": self.host, "port": self.port, "url": self.url,
+                "advertised_url": self.advertised_url,
                 "requests": self.requests,
                 "panel_url": self.panel_url,
+                "security": {"remote": self.access.remote,
+                             "auth_required": self.access.requires_auth,
+                             "token_fingerprint": token_fingerprint(self.access.auth_token),
+                             "allowed_origins": list(self.access.allowed_origins),
+                             "public_base_url": self.public_base_url or None},
                 "uptime_s": round(time.time() - self.started_at, 1)}
 
     # ------------------------------------------------------------------ model
@@ -162,26 +209,53 @@ class VizServer:
             def log_message(self, fmt: str, *args: Any) -> None:   # quiet by design
                 return
 
-            def _send(self, status: int, body: bytes, ctype: str) -> None:
+            def _send(self, status: int, body: bytes, ctype: str,
+                      extra: dict[str, str] | None = None) -> None:
                 viz.requests += 1
                 self.send_response(status)
                 self.send_header("Content-Type", ctype)
                 self.send_header("Content-Length", str(len(body)))
                 self.send_header("Cache-Control", "no-store")
-                # The page is same-origin and carries no credentials; CORS open
-                # so a dashboard can read /api/*. There is nothing here to
-                # protect that reading the tool list does not already reveal.
-                self.send_header("Access-Control-Allow-Origin", "*")
+                origin = str(self.headers.get("Origin") or "").strip()
+                if origin and viz.access.origin_allowed(self.headers):
+                    self.send_header("Access-Control-Allow-Origin", origin)
+                    self.send_header("Vary", "Origin")
+                cookie = bootstrap_cookie(
+                    viz.access.token_from_request(self.headers, self.path),
+                    secure=viz.public_base_url.lower().startswith("https://"))
+                if cookie:
+                    self.send_header("Set-Cookie", cookie)
+                for key, value in (extra or {}).items():
+                    self.send_header(key, value)
                 self.end_headers()
-                self.wfile.write(body)
+                try:
+                    self.wfile.write(body)
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    pass
 
-            def _json(self, status: int, obj: Any) -> None:
+            def _json(self, status: int, obj: Any,
+                      extra: dict[str, str] | None = None) -> None:
                 data = json.dumps(obj, default=str).encode("utf-8", "replace")
-                self._send(status, data, "application/json; charset=utf-8")
+                self._send(status, data, "application/json; charset=utf-8", extra)
+
+            def _authorize(self) -> bool:
+                refused = viz.access.check(self.headers, self.path)
+                if refused is None:
+                    return True
+                status, message = refused
+                extra = {"WWW-Authenticate": 'Bearer realm="skeletonkey-viz"'} \
+                    if status == 401 else None
+                self._json(status, {"error": message,
+                                    "code": "AUTH_REQUIRED" if status == 401 else "ORIGIN_DENIED"},
+                           extra=extra)
+                self.close_connection = True
+                return False
 
             def do_GET(self) -> None:
                 from urllib.parse import unquote, urlparse
 
+                if not self._authorize():
+                    return
                 route = urlparse(self.path).path
                 route = route.rstrip("/") or "/"
                 try:
@@ -190,7 +264,8 @@ class VizServer:
                                            live=True, poll_ms=viz.poll_ms,
                                            chains=viz.chains(),
                                            panel_url=viz.panel_url)
-                        self._send(200, page.encode("utf-8"), "text/html; charset=utf-8")
+                        self._send(200, inject_auth_bootstrap(page).encode("utf-8"),
+                                   "text/html; charset=utf-8")
                     elif route == "/api/model":
                         model = viz.model()
                         doc = model.to_json()
@@ -220,6 +295,21 @@ class VizServer:
                                                     "/api/tool/<id>", "/healthz"]})
                 except Exception as exc:            # a broken page beats a dead server
                     self._json(500, {"error": type(exc).__name__, "message": str(exc)})
+
+            def do_OPTIONS(self) -> None:
+                # Preflight cannot carry the eventual Bearer header; enforce
+                # origin here and authenticate the actual request.
+                if not viz.access.origin_allowed(self.headers):
+                    self._json(403, {"error": "request origin is not allowlisted",
+                                     "code": "ORIGIN_DENIED"})
+                    self.close_connection = True
+                    return
+                self._send(204, b"", "text/plain; charset=utf-8", {
+                    "Allow": "GET, HEAD, OPTIONS",
+                    "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+                    "Access-Control-Allow-Headers": "Authorization, X-SkeletonKey-Token",
+                    "Access-Control-Max-Age": "300",
+                })
 
             def do_HEAD(self) -> None:
                 self.do_GET()
