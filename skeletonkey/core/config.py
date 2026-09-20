@@ -227,10 +227,17 @@ class LiveConfig:
     state_value_max_repr: int = 400
     snapshots_max: int = 16
     auto_render: bool = True              # render() after every mutation by default
-    # the preview panel (live.serve). POST /repl executes code: loopback by
-    # default, and panel_repl=false turns the page into a read-only viewer.
+    # the preview panel (live.serve). POST /repl and /api/control mutate live
+    # state: loopback by default, and panel_repl=false disables both routes.
     host: str = "127.0.0.1"
     port: int = 8010
+    # HTTP is loopback-only unless an operator explicitly opts into a remote
+    # bind. Remote mode also requires auth_token; origins are never wildcarded.
+    allow_remote: bool = False
+    auth_token: str = ""
+    allowed_origins: list[str] = field(default_factory=list)
+    public_base_url: str = ""
+    max_body_bytes: int = 64_000
     panel_repl: bool = True
 
 

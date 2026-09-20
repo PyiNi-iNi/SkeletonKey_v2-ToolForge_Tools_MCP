@@ -283,7 +283,14 @@ def main(argv: list[str] | None = None) -> int:
     dv.add_argument("path", nargs="?", default=None,
                     help="a python file to watch (optional; omit for catalog only)")
     dv.add_argument("--host", default=None,
-                    help="bind host for both servers (0.0.0.0 inside a preview sandbox)")
+                    help="bind host for both servers (loopback by default; remote binds require auth)")
+    dv.add_argument("--allow-remote", action="store_true",
+                    help="explicitly permit a non-loopback preview bind (requires --auth-token)")
+    dv.add_argument("--auth-token", default=None, help="remote preview bearer token (at least 32 bytes)")
+    dv.add_argument("--allowed-origin", action="append", default=None,
+                    help="exact browser origin allowed to call the preview; repeatable")
+    dv.add_argument("--public-base-url", default=None,
+                    help="actual browser URL to advertise for a preview bind")
     dv.add_argument("--panel-port", type=int, default=None, help="live panel port (default 8010)")
     dv.add_argument("--viz-port", type=int, default=0, help="catalog port (0 = ephemeral)")
     dv.add_argument("--two-servers", action="store_true",
@@ -310,6 +317,13 @@ def main(argv: list[str] | None = None) -> int:
                     help="port for --serve (default: an unused one)")
     vz.add_argument("--host", default="127.0.0.1",
                     help="bind address for --serve (default: loopback only)")
+    vz.add_argument("--allow-remote", action="store_true",
+                    help="explicitly permit a non-loopback catalog bind (requires --auth-token)")
+    vz.add_argument("--auth-token", default=None, help="remote catalog bearer token (at least 32 bytes)")
+    vz.add_argument("--allowed-origin", action="append", default=None,
+                    help="exact browser origin allowed to read the catalog; repeatable")
+    vz.add_argument("--public-base-url", default=None,
+                    help="actual browser URL to advertise for a catalog bind")
     vz.add_argument("--poll-ms", type=int, default=2000,
                     help="how often the served page checks for drift")
     vz.add_argument("--panel", metavar="URL", default=None,
@@ -704,12 +718,20 @@ def _dispatch(args: argparse.Namespace, tk: Any, call: Any, cfg: Config) -> int:
         if args.serve:
             from .viz.server import VizServer
 
-            server = VizServer(viz_registry, host=args.host, port=args.port,
+            try:
+                server = VizServer(viz_registry, host=args.host, port=args.port,
                                title=args.title, tier=args.tier,
                                read_only=getattr(args, "viz_read_only", False),
                                poll_ms=args.poll_ms,
                                ledger=tk.ledger if args.runtime else None,
-                               panel_url=getattr(args, "panel", None))
+                               panel_url=getattr(args, "panel", None),
+                               allow_remote=getattr(args, "allow_remote", False),
+                               auth_token=getattr(args, "auth_token", None) or "",
+                               allowed_origins=tuple(getattr(args, "allowed_origin", None) or ()),
+                               public_base_url=getattr(args, "public_base_url", None) or "")
+            except ValueError as exc:
+                print(f"viz server refused: {exc}", file=sys.stderr)
+                return 2
             server.start()
             agg = server.model().aggregates
             print(f"viz serving {agg['registered']} tools "
@@ -1487,6 +1509,10 @@ def _cmd_dev(args: argparse.Namespace, tk: Any, cfg: Config) -> int:
     import time
 
     host = args.host or cfg.live.host
+    remote_on = bool(args.allow_remote or cfg.live.allow_remote)
+    preview_token = args.auth_token if args.auth_token is not None else cfg.live.auth_token
+    preview_origins = args.allowed_origin if args.allowed_origin is not None else cfg.live.allowed_origins
+    preview_base = args.public_base_url if args.public_base_url is not None else cfg.live.public_base_url
     panel_url = viz_url = None
     viz_server = None
     mounted = not args.two_servers and not args.no_viz and not args.no_panel
@@ -1499,7 +1525,11 @@ def _cmd_dev(args: argparse.Namespace, tk: Any, cfg: Config) -> int:
 
         viz_server = VizServer(tk.engine.registry, host=host, port=args.viz_port,
                                title="SkeletonKey toolset",
-                               ledger=tk.ledger if args.runtime else None)
+                               ledger=tk.ledger if args.runtime else None,
+                               allow_remote=remote_on,
+                               auth_token=preview_token or "",
+                               allowed_origins=tuple(preview_origins or ()),
+                               public_base_url=preview_base or "")
         viz_server.start()
         viz_url = viz_server.url
     elif args.no_panel and not args.no_viz:
@@ -1508,7 +1538,11 @@ def _cmd_dev(args: argparse.Namespace, tk: Any, cfg: Config) -> int:
 
         viz_server = VizServer(tk.engine.registry, host=host, port=args.viz_port,
                                title="SkeletonKey toolset",
-                               ledger=tk.ledger if args.runtime else None)
+                               ledger=tk.ledger if args.runtime else None,
+                               allow_remote=remote_on,
+                               auth_token=preview_token or "",
+                               allowed_origins=tuple(preview_origins or ()),
+                               public_base_url=preview_base or "")
         viz_server.start()
         viz_url = viz_server.url
 
@@ -1520,6 +1554,14 @@ def _cmd_dev(args: argparse.Namespace, tk: Any, cfg: Config) -> int:
                     print(f"live.start failed: {started.error}", file=sys.stderr)
                     return 1
             payload: dict[str, Any] = {"host": host}
+            if args.allow_remote:
+                payload["allow_remote"] = True
+            if args.auth_token is not None:
+                payload["auth_token"] = args.auth_token
+            if args.allowed_origin:
+                payload["allowed_origins"] = args.allowed_origin
+            if args.public_base_url is not None:
+                payload["public_base_url"] = args.public_base_url
             if args.panel_port is not None:
                 payload["port"] = args.panel_port
             if viz_url:

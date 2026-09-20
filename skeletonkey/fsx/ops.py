@@ -404,7 +404,18 @@ class Fs:
             # the after-image is the file's new content itself - that is what a redo recreates
             result.undo_token = self.journal.record_new(res, action="create", task_id=task_id,
                                                         upcoming_bytes=raw)
-        self._atomic_write(res.real, raw, create_dirs=create_dirs, encoding=target_enc if not binary else None)
+        try:
+            self._atomic_write(res.real, raw, create_dirs=create_dirs,
+                               encoding=target_enc if not binary else None)
+        except Exception:
+            # A journal entry is a claim that a mutation happened. If the
+            # atomic replace failed, retaining the token would make a later
+            # task-level rollback report a fictional write and could restore
+            # over an unrelated edit.
+            if self.journal is not None and result.undo_token:
+                self.journal.discard(result.undo_token)
+                result.undo_token = None
+            raise
         return result
 
     def _atomic_write(self, target: str, raw: bytes, *, create_dirs: bool, encoding: str | None) -> None:

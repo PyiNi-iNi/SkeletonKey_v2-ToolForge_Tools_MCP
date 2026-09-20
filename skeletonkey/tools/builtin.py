@@ -1427,6 +1427,36 @@ def register(reg: Any, *, engine: Any, shells: Any, fs: Any, journal: Any, skill
             "note": "publish only when ready_to_publish is true; pub.inject refuses otherwise",
         }
 
+    def _rollback_publish(written: list[dict[str, Any]], fs_obj: Any) -> dict[str, Any]:
+        """Undo already-applied publish writes, newest first, with SHA guards."""
+        journal_obj = getattr(fs_obj, "journal", None)
+        report: dict[str, Any] = {"attempted": len(written), "undone": [], "failures": []}
+        if journal_obj is None or not getattr(journal_obj, "enabled", True):
+            report["failures"].append({"code": E.NOT_IMPLEMENTED.code,
+                                       "message": "no enabled journal is available for rollback"})
+            return report
+        for row in reversed(written):
+            token = row.get("undo_token")
+            expected = row.get("sha_after")
+            if not token or not expected:
+                report["failures"].append({"path": row.get("path"),
+                                           "code": E.CONFLICT.code,
+                                           "message": "write has no rollback token or after SHA"})
+                continue
+            try:
+                result = journal_obj.undo(token, expect_sha=expected)
+                report["undone"].append({"path": row.get("path"), "token": token,
+                                         "result": result.get("undone", False)})
+            except SkeletonKeyError as exc:
+                report["failures"].append({"path": row.get("path"), "token": token,
+                                           "code": exc.code, "message": str(exc)})
+            except Exception as exc:  # rollback reporting must not hide the original failure
+                report["failures"].append({"path": row.get("path"), "token": token,
+                                           "code": E.INTERNAL.code,
+                                           "message": f"{type(exc).__name__}: {exc}"})
+        report["complete"] = not report["failures"] and len(report["undone"]) == len(written)
+        return report
+
     def pub_inject(path: str = ".", bindings: dict[str, str] | None = None,
                    dry_run: bool = False, ctx: Any = None) -> dict[str, Any]:
         store = _pub_store()
@@ -1482,10 +1512,39 @@ def register(reg: Any, *, engine: Any, shells: Any, fs: Any, journal: Any, skill
         written: list[dict[str, Any]] = []
         undo_tokens: list[str] = []
         task_id = ctx.task_id if ctx else ""
+        changed_count = sum(1 for p in plan if p["changed"])
+        journal_obj = getattr(fs, "journal", None)
+        if changed_count > 1 and (journal_obj is None or not getattr(journal_obj, "enabled", True)):
+            raise SkeletonKeyError(
+                E.PARTIAL_APPLY,
+                "multi-file publish injection requires an enabled change journal",
+                details={"files": changed_count,
+                         "hint": "enable state.journal=true so a later write failure can roll back "
+                                 "earlier files with current-content checks"},
+            )
         for p in plan:
             if not p["changed"]:
                 continue
-            w = fs.write(p["path"], p["new"], expect_sha=p["sha"], task_id=task_id)
+            try:
+                w = fs.write(p["path"], p["new"], expect_sha=p["sha"], task_id=task_id)
+            except Exception as exc:
+                rollback = _rollback_publish(written, fs)
+                details = {"failed_path": p["path"], "written": written,
+                            "rollback": rollback}
+                if isinstance(exc, SkeletonKeyError):
+                    details["write_error"] = {"code": exc.code, "message": str(exc)}
+                    details["write_details"] = exc.details
+                else:
+                    details["write_error"] = {"code": E.INTERNAL.code,
+                                               "message": f"{type(exc).__name__}: {exc}"}
+                code = E.PARTIAL_APPLY if not rollback.get("complete") else E.IO
+                raise SkeletonKeyError(
+                    code,
+                    (f"publish injection failed at {p['path']}; "
+                     + ("earlier files were rolled back" if rollback.get("complete")
+                        else "rollback was incomplete - inspect details.rollback")),
+                    details=details,
+                ) from exc
             d = w.to_dict()
             token = d.get("undo_token")
             if token:

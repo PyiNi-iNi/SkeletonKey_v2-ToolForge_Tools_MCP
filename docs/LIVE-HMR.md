@@ -171,8 +171,8 @@ best-effort (documented leash, not a sandbox).
 | `/api/program` | data | one program's status + registries |
 | `/api/history` | data | REPL history + patch log |
 | `/api/activity` | data | engine ledger tail (recent tool calls) |
-| `POST /repl` | mutation | the in-page console; only when `live.panel_repl` is true |
-| `POST /api/control` | mutation | `{action: reload \| stop \| start \| patch \| render \| save_snapshot \| restore_snapshot}`; same code path as the tools - the panel is a client, not a back door |
+| `POST /repl` | mutation | the in-page console; refused when `live.panel_repl = false` |
+| `POST /api/control` | mutation | `{action: reload \| stop \| start \| patch \| render \| save_snapshot \| restore_snapshot}`; the same `panel_repl` fence applies |
 
 ### Perprocess reality, and the `--via-panel` hatch
 
@@ -226,11 +226,21 @@ catalog structurally cannot. See
   makes every member refuse with `TOOL_NOT_ADVERTISED` (visible, coded, actionable).
 - Paths resolve through the fs sandbox: programs and watched files must live in
   declared roots; the same `SANDBOX_VIOLATION` wall as `fs.*`.
-- The panel is a *power*: `POST /repl` executes code. Default bind is loopback
-  (`live.host` 127.0.0.1, `live.port` 8010); set `live.panel_repl = false` to
-  make the served pages read-only. Do not expose it beyond a dev sandbox.
-- The exec guard is a wall-clock leash on python-level loops only — it is not
-  a security boundary and never claimed to be one.
+- The panel is a *power*: `POST /repl` and `POST /api/control` mutate live
+  state. Default bind is loopback (`live.host` 127.0.0.1, `live.port` 8010);
+  `live.panel_repl = false` refuses both mutation routes. The panel has no
+  wildcard CORS policy and caps JSON request bodies at `live.max_body_bytes`.
+- A non-loopback bind (or a remote `live.public_base_url` behind a proxy) is
+  refused unless `live.allow_remote = true` and a `live.auth_token` of at least
+  32 bytes is configured. Set exact
+  `live.allowed_origins` and `live.public_base_url` for browser access; the
+  returned URL reports the actual bind or the explicitly supplied public URL.
+  Authentication uses a Bearer header or a URL bootstrap cookie, and
+  the token is never included in status output.
+- The live source cap (`live.max_source_bytes`) is enforced for the program and
+  same-tree dependency reads, including reloads; failures preserve the last
+  good namespace/frame. The exec guard is a wall-clock leash on python-level
+  loops only — it is not a security boundary and never claimed to be one.
 
 ## 8. Non-goals / honest limits
 

@@ -266,22 +266,38 @@ _spec(
     description="Start (or stop) the local HTTP preview panel: the frame as SVG, the scene graph "
                 "as JSON (the feed a react-three-fiber-style 3D frontend would use), a Vite-style "
                 "error overlay, and an in-page LiveREPL console. Binds host/port from [live] "
-                "(default 127.0.0.1:8010); pass 0.0.0.0 inside sandboxes that proxy previews.",
+                "(default 127.0.0.1:8010). Non-loopback preview binds are refused unless "
+                "allow_remote=true and a high-entropy auth_token are supplied; public_base_url "
+                "makes the advertised link accurate.",
     capability="live.serve", risk="write", open_world=True, idempotent=False,
     stateful="session", typical_latency_ms=30,
     tags=["live", "hmr", "preview", "server", "panel", "http"],
-    anti_patterns=["don't expose the panel beyond the dev sandbox: POST /repl executes code - "
-                   "set panel_repl=false or keep the bind host loopback"],
+    anti_patterns=["don't expose the panel beyond the dev sandbox: POST /repl and /api/control execute "
+                   "mutations - keep the bind host loopback unless allow_remote=true, auth_token, and "
+                   "an origin allowlist are configured"],
     see_also=["live.start", "live.render", "live.status"],
     examples=[{"args": {}}, {"args": {"port": 0}},
               {"args": {"op": "stop"}}],
+    secret_args=["auth_token"],
     input_schema={
         "type": "object",
         "properties": {
             "op": {"type": "string", "enum": ["start", "stop"], "default": "start"},
-            "host": {"type": "string", "description": "Bind host (default from [live] host)."},
+            "host": {"type": "string", "description": "Bind host (default from [live] host). "
+                                                    "Non-loopback binds are refused unless allow_remote=true."},
             "port": {"type": "integer", "minimum": 0, "maximum": 65535,
                      "description": "0 = ephemeral; the chosen port is returned."},
+            "allow_remote": {"type": "boolean",
+                             "description": "Explicitly permit a non-loopback bind. Remote mode "
+                                            "also requires auth_token and should set allowed_origins."},
+            "auth_token": {"type": "string", "minLength": 32,
+                           "description": "Bearer/bootstrap token for remote preview access; never logged."},
+            "allowed_origins": {"type": "array", "items": {"type": "string"},
+                                "maxItems": 32,
+                                "description": "Exact browser origins allowed to call the panel."},
+            "public_base_url": {"type": "string",
+                                "description": "Actual browser URL used for links and same-origin policy; "
+                                               "set this when a wildcard bind has no browser-resolvable hostname."},
             "mount_tools": {"type": "boolean", "default": False,
                             "description": "Serve the read-only tool catalog from this "
                                            "same server under /tools (ADR-0018). One port "
@@ -447,17 +463,28 @@ def register(reg: Any, *, manager: Any, engine: Any = None) -> dict[str, Any]:
 
     def live_serve(op: str = "start", host: str | None = None,
                    port: int | None = None, viz_url: str | None = None,
-                   mount_tools: bool = False) -> dict[str, Any]:
+                   mount_tools: bool = False, allow_remote: bool | None = None,
+                   auth_token: str | None = None,
+                   allowed_origins: list[str] | None = None,
+                   public_base_url: str | None = None) -> dict[str, Any]:
         if op == "stop":
             panel, manager.panel = manager.panel, None
             if panel is None:
                 return {"serving": False, "note": "no panel was running"}
             panel.stop()
             return {"serving": False, "was": {"host": panel.host, "port": panel.port}}
-        host = host or str(manager._cfg("host", "127.0.0.1"))
+        host = host if host is not None else str(manager._cfg("host", "127.0.0.1"))
         if port is None:
             port = int(manager._cfg("port", 8010))
         repl_on = bool(manager._cfg("panel_repl", True))
+        remote_on = (bool(manager._cfg("allow_remote", False))
+                     if allow_remote is None else bool(allow_remote))
+        panel_token = (str(manager._cfg("auth_token", ""))
+                       if auth_token is None else str(auth_token))
+        origins = (list(manager._cfg("allowed_origins", []))
+                   if allowed_origins is None else list(allowed_origins))
+        base_url = (str(manager._cfg("public_base_url", ""))
+                    if public_base_url is None else str(public_base_url))
         if manager.panel is not None:
             panel = manager.panel
             if panel.host == host and panel.port == int(port) and panel._thread and panel._thread.is_alive():
@@ -465,6 +492,7 @@ def register(reg: Any, *, manager: Any, engine: Any = None) -> dict[str, Any]:
                 st["note"] = "already serving"
                 return st
             manager.panel.stop()
+            manager.panel = None
         mount = None
         if mount_tools:
             from ..viz.mount import VizMount
@@ -476,8 +504,13 @@ def register(reg: Any, *, manager: Any, engine: Any = None) -> dict[str, Any]:
             if eng is not None:
                 mount = VizMount(lambda: eng.registry,
                                  ledger_provider=lambda: getattr(eng, "ledger", None))
-        manager.panel = Panel(manager, host=host, port=int(port), repl_enabled=repl_on,
-                              viz_url=viz_url, viz_mount=mount)
+        manager.panel = Panel(
+            manager, host=host, port=int(port), repl_enabled=repl_on,
+            viz_url=viz_url, viz_mount=mount, allow_remote=remote_on,
+            auth_token=panel_token, allowed_origins=origins,
+            public_base_url=base_url,
+            max_body_bytes=int(manager._cfg("max_body_bytes", 64_000)),
+        )
         return manager.panel.start()
 
     add("live.start", live_start)
