@@ -113,6 +113,8 @@ class IntegrationType(Enum):
     DATABASE = "database"
     AGENT_HARNESS = "agent-harness"
     INTEGRATION_PACK = "integration-pack"
+    MODEL_SERVING = "model-serving"
+    ML_INFERENCE = "ml-inference"
 
 
 class IntegrationCategory(Enum):
@@ -120,6 +122,7 @@ class IntegrationCategory(Enum):
     CLOUD = "cloud"
     DATABASE = "database"
     AI_ML = "ai-ml"
+    COMPUTER_VISION = "computer-vision"
     WEB = "web"
     MOBILE = "mobile"
     DESKTOP = "desktop"
