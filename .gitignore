@@ -4,6 +4,9 @@
 *.7z
 *.tar.gz
 
+# Allow specific release zip
+!SkeletonKey_v2-ToolForge_Tools_MCP.zip
+
 # IDE/Editor files
 .vscode/
 .idea/
