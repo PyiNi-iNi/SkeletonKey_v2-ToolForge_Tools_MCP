@@ -1,0 +1,3927 @@
+{
+  "schema_version": "1.0",
+  "generated_at": "2026-09-19T22:44:57.701413Z",
+  "toolkit_version": "0.2.0",
+  "tools": {
+    "capabilities.explain": {
+      "id": "capabilities.explain",
+      "title": "Why a capability is gated",
+      "description": "Every tool that claims a capability (or the capability of a given tool id), with its gate reasons, score, tier, live stats, which provider won and why - the receipt behind 'why didn't I see this tool?'.",
+      "risk": "none",
+      "tier": "core",
+      "capability": "registry.explain",
+      "group": "capabilities",
+      "provider": null,
+      "tags": [
+        "capability",
+        "explain",
+        "gate",
+        "receipt",
+        "discovery",
+        "why",
+        "provider"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "capability": {
+            "type": "string",
+            "minLength": 1,
+            "description": "A capability (search.text) or a tool id (fs.patch - resolved to its capability)."
+          },
+          "k": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200,
+            "default": 50
+          }
+        },
+        "required": [
+          "capability"
+        ],
+        "additionalProperties": false
+      },
+      "secret_args": [],
+      "typical_latency_ms": 8,
+      "source": "builtin",
+      "integration": "capabilities",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.701428Z",
+      "metadata": {}
+    },
+    "fs.chmod": {
+      "id": "fs.chmod",
+      "title": "Set the mode bits on a path",
+      "description": "Set permissions inside the sandbox from an octal mode (`644`, `0o755`) or symbolic clauses (`u+x`, `go-w`, `a=r`, `a=rwx,o+t`). Symbolic modes are applied to the current bits, so `u+x` cannot wipe what you did not name. Journaled: `fs.undo` puts the previous mode back. A mode that already matches changes and records nothing. On Windows the mode bits collapse to the read-only attribute - the result says so when the bits you asked for did not stick, because '0600' there does not mean 'nobody else can read this'.",
+      "risk": "write",
+      "tier": "task",
+      "capability": "fs.chmod",
+      "group": "fs",
+      "provider": null,
+      "tags": [
+        "permissions",
+        "chmod",
+        "mode",
+        "executable",
+        "read-only",
+        "icacls",
+        "windows",
+        "unix"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Path, relative to a workspace root or absolute inside one."
+          },
+          "mode": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 4095
+              }
+            ],
+            "description": "Octal (`644`, `0o755`, or the integer 0o644) or symbolic (`u+x`, `go-w`, `a=r`, `u=rw,go=r`). An unparseable mode is an error, never a fallback to 0o644."
+          },
+          "recursive": {
+            "type": "boolean",
+            "default": false,
+            "description": "Walk a directory. Symlinks are not followed and every path is re-checked against roots and deny rules before anything is written, so one denied entry refuses the whole call."
+          },
+          "dry_run": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "required": [
+          "path",
+          "mode"
+        ],
+        "additionalProperties": false
+      },
+      "secret_args": [],
+      "typical_latency_ms": 8,
+      "source": "builtin",
+      "integration": "fs",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.701449Z",
+      "metadata": {}
+    },
+    "fs.delete": {
+      "id": "fs.delete",
+      "title": "Delete a path",
+      "description": "Delete a file or directory. Default (fs.trash = \"journal\"): journaled first, so the result carries an undo token. fs.trash = \"os-trash\" moves the path to the OS recycle bin (the journal keeps a second copy; a host without a trash API refuses with UNSUPPORTED_PLATFORM and deletes nothing). \"delete\" is a hard, unjournaled delete.",
+      "risk": "destructive",
+      "tier": "task",
+      "capability": "fs.delete",
+      "group": "fs",
+      "provider": null,
+      "tags": [
+        "delete",
+        "remove",
+        "rm",
+        "unlink",
+        "clean"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Path, relative to a workspace root or absolute inside one."
+          },
+          "recursive": {
+            "type": "boolean",
+            "default": false
+          },
+          "dry_run": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "secret_args": [],
+      "typical_latency_ms": 15,
+      "source": "builtin",
+      "integration": "fs",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.701464Z",
+      "metadata": {}
+    },
+    "fs.glob": {
+      "id": "fs.glob",
+      "title": "Match filenames",
+      "description": "Glob filenames under a root (** spans directories). Returns paths, sizes, mtimes.",
+      "risk": "read",
+      "tier": "task",
+      "capability": "fs.glob",
+      "group": "fs",
+      "provider": null,
+      "tags": [
+        "glob",
+        "find",
+        "files",
+        "match",
+        "name"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "pattern": {
+            "type": "string",
+            "minLength": 1,
+            "examples": [
+              "**/*.py",
+              "src/**/*test*.ts"
+            ]
+          },
+          "root": {
+            "type": "string",
+            "default": "."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 5000,
+            "default": 500
+          },
+          "sort": {
+            "type": "string",
+            "enum": [
+              "mtime",
+              "name"
+            ],
+            "default": "mtime"
+          }
+        },
+        "required": [
+          "pattern"
+        ],
+        "additionalProperties": false
+      },
+      "secret_args": [],
+      "typical_latency_ms": 60,
+      "source": "builtin",
+      "integration": "fs",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.701473Z",
+      "metadata": {}
+    },
+    "fs.journal_list": {
+      "id": "fs.journal_list",
+      "title": "List journaled changes",
+      "description": "Recent journal entries (what changed, when, and the undo token) - the audit trail.",
+      "risk": "read",
+      "tier": "task",
+      "capability": "fs.journal",
+      "group": "fs",
+      "provider": null,
+      "tags": [
+        "journal",
+        "history",
+        "undo",
+        "audit"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "task_id": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500,
+            "default": 50
+          }
+        },
+        "additionalProperties": false
+      },
+      "secret_args": [],
+      "typical_latency_ms": 5,
+      "source": "builtin",
+      "integration": "fs",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.701481Z",
+      "metadata": {}
+    },
+    "fs.list": {
+      "id": "fs.list",
+      "title": "List a directory",
+      "description": "Bounded directory listing with sizes and mtimes; ignore rules applied.",
+      "risk": "read",
+      "tier": "task",
+      "capability": "fs.list",
+      "group": "fs",
+      "provider": null,
+      "tags": [
+        "ls",
+        "dir",
+        "list",
+        "tree",
+        "browse",
+        "folder"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "default": "."
+          },
+          "depth": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 6,
+            "default": 1
+          },
+          "sort": {
+            "type": "string",
+            "enum": [
+              "name",
+              "size",
+              "mtime"
+            ],
+            "default": "name"
+          },
+          "include_hidden": {
+            "type": "boolean"
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 5000,
+            "default": 400
+          }
+        },
+        "additionalProperties": false
+      },
+      "secret_args": [],
+      "typical_latency_ms": 20,
+      "source": "builtin",
+      "integration": "fs",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.701488Z",
+      "metadata": {}
+    },
+    "fs.mkdir": {
+      "id": "fs.mkdir",
+      "title": "Create a directory",
+      "description": "mkdir -p inside the sandbox.",
+      "risk": "write",
+      "tier": "task",
+      "capability": "fs.mkdir",
+      "group": "fs",
+      "provider": null,
+      "tags": [
+        "mkdir",
+        "directory",
+        "create",
+        "folder"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Path, relative to a workspace root or absolute inside one."
+          },
+          "parents": {
+            "type": "boolean",
+            "default": true
+          },
+          "dry_run": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "secret_args": [],
+      "typical_latency_ms": 5,
+      "source": "builtin",
+      "integration": "fs",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.701494Z",
+      "metadata": {}
+    },
+    "fs.move": {
+      "id": "fs.move",
+      "title": "Move or rename a path",
+      "description": "Rename/move within the sandbox, journaled so it can be undone.",
+      "risk": "write",
+      "tier": "task",
+      "capability": "fs.move",
+      "group": "fs",
+      "provider": null,
+      "tags": [
+        "mv",
+        "rename",
+        "move",
+        "relocate"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "src": {
+            "type": "string",
+            "description": "Path, relative to a workspace root or absolute inside one."
+          },
+          "dst": {
+            "type": "string",
+            "description": "Path, relative to a workspace root or absolute inside one."
+          },
+          "overwrite": {
+            "type": "boolean",
+            "default": false
+          },
+          "dry_run": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "required": [
+          "src",
+          "dst"
+        ],
+        "additionalProperties": false
+      },
+      "secret_args": [],
+      "typical_latency_ms": 15,
+      "source": "builtin",
+      "integration": "fs",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.701501Z",
+      "metadata": {}
+    },
+    "fs.patch": {
+      "id": "fs.patch",
+      "title": "Edit a file with targeted replacements",
+      "description": "Apply ordered find/replace edits to a file and return a unified diff. Whitespace tolerant, refuses ambiguous matches, checks for concurrent modification, and is undoable. This is the default way to change code.",
+      "risk": "write",
+      "tier": "task",
+      "capability": "fs.edit",
+      "group": "fs",
+      "provider": null,
+      "tags": [
+        "file",
+        "edit",
+        "patch",
+        "replace",
+        "modify",
+        "code",
+        "diff"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Path, relative to a workspace root or absolute inside one."
+          },
+          "edits": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 200,
+            "items": {
+              "type": "object",
+              "properties": {
+                "old_text": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "new_text": {
+                  "type": "string"
+                },
+                "replace_all": {
+                  "type": "boolean",
+                  "default": false
+                },
+                "occurrence": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              },
+              "required": [
+                "old_text",
+                "new_text"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "expect_sha": {
+            "type": "string"
+          },
+          "dry_run": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "required": [
+          "path",
+          "edits"
+        ],
+        "additionalProperties": false
+      },
+      "secret_args": [],
+      "typical_latency_ms": 25,
+      "source": "builtin",
+      "integration": "fs",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.701507Z",
+      "metadata": {}
+    },
+    "fs.read": {
+      "id": "fs.read",
+      "title": "Modified Read",
+      "description": "Read a text file with paged access: line offsets, explicit ranges, or byte caps. Reports encoding/newline so edits can preserve them.",
+      "risk": "read",
+      "tier": "task",
+      "capability": "fs.read",
+      "group": "fs",
+      "provider": null,
+      "tags": [
+        "file",
+        "read",
+        "view",
+        "open",
+        "lines",
+        "source"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Path, relative to a workspace root or absolute inside one."
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 0,
+            "description": "0-based first line."
+          },
+          "limit_lines": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 20000
+          },
+          "start_line": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "end_line": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "max_bytes": {
+            "type": "integer",
+            "minimum": 128
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "secret_args": [],
+      "typical_latency_ms": 15,
+      "source": "builtin",
+      "integration": "fs",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.701513Z",
+      "metadata": {}
+    },
+    "fs.redo": {
+      "id": "fs.redo",
+      "title": "Re-apply the most recent undone change",
+      "description": "The mirror of fs.undo: re-apply the most recently *undone* journaled change, optionally limited to one path. The redo itself is journaled - the result carries a fresh `undo_token` so it can be undone again. Anything that no longer holds (the file changed after the undo, the after-image was pruned, the path was re-created) is CONFLICT, never a silent overwrite.",
+      "risk": "write",
+      "tier": "task",
+      "capability": "fs.redo",
+      "group": "fs",
+      "provider": null,
+      "tags": [
+        "redo",
+        "reapply",
+        "undo",
+        "rollback"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Limit to the most recent undone change on this path."
+          },
+          "dry_run": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "additionalProperties": false
+      },
+      "secret_args": [],
+      "typical_latency_ms": 25,
+      "source": "builtin",
+      "integration": "fs",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.701520Z",
+      "metadata": {}
+    },
+    "fs.search": {
+      "id": "fs.search",
+      "title": "Search file contents",
+      "description": "Grep across the workspace. Uses ripgrep when installed (honouring its rules) and a pure-python walker otherwise, with the same result shape. Report which provider answered in `data.provider`.",
+      "risk": "read",
+      "tier": "task",
+      "capability": "search.text",
+      "group": "fs",
+      "provider": null,
+      "tags": [
+        "search",
+        "grep",
+        "rg",
+        "find",
+        "text",
+        "code",
+        "pattern",
+        "regex"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "pattern": {
+            "type": "string",
+            "minLength": 1
+          },
+          "path": {
+            "type": "string",
+            "default": "."
+          },
+          "regex": {
+            "type": "boolean",
+            "default": false
+          },
+          "ignore_case": {
+            "type": "boolean",
+            "default": false
+          },
+          "word": {
+            "type": "boolean",
+            "default": false
+          },
+          "fixed": {
+            "type": "boolean",
+            "default": false
+          },
+          "context": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 10,
+            "default": 0
+          },
+          "glob": {
+            "type": "string"
+          },
+          "type_": {
+            "type": "string",
+            "description": "rg --type (py, ts, rust...)"
+          },
+          "files_with_matches": {
+            "type": "boolean",
+            "default": false
+          },
+          "multiline": {
+            "type": "boolean",
+            "default": false
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2000,
+            "default": 200
+          },
+          "prefer": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "ripgrep",
+              "python"
+            ]
+          }
+        },
+        "required": [
+          "pattern"
+        ],
+        "additionalProperties": false
+      },
+      "secret_args": [],
+      "typical_latency_ms": 180,
+      "source": "builtin",
+      "integration": "fs",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.701527Z",
+      "metadata": {}
+    },
+    "fs.sniff": {
+      "id": "fs.sniff",
+      "title": "Identify a file's format",
+      "description": "Sample a file and report encoding, line endings, whether it is binary, and size - cheap to run, and the thing to check before reading anything unusual into context.",
+      "risk": "read",
+      "tier": "task",
+      "capability": "fs.read",
+      "group": "fs",
+      "provider": null,
+      "tags": [
+        "encoding",
+        "binary",
+        "detect",
+        "crlf",
+        "utf16",
+        "sniff"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Path, relative to a workspace root or absolute inside one."
+          },
+          "sample_bytes": {
+            "type": "integer",
+            "minimum": 256,
+            "maximum": 262144,
+            "default": 8192
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "secret_args": [],
+      "typical_latency_ms": 3,
+      "source": "builtin",
+      "integration": "fs",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.701534Z",
+      "metadata": {}
+    },
+    "fs.stat": {
+      "id": "fs.stat",
+      "title": "Inspect a path",
+      "description": "Existence, type, size, mtime, permissions, writability, and whether a symlink was followed.",
+      "risk": "read",
+      "tier": "task",
+      "capability": "fs.stat",
+      "group": "fs",
+      "provider": null,
+      "tags": [
+        "stat",
+        "info",
+        "exists",
+        "size",
+        "metadata"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Path, relative to a workspace root or absolute inside one."
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "secret_args": [],
+      "typical_latency_ms": 2,
+      "source": "builtin",
+      "integration": "fs",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.701540Z",
+      "metadata": {}
+    },
+    "fs.undo": {
+      "id": "fs.undo",
+      "title": "Undo one journaled change",
+      "description": "Restore the before-image of one fs.write/fs.patch/fs.delete/fs.move using its undo token. Pass the `undo_token` value the mutating call returned (either argument name works). Set `expect_sha` (the sha256 from the last fs.read, full or 16-char prefix) to refuse with CONFLICT if the file no longer holds that content - the guard against rolling over work that happened after the change.",
+      "risk": "write",
+      "tier": "task",
+      "capability": "fs.undo",
+      "group": "fs",
+      "provider": null,
+      "tags": [
+        "undo",
+        "revert",
+        "rollback",
+        "restore"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "token": {
+            "type": "string",
+            "description": "Undo token, e.g. 'und_1a2b3c4d5e6f'."
+          },
+          "undo_token": {
+            "type": "string",
+            "description": "Alias for `token`."
+          },
+          "dry_run": {
+            "type": "boolean",
+            "default": false
+          },
+          "expect_sha": {
+            "type": "string",
+            "description": "If set, refuse with CONFLICT unless the file still holds this sha256 (or its 16-char prefix)."
+          }
+        },
+        "anyOf": [
+          {
+            "required": [
+              "token"
+            ]
+          },
+          {
+            "required": [
+              "undo_token"
+            ]
+          }
+        ],
+        "additionalProperties": false
+      },
+      "secret_args": [],
+      "typical_latency_ms": 25,
+      "source": "builtin",
+      "integration": "fs",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.701546Z",
+      "metadata": {}
+    },
+    "fs.undo_task": {
+      "id": "fs.undo_task",
+      "title": "Undo every change in a task",
+      "description": "Reverse all journaled mutations for one task_id, newest first. This is 'revert the turn'.",
+      "risk": "write",
+      "tier": "task",
+      "capability": "fs.undo",
+      "group": "fs",
+      "provider": null,
+      "tags": [
+        "undo",
+        "revert",
+        "rollback",
+        "restore",
+        "task"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "task_id": {
+            "type": "string"
+          },
+          "dry_run": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "required": [
+          "task_id"
+        ],
+        "additionalProperties": false
+      },
+      "secret_args": [],
+      "typical_latency_ms": 80,
+      "source": "builtin",
+      "integration": "fs",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.701553Z",
+      "metadata": {}
+    },
+    "fs.write": {
+      "id": "fs.write",
+      "title": "Write or create a file",
+      "description": "Atomic create/overwrite of a whole file. Preserves newline style and encoding unless told otherwise, records an undo token, and can refuse if the file changed since you read it (expect_sha).",
+      "risk": "write",
+      "tier": "task",
+      "capability": "fs.write",
+      "group": "fs",
+      "provider": null,
+      "tags": [
+        "file",
+        "write",
+        "create",
+        "save",
+        "overwrite",
+        "new"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Path, relative to a workspace root or absolute inside one."
+          },
+          "content": {
+            "type": "string",
+            "description": "Full new file body."
+          },
+          "overwrite": {
+            "type": "boolean",
+            "default": true
+          },
+          "create_dirs": {
+            "type": "boolean",
+            "default": true
+          },
+          "newline": {
+            "type": "string",
+            "enum": [
+              "preserve",
+              "lf",
+              "crlf",
+              "native"
+            ],
+            "default": "preserve"
+          },
+          "encoding": {
+            "type": "string"
+          },
+          "expect_sha": {
+            "type": "string",
+            "description": "Refuse if the file's sha256 differs."
+          },
+          "dry_run": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "required": [
+          "path",
+          "content"
+        ],
+        "additionalProperties": false
+      },
+      "secret_args": [],
+      "typical_latency_ms": 20,
+      "source": "builtin",
+      "integration": "fs",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.701559Z",
+      "metadata": {}
+    },
+    "integrations.config": {
+      "id": "integrations.config",
+      "title": "Integration Configuration",
+      "description": "Get or set configuration for an integration",
+      "risk": "write",
+      "tier": "task",
+      "capability": "integrations.config",
+      "group": "integrations",
+      "provider": null,
+      "tags": [
+        "integrations",
+        "config",
+        "settings"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Name of the integration"
+          },
+          "get": {
+            "type": "boolean",
+            "description": "Get configuration",
+            "default": true
+          },
+          "set": {
+            "type": "object",
+            "description": "Set configuration"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "additionalProperties": false
+      },
+      "secret_args": [],
+      "typical_latency_ms": 10,
+      "source": "builtin",
+      "integration": "integrations",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.701565Z",
+      "metadata": {}
+    },
+    "integrations.describe": {
+      "id": "integrations.describe",
+      "title": "Describe Integration",
+      "description": "Get detailed information about a specific integration including metadata, configuration, and status",
+      "risk": "none",
+      "tier": "task",
+      "capability": "integrations.describe",
+      "group": "integrations",
+      "provider": null,
+      "tags": [
+        "integrations",
+        "describe",
+        "metadata"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Name of the integration to describe"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "additionalProperties": false
+      },
+      "secret_args": [],
+      "typical_latency_ms": 10,
+      "source": "builtin",
+      "integration": "integrations",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.701571Z",
+      "metadata": {}
+    },
+    "integrations.disable": {
+      "id": "integrations.disable",
+      "title": "Disable Integration",
+      "description": "Disable an integration (unloads it if loaded)",
+      "risk": "write",
+      "tier": "task",
+      "capability": "integrations.disable",
+      "group": "integrations",
+      "provider": null,
+      "tags": [
+        "integrations",
+        "disable",
+        "deactivate"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Name of the integration to disable"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "additionalProperties": false
+      },
+      "secret_args": [],
+      "typical_latency_ms": 20,
+      "source": "builtin",
+      "integration": "integrations",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.701582Z",
+      "metadata": {}
+    },
+    "integrations.discover": {
+      "id": "integrations.discover",
+      "title": "Discover Integrations",
+      "description": "Discover available integrations from all configured sources",
+      "risk": "none",
+      "tier": "task",
+      "capability": "integrations.discover",
+      "group": "integrations",
+      "provider": null,
+      "tags": [
+        "integrations",
+        "discover",
+        "dynamic"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "refresh": {
+            "type": "boolean",
+            "default": false,
+            "description": "Refresh the discovery cache"
+          },
+          "source": {
+            "type": "string",
+            "description": "Specific source to discover from"
+          }
+        },
+        "additionalProperties": false
+      },
+      "secret_args": [],
+      "typical_latency_ms": 50,
+      "source": "builtin",
+      "integration": "integrations",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.701588Z",
+      "metadata": {}
+    },
+    "integrations.enable": {
+      "id": "integrations.enable",
+      "title": "Enable Integration",
+      "description": "Enable an integration (loads it if not already loaded)",
+      "risk": "write",
+      "tier": "task",
+      "capability": "integrations.enable",
+      "group": "integrations",
+      "provider": null,
+      "tags": [
+        "integrations",
+        "enable",
+        "activate"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Name of the integration to enable"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "additionalProperties": false
+      },
+      "secret_args": [],
+      "typical_latency_ms": 20,
+      "source": "builtin",
+      "integration": "integrations",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.701595Z",
+      "metadata": {}
+    },
+    "integrations.health": {
+      "id": "integrations.health",
+      "title": "Check Integration Health",
+      "description": "Check the health of one or all loaded integrations",
+      "risk": "none",
+      "tier": "task",
+      "capability": "integrations.health",
+      "group": "integrations",
+      "provider": null,
+      "tags": [
+        "integrations",
+        "health",
+        "status"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Name of integration to check (None = all)"
+          }
+        },
+        "additionalProperties": false
+      },
+      "secret_args": [],
+      "typical_latency_ms": 20,
+      "source": "builtin",
+      "integration": "integrations",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.701602Z",
+      "metadata": {}
+    },
+    "integrations.list": {
+      "id": "integrations.list",
+      "title": "List Integrations",
+      "description": "List all available integrations with optional filtering by type, category, platform, or status",
+      "risk": "none",
+      "tier": "task",
+      "capability": "integrations.list",
+      "group": "integrations",
+      "provider": null,
+      "tags": [
+        "integrations",
+        "list",
+        "discovery"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "type_filter": {
+            "type": "string",
+            "description": "Filter by integration type"
+          },
+          "category_filter": {
+            "type": "string",
+            "description": "Filter by category"
+          },
+          "platform_filter": {
+            "type": "string",
+            "description": "Filter by platform"
+          },
+          "enabled_only": {
+            "type": "boolean",
+            "description": "Show only enabled integrations"
+          },
+          "disabled_only": {
+            "type": "boolean",
+            "description": "Show only disabled integrations"
+          },
+          "loaded_only": {
+            "type": "boolean",
+            "description": "Show only loaded integrations"
+          }
+        },
+        "additionalProperties": false
+      },
+      "secret_args": [],
+      "typical_latency_ms": 10,
+      "source": "builtin",
+      "integration": "integrations",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.701609Z",
+      "metadata": {}
+    },
+    "integrations.load": {
+      "id": "integrations.load",
+      "title": "Load Integration",
+      "description": "Load and initialize an integration by name",
+      "risk": "write",
+      "tier": "task",
+      "capability": "integrations.load",
+      "group": "integrations",
+      "provider": null,
+      "tags": [
+        "integrations",
+        "load",
+        "initialize"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Name of the integration to load"
+          },
+          "config": {
+            "type": "object",
+            "description": "Configuration for the integration"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "additionalProperties": false
+      },
+      "secret_args": [],
+      "typical_latency_ms": 50,
+      "source": "builtin",
+      "integration": "integrations",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.701615Z",
+      "metadata": {}
+    },
+    "integrations.packs.info": {
+      "id": "integrations.packs.info",
+      "title": "Get Pack Information",
+      "description": "Get information about a specific installed integration pack",
+      "risk": "none",
+      "tier": "task",
+      "capability": "integrations.packs.info",
+      "group": "integrations",
+      "provider": null,
+      "tags": [
+        "integrations",
+        "packs",
+        "info"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Pack name"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "additionalProperties": false
+      },
+      "secret_args": [],
+      "typical_latency_ms": 10,
+      "source": "builtin",
+      "integration": "integrations",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.701621Z",
+      "metadata": {}
+    },
+    "integrations.packs.install": {
+      "id": "integrations.packs.install",
+      "title": "Install Integration Pack",
+      "description": "Install an integration pack from local path, git repository, or PyPI",
+      "risk": "write",
+      "tier": "task",
+      "capability": "integrations.packs.install",
+      "group": "integrations",
+      "provider": null,
+      "tags": [
+        "integrations",
+        "packs",
+        "install"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Pack name or URL"
+          },
+          "source": {
+            "type": "string",
+            "description": "Source type (local, git, pypi)"
+          },
+          "version": {
+            "type": "string",
+            "description": "Version to install"
+          },
+          "force": {
+            "type": "boolean",
+            "default": false,
+            "description": "Force reinstall"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "additionalProperties": false
+      },
+      "secret_args": [],
+      "typical_latency_ms": 100,
+      "source": "builtin",
+      "integration": "integrations",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.701627Z",
+      "metadata": {}
+    },
+    "integrations.packs.list": {
+      "id": "integrations.packs.list",
+      "title": "List Integration Packs",
+      "description": "List all installed integration packs",
+      "risk": "none",
+      "tier": "task",
+      "capability": "integrations.packs.list",
+      "group": "integrations",
+      "provider": null,
+      "tags": [
+        "integrations",
+        "packs",
+        "list"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "secret_args": [],
+      "typical_latency_ms": 10,
+      "source": "builtin",
+      "integration": "integrations",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.701634Z",
+      "metadata": {}
+    },
+    "integrations.packs.uninstall": {
+      "id": "integrations.packs.uninstall",
+      "title": "Uninstall Integration Pack",
+      "description": "Uninstall an integration pack",
+      "risk": "destructive",
+      "tier": "task",
+      "capability": "integrations.packs.uninstall",
+      "group": "integrations",
+      "provider": null,
+      "tags": [
+        "integrations",
+        "packs",
+        "uninstall"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Pack name"
+          },
+          "force": {
+            "type": "boolean",
+            "default": false,
+            "description": "Force uninstall"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "additionalProperties": false
+      },
+      "secret_args": [],
+      "typical_latency_ms": 50,
+      "source": "builtin",
+      "integration": "integrations",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.701640Z",
+      "metadata": {}
+    },
+    "integrations.packs.updates": {
+      "id": "integrations.packs.updates",
+      "title": "Check Pack Updates",
+      "description": "Check for available updates for installed integration packs",
+      "risk": "none",
+      "tier": "task",
+      "capability": "integrations.packs.updates",
+      "group": "integrations",
+      "provider": null,
+      "tags": [
+        "integrations",
+        "packs",
+        "updates"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "secret_args": [],
+      "typical_latency_ms": 50,
+      "source": "builtin",
+      "integration": "integrations",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.701646Z",
+      "metadata": {}
+    },
+    "integrations.secrets": {
+      "id": "integrations.secrets",
+      "title": "Integration Secrets",
+      "description": "Manage secrets for integrations (get, set, delete, list)",
+      "risk": "write",
+      "tier": "task",
+      "capability": "integrations.secrets",
+      "group": "integrations",
+      "provider": null,
+      "tags": [
+        "integrations",
+        "secrets",
+        "security"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "list",
+              "get",
+              "set",
+              "delete",
+              "has"
+            ],
+            "default": "list"
+          },
+          "name": {
+            "type": "string",
+            "description": "Integration name"
+          },
+          "key": {
+            "type": "string",
+            "description": "Secret key"
+          },
+          "value": {
+            "type": "string",
+            "description": "Secret value (for set)"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "additionalProperties": false
+      },
+      "secret_args": [],
+      "typical_latency_ms": 10,
+      "source": "builtin",
+      "integration": "integrations",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.701652Z",
+      "metadata": {}
+    },
+    "integrations.stats": {
+      "id": "integrations.stats",
+      "title": "Integration Statistics",
+      "description": "Get statistics about all integrations including counts by type, category, and platform",
+      "risk": "none",
+      "tier": "task",
+      "capability": "integrations.stats",
+      "group": "integrations",
+      "provider": null,
+      "tags": [
+        "integrations",
+        "stats",
+        "metrics"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "secret_args": [],
+      "typical_latency_ms": 10,
+      "source": "builtin",
+      "integration": "integrations",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.701658Z",
+      "metadata": {}
+    },
+    "integrations.unload": {
+      "id": "integrations.unload",
+      "title": "Unload Integration",
+      "description": "Unload and clean up an integration",
+      "risk": "write",
+      "tier": "task",
+      "capability": "integrations.unload",
+      "group": "integrations",
+      "provider": null,
+      "tags": [
+        "integrations",
+        "unload",
+        "cleanup"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Name of the integration to unload"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "additionalProperties": false
+      },
+      "secret_args": [],
+      "typical_latency_ms": 20,
+      "source": "builtin",
+      "integration": "integrations",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.701664Z",
+      "metadata": {}
+    },
+    "integrations.validate": {
+      "id": "integrations.validate",
+      "title": "Validate Integrations",
+      "description": "Validate integrations: metadata, tool handlers, schemas, dependencies",
+      "risk": "none",
+      "tier": "task",
+      "capability": "integrations.validate",
+      "group": "integrations",
+      "provider": null,
+      "tags": [
+        "integrations",
+        "validate",
+        "test",
+        "diagnostics"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Validate a specific integration by name"
+          },
+          "include_health": {
+            "type": "boolean",
+            "default": false,
+            "description": "Also run each integration's check_health()"
+          }
+        },
+        "additionalProperties": false
+      },
+      "secret_args": [],
+      "typical_latency_ms": 20,
+      "source": "builtin",
+      "integration": "integrations",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.701670Z",
+      "metadata": {}
+    },
+    "live.patch": {
+      "id": "live.patch",
+      "title": "Hot-swap a function or class",
+      "description": "Compile one def/class from `code` and merge it into the running program IN PLACE - every held reference and every existing instance sees the new code immediately (React Fast Refresh's move, for python objects). `name` may be dotted ('Ship.thrust') to patch one method of a live class. This is how you change behaviour without touching the file or losing state.",
+      "risk": "write",
+      "tier": "full",
+      "capability": "live.patch",
+      "group": "live",
+      "provider": null,
+      "tags": [
+        "live",
+        "hmr",
+        "hotpatch",
+        "monkey-patch",
+        "swizzle"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "program": {
+            "type": "string",
+            "description": "Live program id (from live.start/status). Omit when only one is running."
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Name the code defines ('render', 'Ship', 'Ship.thrust')."
+          },
+          "code": {
+            "type": "string",
+            "minLength": 1,
+            "description": "A full def/class body. Compiled, then swapped in place."
+          },
+          "render": {
+            "type": "boolean",
+            "default": true,
+            "description": "Re-render the frame after patching."
+          }
+        },
+        "required": [
+          "name",
+          "code"
+        ]
+      },
+      "secret_args": [],
+      "typical_latency_ms": 15,
+      "source": "builtin",
+      "integration": "live",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.701676Z",
+      "metadata": {}
+    },
+    "live.reload": {
+      "id": "live.reload",
+      "title": "Hot-reload a live program",
+      "description": "Re-read the program file and merge it into the running namespace now: functions and class methods swap code in place (held references and live instances see the new behaviour), new names bind, source-owned state tracks the edit, and REPL-made mutations survive (they are reported under 'preserved'). A broken file changes nothing and returns the error with line/offset - the running code is untouched.",
+      "risk": "write",
+      "tier": "full",
+      "capability": "live.reload",
+      "group": "live",
+      "provider": null,
+      "tags": [
+        "live",
+        "hmr",
+        "hot-reload",
+        "reload",
+        "patch"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "program": {
+            "type": "string",
+            "description": "Live program id (from live.start/status). Omit when only one is running."
+          },
+          "force_source": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 64,
+            "description": "Names that take the file's value this cycle even if the REPL moved them."
+          }
+        }
+      },
+      "secret_args": [],
+      "typical_latency_ms": 40,
+      "source": "builtin",
+      "integration": "live",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.701683Z",
+      "metadata": {}
+    },
+    "live.render": {
+      "id": "live.render",
+      "title": "Render the current frame",
+      "description": "Force a render and return frame statistics - or the SVG itself with svg=true. The render hook (if the program defines one) runs against a cleared canvas; otherwise the retained scene is re-serialised. Render errors land in data.frame.error and on the panel overlay; they never fail the envelope.",
+      "risk": "read",
+      "tier": "full",
+      "capability": "live.render",
+      "group": "live",
+      "provider": null,
+      "tags": [
+        "live",
+        "hmr",
+        "render",
+        "preview",
+        "svg"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "program": {
+            "type": "string",
+            "description": "Live program id (from live.start/status). Omit when only one is running."
+          },
+          "svg": {
+            "type": "boolean",
+            "default": false,
+            "description": "Inline the frame's SVG in data.svg."
+          }
+        }
+      },
+      "secret_args": [],
+      "typical_latency_ms": 15,
+      "source": "builtin",
+      "integration": "live",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.701689Z",
+      "metadata": {}
+    },
+    "live.repl": {
+      "id": "live.repl",
+      "title": "LiveREPL eval/exec",
+      "description": "Run one expression or statement against the live program namespace - inspect state (`color`), mutate it (`color = 'blue'`), call things (`canvas.orbit(theta=1.2)`), define helpers (they are keep-listed and survive file saves). The last value is `_`. Mutations re-render the frame by default, which is the HMR-preview feel: no restart, state intact, UI moves. Executes arbitrary python in-process; the same trust class as shell.run.",
+      "risk": "write",
+      "tier": "full",
+      "capability": "live.repl",
+      "group": "live",
+      "provider": null,
+      "tags": [
+        "live",
+        "repl",
+        "eval",
+        "hmr",
+        "debug",
+        "inspect"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "program": {
+            "type": "string",
+            "description": "Live program id (from live.start/status). Omit when only one is running."
+          },
+          "code": {
+            "type": "string",
+            "minLength": 1
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "eval",
+              "exec"
+            ],
+            "default": "auto",
+            "description": "eval captures a result; exec runs statements. auto tries eval first, like a human prompt."
+          },
+          "render": {
+            "type": "boolean",
+            "default": true,
+            "description": "Re-render after the code runs (the live-preview move)."
+          }
+        },
+        "required": [
+          "code"
+        ]
+      },
+      "secret_args": [],
+      "typical_latency_ms": 10,
+      "source": "builtin",
+      "integration": "live",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.701717Z",
+      "metadata": {}
+    },
+    "live.scene": {
+      "id": "live.scene",
+      "title": "Drive the retained scene",
+      "description": "Mutate the program's scene graph directly - the scene for programs without a render() hook, or surgical node edits alongside one. Nodes are typed dicts with stable ids; upsert replaces by id (edit, don't flicker). 3D wireframes (cube3d/poly3d/point3d) are orbit-projected; live.orbit via repl moves the camera.",
+      "risk": "write",
+      "tier": "full",
+      "capability": "live.scene",
+      "group": "live",
+      "provider": null,
+      "tags": [
+        "live",
+        "scene",
+        "svg",
+        "preview",
+        "3d",
+        "canvas"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "program": {
+            "type": "string",
+            "description": "Live program id (from live.start/status). Omit when only one is running."
+          },
+          "op": {
+            "type": "string",
+            "enum": [
+              "list",
+              "upsert",
+              "remove",
+              "clear",
+              "orbit"
+            ],
+            "default": "list"
+          },
+          "node": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "For upsert: {type, id?, ...props}. Types: rect circle ellipse line text poly3d cube3d point3d."
+          },
+          "id": {
+            "type": "string",
+            "description": "For remove."
+          },
+          "theta": {
+            "type": "number"
+          },
+          "phi": {
+            "type": "number"
+          },
+          "scale": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "op"
+        ]
+      },
+      "secret_args": [],
+      "typical_latency_ms": 5,
+      "source": "builtin",
+      "integration": "live",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.701724Z",
+      "metadata": {}
+    },
+    "live.serve": {
+      "id": "live.serve",
+      "title": "Serve the live preview panel",
+      "description": "Start (or stop) the local HTTP preview panel: the frame as SVG, the scene graph as JSON (the feed a react-three-fiber-style 3D frontend would use), a Vite-style error overlay, and an in-page LiveREPL console. Binds host/port from [live] (default 127.0.0.1:8010); pass 0.0.0.0 inside sandboxes that proxy previews.",
+      "risk": "write",
+      "tier": "full",
+      "capability": "live.serve",
+      "group": "live",
+      "provider": null,
+      "tags": [
+        "live",
+        "hmr",
+        "preview",
+        "server",
+        "panel",
+        "http"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "op": {
+            "type": "string",
+            "enum": [
+              "start",
+              "stop"
+            ],
+            "default": "start"
+          },
+          "host": {
+            "type": "string",
+            "description": "Bind host (default from [live] host)."
+          },
+          "port": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 65535,
+            "description": "0 = ephemeral; the chosen port is returned."
+          }
+        }
+      },
+      "secret_args": [],
+      "typical_latency_ms": 30,
+      "source": "builtin",
+      "integration": "live",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.701731Z",
+      "metadata": {}
+    },
+    "live.snapshot": {
+      "id": "live.snapshot",
+      "title": "Snapshot / restore live state",
+      "description": "Save the program's data namespace under a name (deep-copied; locks/sockets are reported as skipped), or restore one later. Restore hands ownership of each name back to the source merge base, so file edits track it again afterwards.",
+      "risk": "write",
+      "tier": "full",
+      "capability": "live.state.snapshot",
+      "group": "live",
+      "provider": null,
+      "tags": [
+        "live",
+        "hmr",
+        "snapshot",
+        "checkpoint",
+        "undo"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "program": {
+            "type": "string",
+            "description": "Live program id (from live.start/status). Omit when only one is running."
+          },
+          "op": {
+            "type": "string",
+            "enum": [
+              "save",
+              "restore",
+              "list"
+            ],
+            "default": "list"
+          },
+          "name": {
+            "type": "string",
+            "description": "Required for save/restore."
+          }
+        },
+        "required": [
+          "op"
+        ]
+      },
+      "secret_args": [],
+      "typical_latency_ms": 10,
+      "source": "builtin",
+      "integration": "live",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.701737Z",
+      "metadata": {}
+    },
+    "live.start": {
+      "id": "live.start",
+      "title": "Start a live program",
+      "description": "Load a python file into a managed live namespace: it executes once, its state is snapshotted for the 3-way merge, a `canvas` (Scene) is injected for drawing, and - with watch=true - the file watcher hot-patches it on every save. If the module defines render(), it runs after every change; errors become the panel's overlay instead of a crash. This executes the file: same trust class as shell.run.",
+      "risk": "write",
+      "tier": "full",
+      "capability": "live.start",
+      "group": "live",
+      "provider": null,
+      "tags": [
+        "live",
+        "hmr",
+        "hot-reload",
+        "repl",
+        "preview",
+        "watch"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Python file, inside a workspace root."
+          },
+          "program": {
+            "type": "string",
+            "description": "Explicit program id (default: file stem)."
+          },
+          "watch": {
+            "type": "boolean",
+            "default": true,
+            "description": "Watch the file (and its same-tree imports) for saves."
+          },
+          "auto_render": {
+            "type": "boolean",
+            "default": true,
+            "description": "Call render() after every load/reload/repl/patch."
+          },
+          "keep": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 64,
+            "description": "Extra names that always survive reloads (like __live_keep__)."
+          },
+          "argv": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 32,
+            "description": "Visible to the program as __argv__."
+          },
+          "width": {
+            "type": "integer",
+            "minimum": 64,
+            "maximum": 4096,
+            "default": 420
+          },
+          "height": {
+            "type": "integer",
+            "minimum": 64,
+            "maximum": 4096,
+            "default": 320
+          }
+        },
+        "required": [
+          "path"
+        ]
+      },
+      "secret_args": [],
+      "typical_latency_ms": 120,
+      "source": "builtin",
+      "integration": "live",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.701744Z",
+      "metadata": {}
+    },
+    "live.state": {
+      "id": "live.state",
+      "title": "Inspect live program state",
+      "description": "Read the live namespace as data: every visible name with type, clipped repr, and ownership (source | repl | keep-list) - the exact state of the 3-way merge. This is the answer to 'did my save actually take?'",
+      "risk": "read",
+      "tier": "full",
+      "capability": "live.state.inspect",
+      "group": "live",
+      "provider": null,
+      "tags": [
+        "live",
+        "hmr",
+        "state",
+        "inspect",
+        "debug"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "program": {
+            "type": "string",
+            "description": "Live program id (from live.start/status). Omit when only one is running."
+          },
+          "keys": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 128,
+            "description": "Only these names (default: everything visible)."
+          }
+        }
+      },
+      "secret_args": [],
+      "typical_latency_ms": 5,
+      "source": "builtin",
+      "integration": "live",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.701750Z",
+      "metadata": {}
+    },
+    "live.status": {
+      "id": "live.status",
+      "title": "Live HMR status",
+      "description": "Programs running, watcher backend (poll vs watchfiles), reload/repl counters, per-program keep-lists and dependency edges, panel URL when serving, and the live config actually in effect. The place to look before assuming a save was seen.",
+      "risk": "read",
+      "tier": "full",
+      "capability": "live.status",
+      "group": "live",
+      "provider": null,
+      "tags": [
+        "live",
+        "hmr",
+        "status",
+        "watch"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "program": {
+            "type": "string",
+            "description": "Live program id (from live.start/status). Omit when only one is running."
+          },
+          "history": {
+            "type": "boolean",
+            "default": false,
+            "description": "Include the program's REPL + patch history."
+          },
+          "history_limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "default": 20
+          }
+        }
+      },
+      "secret_args": [],
+      "typical_latency_ms": 5,
+      "source": "builtin",
+      "integration": "live",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.701757Z",
+      "metadata": {}
+    },
+    "live.stop": {
+      "id": "live.stop",
+      "title": "Stop live programs",
+      "description": "Tear down one live program (by id) or all of them. Stops the watcher when the last program goes away. In-memory only - the file on disk is never touched.",
+      "risk": "write",
+      "tier": "full",
+      "capability": "live.stop",
+      "group": "live",
+      "provider": null,
+      "tags": [
+        "live",
+        "hmr"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "program": {
+            "type": "string",
+            "description": "Live program id (from live.start/status). Omit when only one is running."
+          }
+        }
+      },
+      "secret_args": [],
+      "typical_latency_ms": 20,
+      "source": "builtin",
+      "integration": "live",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.701764Z",
+      "metadata": {}
+    },
+    "planner.export": {
+      "id": "planner.export",
+      "title": "Export tools to an external agent format",
+      "description": "Export the advertised tool set to a format that external agent frameworks can consume. Supported formats: openai-tools (OpenAI function-calling), anthropic-tools (Anthropic tool-use), mcp-manifest (MCP tools/list). Secret-bearing default values are redacted. The export is a snapshot of the current advertisement.",
+      "risk": "none",
+      "tier": "full",
+      "capability": "planner.export",
+      "group": "planner",
+      "provider": null,
+      "tags": [
+        "export",
+        "openai",
+        "anthropic",
+        "mcp",
+        "interop"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "format": {
+            "type": "string",
+            "enum": [
+              "openai-tools",
+              "anthropic-tools",
+              "mcp-manifest"
+            ],
+            "description": "Target export format."
+          },
+          "tier": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null,
+            "description": "Export tools from this tier; omit for the active tier."
+          },
+          "read_only": {
+            "type": "boolean",
+            "default": false,
+            "description": "Export only read-only tools."
+          }
+        },
+        "required": [
+          "format"
+        ],
+        "additionalProperties": false
+      },
+      "secret_args": [],
+      "typical_latency_ms": 5,
+      "source": "builtin",
+      "integration": "planner",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.701770Z",
+      "metadata": {}
+    },
+    "planner.plan": {
+      "id": "planner.plan",
+      "title": "Build an execution plan from planned tool calls",
+      "description": "Build a read-only execution plan from a list of planned tool calls. Uses parallel_safe and stateful metadata to detect conflicts and determine serialization order. The plan is not executed - it is inspected before dispatch. Conflicts (write-write or write-stateful on the same resource) are flagged rather than silently applied. Use this before a batch of related calls to check safety.",
+      "risk": "none",
+      "tier": "full",
+      "capability": "planner.plan",
+      "group": "planner",
+      "provider": null,
+      "tags": [
+        "planner",
+        "plan",
+        "dag",
+        "conflict",
+        "parallel",
+        "safety"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "calls": {
+            "type": "array",
+            "description": "Planned tool calls in intended execution order.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "tool_id": {
+                  "type": "string",
+                  "description": "Tool id (fs.read, shell.run, ...)"
+                },
+                "args": {
+                  "type": "object",
+                  "description": "Arguments for the call"
+                }
+              },
+              "required": [
+                "tool_id"
+              ],
+              "additionalProperties": false
+            },
+            "minItems": 1,
+            "maxItems": 100
+          },
+          "strict": {
+            "type": "boolean",
+            "default": false,
+            "description": "If true, raise on conflicts instead of recording them."
+          }
+        },
+        "required": [
+          "calls"
+        ],
+        "additionalProperties": false
+      },
+      "secret_args": [],
+      "typical_latency_ms": 2,
+      "source": "builtin",
+      "integration": "planner",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.701777Z",
+      "metadata": {}
+    },
+    "policy.grant": {
+      "id": "policy.grant",
+      "title": "Record an approval grant",
+      "description": "Grant approval for a tool for this task or the whole session, with a receipt in the result and a row in the ledger, so an audit shows who approved what. A grant for a tool that itself requires approval is itself approval-gated: the approver is shown the target in the prompt (args_preview carries tool + scope), because an unattended self-grant for a destructive tool would be the hole this whole layer closes. A grant for a tool the caller could already run is pure record-keeping. Grants live in the calling task's context: a task grant does not outlive the task.",
+      "risk": "write",
+      "tier": "task",
+      "capability": "policy.grant",
+      "group": "policy",
+      "provider": null,
+      "tags": [
+        "approval",
+        "grant",
+        "policy",
+        "approve",
+        "permission",
+        "receipt",
+        "audit"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "tool": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Tool id the grant covers."
+          },
+          "scope": {
+            "type": "string",
+            "enum": [
+              "once",
+              "task",
+              "session"
+            ],
+            "default": "task",
+            "description": "once = no standing grant (the approval token of a single call is the grant); task = until this CallContext ends; session = for the lifetime of the shared context."
+          }
+        },
+        "required": [
+          "tool"
+        ],
+        "additionalProperties": false
+      },
+      "secret_args": [],
+      "typical_latency_ms": 1,
+      "source": "builtin",
+      "integration": "policy",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.701783Z",
+      "metadata": {}
+    },
+    "profile.probe": {
+      "id": "profile.probe",
+      "title": "Probe host capabilities",
+      "description": "Re-probe and return the CapabilityProfile: OS/arch, usable shells with versions and caveats, available binaries, filesystem traits (case sensitivity, symlinks), console encoding, and the warnings that explain degraded behaviour.",
+      "risk": "none",
+      "tier": "core",
+      "capability": "profile.capabilities",
+      "group": "profile",
+      "provider": null,
+      "tags": [
+        "profile",
+        "capability",
+        "host",
+        "detect",
+        "probe",
+        "environment"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "force": {
+            "type": "boolean",
+            "default": false
+          },
+          "include_receipts": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "additionalProperties": false
+      },
+      "secret_args": [],
+      "typical_latency_ms": 250,
+      "source": "builtin",
+      "integration": "profile",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.701793Z",
+      "metadata": {}
+    },
+    "pub.inject": {
+      "id": "pub.inject",
+      "title": "Inject stored values into {{PUB.<id>}} placeholders",
+      "description": "Replace {{PUB.<id>}} markers in files with values from the publish store, writing through the journaled fs layer - every changed file is undoable. Refuses to touch ANY file if a marker's store id is missing (no partial publishes). dry_run=true reports the plan without writing. Values never appear in this tool's result.",
+      "risk": "write",
+      "tier": "full",
+      "capability": "publish.inject",
+      "group": "publishing",
+      "provider": null,
+      "tags": [
+        "publish",
+        "inject",
+        "placeholders",
+        "secrets",
+        "template"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "default": ".",
+            "description": "File or directory to inject into. Default: the whole workspace."
+          },
+          "bindings": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Map a marker id to a different store id for the lookup."
+          },
+          "dry_run": {
+            "type": "boolean",
+            "default": false,
+            "description": "Report the plan (files, markers, missing ids) without writing."
+          }
+        },
+        "additionalProperties": false
+      },
+      "secret_args": [],
+      "typical_latency_ms": 80,
+      "source": "builtin",
+      "integration": "publishing",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.701799Z",
+      "metadata": {}
+    },
+    "pub.packaging": {
+      "id": "pub.packaging",
+      "title": "Packaging options: steps, commands, verification",
+      "description": "Knowledge base of packaging targets - PyPI, GitHub Release, Windows installer (Inno Setup), MSI (WiX), Scoop, Chocolatey, Winget, Homebrew, self-hosted: the tooling, numbered steps with the actual commands, how to verify on a clean machine, and the gotchas. Omit target for the list.",
+      "risk": "read",
+      "tier": "full",
+      "capability": "publish.knowledge.packaging",
+      "group": "publishing",
+      "provider": null,
+      "tags": [
+        "publish",
+        "packaging",
+        "pypi",
+        "msi",
+        "scoop",
+        "chocolatey",
+        "winget",
+        "homebrew",
+        "installer"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "target": {
+            "type": "string",
+            "description": "A packaging key for full detail."
+          }
+        },
+        "additionalProperties": false
+      },
+      "secret_args": [],
+      "typical_latency_ms": 5,
+      "source": "builtin",
+      "integration": "publishing",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.701806Z",
+      "metadata": {}
+    },
+    "pub.payments": {
+      "id": "pub.payments",
+      "title": "Payment providers: setup steps and links",
+      "description": "Knowledge base for setting up payments: Stripe, Paddle (merchant of record), Google Play Billing, Apple In-App Purchase (with the honest note that Apple Pay checkout is a PSP feature, not a direct API). Console/docs URLs, numbered setup steps, and the credentials to store with suggested ids. Omit provider for the list.",
+      "risk": "read",
+      "tier": "full",
+      "capability": "publish.knowledge.payments",
+      "group": "publishing",
+      "provider": null,
+      "tags": [
+        "publish",
+        "payments",
+        "stripe",
+        "paddle",
+        "billing",
+        "iap",
+        "app store",
+        "links"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "provider": {
+            "type": "string",
+            "description": "A provider key for full detail."
+          }
+        },
+        "additionalProperties": false
+      },
+      "secret_args": [],
+      "typical_latency_ms": 5,
+      "source": "builtin",
+      "integration": "publishing",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.701813Z",
+      "metadata": {}
+    },
+    "pub.placeholders": {
+      "id": "pub.placeholders",
+      "title": "Find {{PUB.<id>}} placeholders with exact locations",
+      "description": "Scan a file or directory for {{PUB.<id>}} markers and report each occurrence with the exact file, line and column, the store id it binds, and whether that id is bound (present in the store) or missing. This is the pre-publish check: publish only when every marker is bound.",
+      "risk": "read",
+      "tier": "full",
+      "capability": "publish.scan",
+      "group": "publishing",
+      "provider": null,
+      "tags": [
+        "publish",
+        "placeholders",
+        "scan",
+        "markers",
+        "template"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "default": ".",
+            "description": "A file or directory (workspace-relative). Default: the whole workspace."
+          }
+        },
+        "additionalProperties": false
+      },
+      "secret_args": [],
+      "typical_latency_ms": 30,
+      "source": "builtin",
+      "integration": "publishing",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.701819Z",
+      "metadata": {}
+    },
+    "pub.platforms": {
+      "id": "pub.platforms",
+      "title": "Publishing platforms: consoles, docs, setup steps",
+      "description": "Knowledge base of publishing platforms - Google Play, Apple App Store, GitHub, PyPI, npm, custom/self-hosted: console and docs URLs, account setup cost, the steps to go live, which credentials to store (with suggested store ids) and a placeholder example. Omit name to list all platforms briefly.",
+      "risk": "read",
+      "tier": "full",
+      "capability": "publish.knowledge.platforms",
+      "group": "publishing",
+      "provider": null,
+      "tags": [
+        "publish",
+        "platforms",
+        "google play",
+        "app store",
+        "github",
+        "pypi",
+        "npm",
+        "links"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "A platform key (see the list result) for full detail."
+          }
+        },
+        "additionalProperties": false
+      },
+      "secret_args": [],
+      "typical_latency_ms": 5,
+      "source": "builtin",
+      "integration": "publishing",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.701826Z",
+      "metadata": {}
+    },
+    "pub.store_delete": {
+      "id": "pub.store_delete",
+      "title": "Delete a publish store entry",
+      "description": "Remove one entry from the publish store. Destructive and IRREVERSIBLE - the store lives outside the workspace journal, so there is no undo. Rotate instead of delete when the old credential may still be in use somewhere.",
+      "risk": "write",
+      "tier": "full",
+      "capability": "publish.store.delete",
+      "group": "publishing",
+      "provider": null,
+      "tags": [
+        "publish",
+        "store",
+        "delete",
+        "credential"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
+            "description": "Lowercase id, e.g. pypi.token, google_play.token"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false
+      },
+      "secret_args": [],
+      "typical_latency_ms": 15,
+      "source": "builtin",
+      "integration": "publishing",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.701833Z",
+      "metadata": {}
+    },
+    "pub.store_list": {
+      "id": "pub.store_list",
+      "title": "List publish store entries (metadata only)",
+      "description": "List what is in the publish store: id, kind, note, timestamps and a short value mask. Raw values are not listed and can never be read back through a tool.",
+      "risk": "read",
+      "tier": "full",
+      "capability": "publish.store.list",
+      "group": "publishing",
+      "provider": null,
+      "tags": [
+        "publish",
+        "store",
+        "list",
+        "credentials"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "token",
+              "api_key",
+              "client_id",
+              "client_secret",
+              "oauth_token",
+              "password",
+              "email",
+              "phone",
+              "two_factor",
+              "social_account",
+              "signing_key",
+              "certificate",
+              "webhook",
+              "other"
+            ],
+            "description": "Filter by kind."
+          }
+        },
+        "additionalProperties": false
+      },
+      "secret_args": [],
+      "typical_latency_ms": 10,
+      "source": "builtin",
+      "integration": "publishing",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.701839Z",
+      "metadata": {}
+    },
+    "pub.store_put": {
+      "id": "pub.store_put",
+      "title": "Store a credential in the publish store",
+      "description": "Write a credential (token, key, password, account id, ...) into the write-only publish store. The value is persisted to a user-level file OUTSIDE the workspace and is NEVER returned by any tool - the only way out is pub.inject into files. Use it for everything a publish needs: platform tokens, API keys, OAuth tokens, 2FA codes, social accounts, e-mail, phone, signing keys.",
+      "risk": "write",
+      "tier": "full",
+      "capability": "publish.store.write",
+      "group": "publishing",
+      "provider": null,
+      "tags": [
+        "publish",
+        "store",
+        "credential",
+        "secret",
+        "token",
+        "key",
+        "oauth",
+        "2fa"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
+            "description": "Lowercase id, e.g. pypi.token, google_play.token"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "token",
+              "api_key",
+              "client_id",
+              "client_secret",
+              "oauth_token",
+              "password",
+              "email",
+              "phone",
+              "two_factor",
+              "social_account",
+              "signing_key",
+              "certificate",
+              "webhook",
+              "other"
+            ]
+          },
+          "value": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The secret itself. Never echoed back."
+          },
+          "note": {
+            "type": "string",
+            "description": "Human note: what it is, where it came from, expiry."
+          },
+          "expires_in_s": {
+            "type": "integer",
+            "description": "Lifetime in seconds from now; past the deadline the entry is listed as expired and refuses injection until rotated. Omit for no deadline (re-storing without it clears the old one). 0 or negative stores an already-expired entry."
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "value"
+        ],
+        "additionalProperties": false
+      },
+      "secret_args": [
+        "value"
+      ],
+      "typical_latency_ms": 15,
+      "source": "builtin",
+      "integration": "publishing",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.701845Z",
+      "metadata": {}
+    },
+    "pub.testers": {
+      "id": "pub.testers",
+      "title": "Generate an AI-executable release test plan",
+      "description": "Create a machine-executable release test plan: ordered steps (preflight, build, publish, verify) where each step is a tool call or a command with acceptance lines and on-fail behavior. Plans reference {{PUB.<id>}} placeholders, never raw secrets - run pub.inject before any step that needs one.",
+      "risk": "read",
+      "tier": "full",
+      "capability": "publish.testplan",
+      "group": "publishing",
+      "provider": null,
+      "tags": [
+        "publish",
+        "testers",
+        "test plan",
+        "release",
+        "ai",
+        "verify"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "platform": {
+            "type": "string",
+            "description": "Target platform key (from pub.platforms)."
+          },
+          "packaging": {
+            "type": "string",
+            "description": "Packaging key (from pub.packaging)."
+          },
+          "version": {
+            "type": "string",
+            "description": "Version being released, for the plan labels."
+          }
+        },
+        "additionalProperties": false
+      },
+      "secret_args": [],
+      "typical_latency_ms": 5,
+      "source": "builtin",
+      "integration": "publishing",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.701852Z",
+      "metadata": {}
+    },
+    "registry.describe": {
+      "id": "registry.describe",
+      "title": "Inspect one tool's contract",
+      "description": "Full manifest for a tool: schema, requirements, availability gates with reasons, risk, reversibility, examples, anti-patterns, tier, and live stats.",
+      "risk": "none",
+      "tier": "core",
+      "capability": "registry.describe",
+      "group": "registry",
+      "provider": null,
+      "tags": [
+        "tool",
+        "schema",
+        "describe",
+        "inspect",
+        "manifest"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "tool": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "tool"
+        ],
+        "additionalProperties": false
+      },
+      "secret_args": [],
+      "typical_latency_ms": 4,
+      "source": "builtin",
+      "integration": "registry",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.701859Z",
+      "metadata": {}
+    },
+    "registry.expand": {
+      "id": "registry.expand",
+      "title": "Switch the advertised tier",
+      "description": "Set the discovery tier for this toolkit: core = the bootstrap surface (registry, routing, skills, safety), task = core + the workhorse set (fs, shell, jobs), full = everything (the default). Returns the previous tier and the new snapshot summary. The digest changes with the set, so tools/list_changed fires after this call.",
+      "risk": "none",
+      "tier": "core",
+      "capability": "registry.tiers",
+      "group": "registry",
+      "provider": null,
+      "tags": [
+        "registry",
+        "tier",
+        "expand",
+        "discovery",
+        "advertise"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "tier": {
+            "type": "string",
+            "enum": [
+              "core",
+              "task",
+              "full"
+            ],
+            "description": "full is the default; core is the bootstrap surface; task adds the fs/shell workhorses."
+          }
+        },
+        "required": [
+          "tier"
+        ],
+        "additionalProperties": false
+      },
+      "secret_args": [],
+      "typical_latency_ms": 5,
+      "source": "builtin",
+      "integration": "registry",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.701868Z",
+      "metadata": {}
+    },
+    "registry.explain_all": {
+      "id": "registry.explain_all",
+      "title": "Explain every gate in the advertisement",
+      "description": "Every tool withheld from the advertised set, with the reason: gate failures (platform, requirement, read_only, disabled), tier withholds, tier-budget drops, and tools that opted out of advertisement themselves. Gated rows sort first; pass include_advertised=true to see the shown rows too. This is the whole-surface answer to 'why didn't I see this tool?' - capabilities.explain goes deep on one capability.",
+      "risk": "none",
+      "tier": "core",
+      "capability": "registry.explain",
+      "group": "registry",
+      "provider": null,
+      "tags": [
+        "registry",
+        "explain",
+        "gate",
+        "receipt",
+        "discovery",
+        "why",
+        "tier",
+        "advertise"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "tier": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null,
+            "description": "Query a tier without switching to it; omit for the session's active tier."
+          },
+          "include_advertised": {
+            "type": "boolean",
+            "default": false,
+            "description": "Append the advertised rows after the gated ones."
+          },
+          "group": {
+            "type": "string",
+            "description": "Limit rows to one tool group (fs, shell, ...)."
+          }
+        },
+        "additionalProperties": false
+      },
+      "secret_args": [],
+      "typical_latency_ms": 8,
+      "source": "builtin",
+      "integration": "registry",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.701875Z",
+      "metadata": {}
+    },
+    "registry.list": {
+      "id": "registry.list",
+      "title": "List available tools",
+      "description": "The currently advertised tool set after capability gating, tier filtering and provider de-duplication, with risk class, tier, provider receipt and token cost. `tier` says which tier the result is for (default: the session's active tier); cursor pages the 200-tool world.",
+      "risk": "none",
+      "tier": "core",
+      "capability": "registry.tools",
+      "group": "registry",
+      "provider": null,
+      "tags": [
+        "tools",
+        "registry",
+        "list",
+        "discover",
+        "capability",
+        "tier"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "group": {
+            "type": "string"
+          },
+          "include_gated": {
+            "type": "boolean",
+            "default": false
+          },
+          "include_schema": {
+            "type": "boolean",
+            "default": false
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 400,
+            "default": 100
+          },
+          "cursor": {
+            "type": "string",
+            "description": "Opaque page cursor from a previous call's next_cursor."
+          },
+          "tier": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null,
+            "description": "Query a tier without switching to it; omit for the session's active tier."
+          }
+        },
+        "additionalProperties": false
+      },
+      "secret_args": [],
+      "typical_latency_ms": 5,
+      "source": "builtin",
+      "integration": "registry",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.701881Z",
+      "metadata": {}
+    },
+    "registry.route": {
+      "id": "registry.route",
+      "title": "Route a task to tools",
+      "description": "Two-stage router (P5a): an exact-name match always wins, then deterministic lexical ranking over id/capability/tags/description, every hit carrying the reasons it matched and its tier. The optional semantic rerank runs only when a backend is installed and you ask for it; offline it answers with the lexical result and says so.",
+      "risk": "none",
+      "tier": "core",
+      "capability": "registry.route",
+      "group": "registry",
+      "provider": null,
+      "tags": [
+        "route",
+        "discovery",
+        "rank",
+        "reasons",
+        "tools",
+        "task"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "type": "string",
+            "minLength": 1
+          },
+          "k": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50,
+            "default": 8
+          },
+          "semantic": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "default": null,
+            "description": "Use a registered semantic backend if one is installed; None = the tools.semantic config setting, false = the deterministic path."
+          },
+          "include_gated": {
+            "type": "boolean",
+            "default": false
+          },
+          "group": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "task"
+        ],
+        "additionalProperties": false
+      },
+      "secret_args": [],
+      "typical_latency_ms": 10,
+      "source": "builtin",
+      "integration": "registry",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.701887Z",
+      "metadata": {}
+    },
+    "registry.search": {
+      "id": "registry.search",
+      "title": "Find a tool for a need",
+      "description": "Search tools by natural-language capability ('rename a bunch of files', 'run a script in powershell'). Deterministic lexical ranking over id/tags/description/capability. Use registry.route when you want the reasons a tool matched.",
+      "risk": "none",
+      "tier": "core",
+      "capability": "registry.search",
+      "group": "registry",
+      "provider": null,
+      "tags": [
+        "search",
+        "tools",
+        "discover",
+        "find",
+        "capability",
+        "need"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "minLength": 1
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50,
+            "default": 8
+          },
+          "include_gated": {
+            "type": "boolean",
+            "default": false
+          },
+          "group": {
+            "type": "string"
+          },
+          "max_risk": {
+            "type": "string",
+            "enum": [
+              "none",
+              "read",
+              "write",
+              "destructive",
+              "network",
+              "privileged"
+            ]
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "additionalProperties": false
+      },
+      "secret_args": [],
+      "typical_latency_ms": 8,
+      "source": "builtin",
+      "integration": "registry",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.701968Z",
+      "metadata": {}
+    },
+    "registry.stats": {
+      "id": "registry.stats",
+      "title": "Tool usage and reliability",
+      "description": "Per-tool call counts, failure counts, and mean latency. Providers are ranked partly by this, so check it when something seems to be failing a lot.",
+      "risk": "none",
+      "tier": "core",
+      "capability": "registry.stats",
+      "group": "registry",
+      "provider": null,
+      "tags": [
+        "stats",
+        "metrics",
+        "reliability",
+        "failures"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "tool": {
+            "type": "string",
+            "description": "one tool id; omit for all"
+          },
+          "source": {
+            "type": "string",
+            "description": "filter to one origin: a manifest source like 'builtin' or 'remote:<server>'"
+          }
+        },
+        "additionalProperties": false
+      },
+      "secret_args": [],
+      "typical_latency_ms": 3,
+      "source": "builtin",
+      "integration": "registry",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.701988Z",
+      "metadata": {}
+    },
+    "shell.available": {
+      "id": "shell.available",
+      "title": "List usable shells",
+      "description": "Which shell dialects this host actually has, their versions, and the caveats each one carries. Call this before choosing a dialect, not after guessing.",
+      "risk": "none",
+      "tier": "task",
+      "capability": "profile.shells",
+      "group": "shell",
+      "provider": null,
+      "tags": [
+        "shell",
+        "dialect",
+        "capability",
+        "probe",
+        "windows",
+        "bash"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "refresh": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "additionalProperties": false
+      },
+      "secret_args": [],
+      "typical_latency_ms": 1,
+      "source": "builtin",
+      "integration": "shell",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.702000Z",
+      "metadata": {}
+    },
+    "shell.job_kill": {
+      "id": "shell.job_kill",
+      "title": "Kill a background job",
+      "description": "Terminate a background job and its whole process tree.",
+      "risk": "destructive",
+      "tier": "task",
+      "capability": "exec.jobs",
+      "group": "shell",
+      "provider": null,
+      "tags": [
+        "shell",
+        "jobs",
+        "kill"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "job_id": {
+            "type": "string"
+          },
+          "tree": {
+            "type": "boolean",
+            "default": true
+          }
+        },
+        "required": [
+          "job_id"
+        ],
+        "additionalProperties": false
+      },
+      "secret_args": [],
+      "typical_latency_ms": 50,
+      "source": "builtin",
+      "integration": "shell",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.702010Z",
+      "metadata": {}
+    },
+    "shell.job_wait": {
+      "id": "shell.job_wait",
+      "title": "Wait for a background job",
+      "description": "Block until a background job finishes or the wait times out, then return tails of its stdout/stderr and its exit code.",
+      "risk": "none",
+      "tier": "task",
+      "capability": "exec.jobs",
+      "group": "shell",
+      "provider": null,
+      "tags": [
+        "shell",
+        "jobs",
+        "wait",
+        "background"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "job_id": {
+            "type": "string"
+          },
+          "timeout_s": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1800,
+            "default": 30
+          },
+          "tail_bytes": {
+            "type": "integer",
+            "minimum": 256,
+            "maximum": 200000,
+            "default": 8000
+          }
+        },
+        "required": [
+          "job_id"
+        ],
+        "additionalProperties": false
+      },
+      "secret_args": [],
+      "typical_latency_ms": 2000,
+      "source": "builtin",
+      "integration": "shell",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.702020Z",
+      "metadata": {}
+    },
+    "shell.job_watch": {
+      "id": "shell.job_watch",
+      "title": "Watch a background job for a line",
+      "description": "Poll a background job's stdout until a line matches `until` (regular expression) or the timeout cap is reached. On a match returns `matched_line`; on the cap returns `timed_out: true` and leaves the job running - watching never kills.",
+      "risk": "none",
+      "tier": "task",
+      "capability": "exec.jobs",
+      "group": "shell",
+      "provider": null,
+      "tags": [
+        "shell",
+        "jobs",
+        "watch",
+        "background"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "job_id": {
+            "type": "string"
+          },
+          "until": {
+            "type": "string"
+          },
+          "timeout_s": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1800,
+            "default": 30
+          },
+          "poll_s": {
+            "type": "number",
+            "minimum": 0.05,
+            "maximum": 30,
+            "default": 0.5
+          },
+          "tail_bytes": {
+            "type": "integer",
+            "minimum": 256,
+            "maximum": 200000,
+            "default": 8000
+          }
+        },
+        "required": [
+          "job_id",
+          "until"
+        ],
+        "additionalProperties": false
+      },
+      "secret_args": [],
+      "typical_latency_ms": 2000,
+      "source": "builtin",
+      "integration": "shell",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.702029Z",
+      "metadata": {}
+    },
+    "shell.jobs": {
+      "id": "shell.jobs",
+      "title": "List background jobs",
+      "description": "Background jobs started by shell.run(background=true), with pid, running state and log paths.",
+      "risk": "none",
+      "tier": "task",
+      "capability": "exec.jobs",
+      "group": "shell",
+      "provider": null,
+      "tags": [
+        "shell",
+        "jobs",
+        "background"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "secret_args": [],
+      "typical_latency_ms": 1,
+      "source": "builtin",
+      "integration": "shell",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.702039Z",
+      "metadata": {}
+    },
+    "shell.quote": {
+      "id": "shell.quote",
+      "title": "Quote values for a dialect",
+      "description": "Render values as literal tokens for one shell dialect, for embedding in a\n`shell.run {script}` body. If the value is an *argument* rather than part of the program text,\ndo not quote it - pass `shell.run {argv: [...]}` and it never reaches a shell parser.\nPosix uses shlex single-quoting, PowerShell doubles embedded single quotes (its literal\nform: no $ or backtick expansion), python returns a source literal.",
+      "risk": "none",
+      "tier": "task",
+      "capability": "shell.quote",
+      "group": "shell",
+      "provider": null,
+      "tags": [
+        "shell",
+        "quote",
+        "escaping",
+        "argv",
+        "injection",
+        "bash",
+        "pwsh"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "args": {
+            "type": "array",
+            "items": {
+              "type": [
+                "string",
+                "integer",
+                "number",
+                "boolean"
+              ]
+            },
+            "minItems": 1,
+            "maxItems": 256,
+            "description": "Values to render as literal tokens."
+          },
+          "dialect": {
+            "type": "string",
+            "enum": [
+              "bash",
+              "pwsh",
+              "powershell",
+              "python",
+              "sh",
+              "zsh",
+              "fish"
+            ],
+            "description": "Omit to use the host's preferred shell."
+          },
+          "shape": {
+            "type": "string",
+            "enum": [
+              "tokens",
+              "command",
+              "both"
+            ],
+            "default": "both",
+            "description": "tokens = the list only; command = one joined line; both = the two. (`as` would be the nicer name but it is a Python keyword, and handler parameters are injected by name.)"
+          }
+        },
+        "required": [
+          "args"
+        ],
+        "additionalProperties": false
+      },
+      "secret_args": [],
+      "typical_latency_ms": 1,
+      "source": "builtin",
+      "integration": "shell",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.702049Z",
+      "metadata": {}
+    },
+    "shell.quote_check": {
+      "id": "shell.quote_check",
+      "title": "Flag cross-platform quoting hazards before running a script",
+      "description": "Statically inspect shell text for the hazards this skill's references collect\n(`>nul`, `$null`, CRLF, unquoted `$(...)`, GNU-vs-BSD `sed -i`, PowerShell 5.1 `&&`,\n`Out-File` without an encoding, unquoted `rm -rf`) and return the offending lines with the\nfix. Cheap, offline, and it never runs the script it is reading.\n\nSynthesised tool: the handler is the `handler_body` below, inlined into the payload and run by\npython - no extra file, no `eval`, arguments arrive as one JSON argv element.\n\nRuns `the skill's inline handler_body` through the shell runner with the arguments bound by `argv_json`; a nonzero exit is the only failure signal and stdout is parsed as JSON and returned under `result`.",
+      "risk": "none",
+      "tier": "full",
+      "capability": "shell.quote_check",
+      "group": "shell",
+      "provider": null,
+      "tags": [
+        "shell",
+        "static-analysis",
+        "portability"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "script": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The script text to inspect. It is never executed."
+          },
+          "target_dialect": {
+            "type": "string",
+            "enum": [
+              "bash",
+              "sh",
+              "pwsh",
+              "powershell"
+            ],
+            "description": "Which dialect the script text is written in; selects which rules apply. Default bash."
+          }
+        },
+        "required": [
+          "script"
+        ],
+        "additionalProperties": false
+      },
+      "secret_args": [],
+      "typical_latency_ms": 50,
+      "source": "skill:shell-crossplatform",
+      "integration": "shell",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.702058Z",
+      "metadata": {}
+    },
+    "shell.run": {
+      "id": "shell.run",
+      "title": "Run a shell script",
+      "description": "Execute a script in bash, PowerShell (7 or 5.1), or python and capture stdout/stderr/exit code. The script is delivered as a temp file, is never rewritten, and 'completed' tells you whether it reached the end. Use this for anything multi-step; use fs.* tools for file edits.",
+      "risk": "write",
+      "tier": "task",
+      "capability": "exec.script",
+      "group": "shell",
+      "provider": null,
+      "tags": [
+        "shell",
+        "bash",
+        "pwsh",
+        "powershell",
+        "python",
+        "exec",
+        "command",
+        "run"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "script": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Script body, verbatim."
+          },
+          "argv": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 128,
+            "description": "Arguments for the script ($1..$n, $args, or sys.argv[1:]). Passed straight to the process, so they never meet a shell parser: prefer this over interpolating values into `script`. Numbers are accepted and stringified; pass structured data as one json.dumps() string."
+          },
+          "dialect": {
+            "type": "string",
+            "enum": [
+              "bash",
+              "pwsh",
+              "powershell",
+              "python",
+              "sh",
+              "zsh",
+              "fish"
+            ],
+            "description": "Omit to use the host's preferred shell."
+          },
+          "cwd": {
+            "type": "string",
+            "description": "Working directory (inside a root)."
+          },
+          "timeout_s": {
+            "type": "number",
+            "minimum": 0.1,
+            "maximum": 1800
+          },
+          "env": {
+            "type": "object",
+            "additionalProperties": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "description": "Extra env vars; null value unsets."
+          },
+          "env_mode": {
+            "type": "string",
+            "enum": [
+              "inherit",
+              "clean",
+              "login"
+            ]
+          },
+          "strict": {
+            "type": "boolean",
+            "default": true,
+            "description": "bash: set -e + pipefail. pwsh: Stop + native error action."
+          },
+          "expects": {
+            "type": "string",
+            "enum": [
+              "text",
+              "json",
+              "lines"
+            ],
+            "description": "json parses the last JSON value in stdout."
+          },
+          "session": {
+            "type": "string",
+            "description": "Persistent cwd/env bucket id."
+          },
+          "background": {
+            "type": "boolean",
+            "default": false
+          },
+          "stdin_text": {
+            "type": "string"
+          },
+          "capture_env": {
+            "type": "boolean",
+            "default": false
+          },
+          "keep_script": {
+            "type": "boolean",
+            "default": false,
+            "description": "Leave the rendered payload on disk and return it as data.script_path, so a failure can be replayed byte for byte or read back with fs.read. Deleted by default."
+          },
+          "max_output_bytes": {
+            "type": "integer",
+            "minimum": 256,
+            "maximum": 2000000
+          }
+        },
+        "required": [
+          "script"
+        ],
+        "additionalProperties": false
+      },
+      "secret_args": [],
+      "typical_latency_ms": 400,
+      "source": "builtin",
+      "integration": "shell",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.702068Z",
+      "metadata": {}
+    },
+    "shell.session_reset": {
+      "id": "shell.session_reset",
+      "title": "Reset a shell session",
+      "description": "Drop a session's carried cwd/env (or all sessions). Use when a session drifts.",
+      "risk": "write",
+      "tier": "task",
+      "capability": "exec.sessions",
+      "group": "shell",
+      "provider": null,
+      "tags": [
+        "shell",
+        "session",
+        "reset"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "session": {
+            "type": "string"
+          },
+          "all": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "additionalProperties": false
+      },
+      "secret_args": [],
+      "typical_latency_ms": 1,
+      "source": "builtin",
+      "integration": "shell",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.702078Z",
+      "metadata": {}
+    },
+    "shell.sessions": {
+      "id": "shell.sessions",
+      "title": "List shell sessions",
+      "description": "Active persistent shell sessions (cwd and env carried across calls).",
+      "risk": "none",
+      "tier": "task",
+      "capability": "exec.sessions",
+      "group": "shell",
+      "provider": null,
+      "tags": [
+        "shell",
+        "session",
+        "cwd",
+        "env"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "secret_args": [],
+      "typical_latency_ms": 1,
+      "source": "builtin",
+      "integration": "shell",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.702086Z",
+      "metadata": {}
+    },
+    "skills.list": {
+      "id": "skills.list",
+      "title": "List skills",
+      "description": "Discovered skills with triggers, token cost, and load errors. Skills are procedural knowledge; call skills.load to get one.",
+      "risk": "none",
+      "tier": "core",
+      "capability": "skills.list",
+      "group": "skills",
+      "provider": null,
+      "tags": [
+        "skills",
+        "instructions",
+        "howto"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "refresh": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "additionalProperties": false
+      },
+      "secret_args": [],
+      "typical_latency_ms": 6,
+      "source": "builtin",
+      "integration": "skills",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.702096Z",
+      "metadata": {}
+    },
+    "skills.load": {
+      "id": "skills.load",
+      "title": "Load a skill",
+      "description": "Return a skill's instruction body (budgeted) plus optional reference files, ready to inject into context.",
+      "risk": "none",
+      "tier": "core",
+      "capability": "skills.load",
+      "group": "skills",
+      "provider": null,
+      "tags": [
+        "skills",
+        "read",
+        "instructions"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "references": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "max_tokens": {
+            "type": "integer",
+            "minimum": 100,
+            "maximum": 8000,
+            "default": 1200,
+            "description": "defaults to skills.max_inline_tokens"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "additionalProperties": false
+      },
+      "secret_args": [],
+      "typical_latency_ms": 8,
+      "source": "builtin",
+      "integration": "skills",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.702105Z",
+      "metadata": {}
+    },
+    "skills.match": {
+      "id": "skills.match",
+      "title": "Match skills to a task",
+      "description": "Given task text, return which skills apply (with reasoning) and a prepared context block. Explainable lexical matching, no model call.",
+      "risk": "none",
+      "tier": "core",
+      "capability": "skills.match",
+      "group": "skills",
+      "provider": null,
+      "tags": [
+        "skills",
+        "match",
+        "trigger",
+        "context",
+        "inject"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "type": "string",
+            "minLength": 1
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10,
+            "default": 3
+          },
+          "max_tokens": {
+            "type": "integer",
+            "minimum": 200,
+            "maximum": 8000,
+            "default": 3600,
+            "description": "block budget; defaults to skills.max_inline_tokens x limit"
+          }
+        },
+        "required": [
+          "task"
+        ],
+        "additionalProperties": false
+      },
+      "secret_args": [],
+      "typical_latency_ms": 6,
+      "source": "builtin",
+      "integration": "skills",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.702114Z",
+      "metadata": {}
+    },
+    "skills.uninstall": {
+      "id": "skills.uninstall",
+      "title": "Remove a skill pack",
+      "description": "Unregister a skill's tools and, by default, delete its directory through the journal. Not gated by skills.allow_install - removing capability is not escalating it - but it is marked destructive so the same approval policy that guards fs.delete guards it. Refuses while a job from that skill is still running.",
+      "risk": "destructive",
+      "tier": "task",
+      "capability": "skills.uninstall",
+      "group": "skills",
+      "provider": null,
+      "tags": [
+        "skills",
+        "uninstall",
+        "dynamic",
+        "registry"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The skill's name, as skills.list reports it."
+          },
+          "remove_files": {
+            "type": "boolean",
+            "default": true,
+            "description": "false unregisters the tools and leaves the directory"
+          },
+          "dry_run": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "additionalProperties": false
+      },
+      "secret_args": [],
+      "typical_latency_ms": 70,
+      "source": "builtin",
+      "integration": "skills",
+      "integration_version": null,
+      "integration_type": null,
+      "registered_at": "2026-09-19T22:44:57.702123Z",
+      "metadata": {}
+    }
+  },
+  "integrations": {},
+  "projects": {
+    "live_hmr": {
+      "name": "live_hmr",
+      "path": "T:\\SkeletonKey_v2-ToolForge_Tools_MCP\\examples\\live_hmr",
+      "type": "dropin",
+      "tool_count": 1,
+      "enabled": true,
+      "health": "unknown",
+      "metadata": {}
+    },
+    "features": {
+      "name": "features",
+      "path": "T:\\SkeletonKey_v2-ToolForge_Tools_MCP\\features",
+      "type": "dropin",
+      "tool_count": 1,
+      "enabled": true,
+      "health": "unknown",
+      "metadata": {}
+    },
+    "skeletonkey": {
+      "name": "skeletonkey",
+      "path": "T:\\SkeletonKey_v2-ToolForge_Tools_MCP\\skeletonkey",
+      "type": "dropin",
+      "tool_count": 6,
+      "enabled": true,
+      "health": "unknown",
+      "metadata": {}
+    },
+    "fs-safe-refactor": {
+      "name": "fs-safe-refactor",
+      "path": "T:\\SkeletonKey_v2-ToolForge_Tools_MCP\\skills\\fs-safe-refactor",
+      "type": "skill",
+      "tool_count": 0,
+      "enabled": true,
+      "health": "unknown",
+      "metadata": {}
+    },
+    "publishing": {
+      "name": "publishing",
+      "path": "T:\\SkeletonKey_v2-ToolForge_Tools_MCP\\skills\\publishing",
+      "type": "skill",
+      "tool_count": 0,
+      "enabled": true,
+      "health": "unknown",
+      "metadata": {}
+    },
+    "python-env-bootstrap": {
+      "name": "python-env-bootstrap",
+      "path": "T:\\SkeletonKey_v2-ToolForge_Tools_MCP\\skills\\python-env-bootstrap",
+      "type": "skill",
+      "tool_count": 0,
+      "enabled": true,
+      "health": "unknown",
+      "metadata": {}
+    },
+    "shell-crossplatform": {
+      "name": "shell-crossplatform",
+      "path": "T:\\SkeletonKey_v2-ToolForge_Tools_MCP\\skills\\shell-crossplatform",
+      "type": "skill",
+      "tool_count": 0,
+      "enabled": true,
+      "health": "unknown",
+      "metadata": {}
+    },
+    "vcs-git-safely": {
+      "name": "vcs-git-safely",
+      "path": "T:\\SkeletonKey_v2-ToolForge_Tools_MCP\\skills\\vcs-git-safely",
+      "type": "skill",
+      "tool_count": 0,
+      "enabled": true,
+      "health": "unknown",
+      "metadata": {}
+    },
+    "tests": {
+      "name": "tests",
+      "path": "T:\\SkeletonKey_v2-ToolForge_Tools_MCP\\tests",
+      "type": "dropin",
+      "tool_count": 41,
+      "enabled": true,
+      "health": "unknown",
+      "metadata": {}
+    }
+  },
+  "metadata": {
+    "tier": "full",
+    "digest": "313dd1d3d3695bc1",
+    "tokens": 7293,
+    "budget_drops": {}
+  }
+}

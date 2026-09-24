@@ -821,5 +821,80 @@ def register_integration_tools(
         report["registered"].append("integrations.validate")
     except Exception as e:
         report["errors"].append(f"integrations.validate: {e}")
+
+    # Tool: integrations.discover-clis
+    def tool_integrations_discover_clis(
+        names: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Discover CLI tools available on the system PATH."""
+        from ..integrations.cli_discovery import discover_cli_tools
+        
+        result = discover_cli_tools(names=names)
+        return result.to_dict()
     
+    try:
+        registry.register(ToolManifest(
+            id="integrations.discover-clis",
+            title="Discover CLI Tools",
+            description="Scan system PATH for known CLI tools (git, docker, aws, gh, kubectl, terraform, etc.)",
+            capability="integrations.discover-clis",
+            risk="none",
+            typical_latency_ms=50,
+            tier="task",
+            tags=["integrations", "cli", "discover", "auto"],
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "names": {"type": "array", "items": {"type": "string"}, "description": "Specific CLI names to check"},
+                },
+                "additionalProperties": False,
+            },
+        ), tool_integrations_discover_clis)
+        report["registered"].append("integrations.discover-clis")
+    except Exception as e:
+        report["errors"].append(f"integrations.discover-clis: {e}")
+
+    # Tool: integrations.generate-cli-integration
+    def tool_integrations_generate_cli_integration(
+        cli_name: str,
+        output_dir: str | None = None,
+        subcommands: list[str] | None = None,
+        all_subcommands: bool = False,
+    ) -> dict[str, Any]:
+        """Generate a SkeletonKey integration wrapper for a CLI tool."""
+        from ..integrations.cli_discovery import generate_cli_integration
+        
+        return generate_cli_integration(
+            cli_name=cli_name,
+            output_dir=output_dir,
+            custom_subcommands=subcommands,
+            include_all_subcommands=all_subcommands,
+        )
+    
+    try:
+        registry.register(ToolManifest(
+            id="integrations.generate-cli-integration",
+            title="Generate CLI Integration",
+            description="Generate a SkeletonKey integration skeleton for a detected CLI tool",
+            capability="integrations.generate-cli-integration",
+            risk="write",
+            typical_latency_ms=100,
+            tier="task",
+            tags=["integrations", "cli", "generate", "auto"],
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "cli_name": {"type": "string", "description": "Name of the CLI tool (e.g., git, docker, aws)"},
+                    "output_dir": {"type": "string", "description": "Directory to write integration file"},
+                    "subcommands": {"type": "array", "items": {"type": "string"}, "description": "Specific subcommands to include"},
+                    "all_subcommands": {"type": "boolean", "default": False, "description": "Include all known subcommands"},
+                },
+                "required": ["cli_name"],
+                "additionalProperties": False,
+            },
+        ), tool_integrations_generate_cli_integration)
+        report["registered"].append("integrations.generate-cli-integration")
+    except Exception as e:
+        report["errors"].append(f"integrations.generate-cli-integration: {e}")
+
     return report

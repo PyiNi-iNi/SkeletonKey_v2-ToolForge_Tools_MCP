@@ -363,6 +363,10 @@ class IntegrationPackManager:
         self._installed[manifest.name] = pack_info
         self._save_installed()
         
+        # Resolve and install pack dependencies
+        if not self._resolve_pack_dependencies(manifest):
+            return False
+        
         # Load integrations from the pack
         self._load_pack_integrations(pack_info)
         
@@ -868,6 +872,108 @@ class IntegrationPackManager:
             pass
         
         return None
+    
+    def _resolve_pack_dependencies(self, manifest: PackManifest) -> bool:
+        """Resolve and install pack dependencies from manifest.
+        
+        Dependencies in manifest are a list of dicts with:
+        - name: pack name
+        - version: version constraint (optional)
+        - source: source type (local, git, pypi) (optional)
+        - optional: whether dependency is optional (optional)
+        
+        Returns True if all required dependencies are satisfied.
+        """
+        for dep in manifest.dependencies:
+            if not isinstance(dep, dict):
+                logger.warning(f"Skipping invalid dependency format: {dep}")
+                continue
+            
+            dep_name = dep.get("name")
+            dep_version = dep.get("version")
+            dep_source = dep.get("source")
+            dep_optional = dep.get("optional", False)
+            
+            if not dep_name:
+                logger.warning("Skipping dependency with no name")
+                continue
+            
+            # Check if already installed
+            if dep_name in self._installed:
+                # Check version constraint if specified
+                if dep_version:
+                    installed_version = self._installed[dep_name].version
+                    if not self._version_satisfies(installed_version, dep_version):
+                        logger.error(
+                            f"Pack {dep_name} version {installed_version} does not satisfy "
+                            f"constraint {dep_version}"
+                        )
+                        if not dep_optional:
+                            return False
+                continue
+            
+            # Install the dependency
+            logger.info(f"Installing pack dependency: {dep_name}")
+            success = self.install(dep_name, source=dep_source, version=dep_version, force=False)
+            if not success:
+                if dep_optional:
+                    logger.warning(f"Optional pack dependency {dep_name} failed to install, continuing")
+                    continue
+                logger.error(f"Required pack dependency {dep_name} failed to install")
+                return False
+        
+        return True
+    
+    def _version_satisfies(self, version: str, constraint: str) -> bool:
+        """Check if a version satisfies a constraint.
+        
+        Supports basic constraints: >=, <=, >, <, ==, ~=, !=
+        """
+        import re
+        
+        # Simple constraint parsing
+        match = re.match(r'^(>=|<=|>|<|==|~=|!=)\s*(.+)$', constraint.strip())
+        if not match:
+            # No operator means exact match
+            return version == constraint.strip()
+        
+        op, constraint_version = match.groups()
+        
+        # Parse versions (simple semantic version comparison)
+        def parse_ver(v: str) -> tuple:
+            parts = v.split('.')
+            nums = []
+            for p in parts:
+                # Remove pre-release suffixes
+                p = re.split(r'[-+]', p)[0]
+                try:
+                    nums.append(int(p))
+                except ValueError:
+                    nums.append(0)
+            while len(nums) < 3:
+                nums.append(0)
+            return tuple(nums[:3])
+        
+        v1 = parse_ver(version)
+        v2 = parse_ver(constraint_version)
+        
+        if op == '>=':
+            return v1 >= v2
+        elif op == '<=':
+            return v1 <= v2
+        elif op == '>':
+            return v1 > v2
+        elif op == '<':
+            return v1 < v2
+        elif op == '==':
+            return v1 == v2
+        elif op == '~=':
+            # Compatible release: >= major.minor, < major+1.0
+            return v1 >= v2 and v1[0] == v2[0]
+        elif op == '!=':
+            return v1 != v2
+        
+        return False
     
     def validate_pack(self, path: str | Path) -> tuple[bool, list[str]]:
         """Validate an integration pack."""

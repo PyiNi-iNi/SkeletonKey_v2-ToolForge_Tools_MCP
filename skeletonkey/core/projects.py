@@ -623,6 +623,70 @@ class ProjectIndexer:
             "projects": list(self._projects.keys()),
         }
     
+    # Watch mode for automatic project discovery
+    def start_watch(self, interval: float = 1.0, debounce: float = 0.5) -> bool:
+        """Start watching project roots for changes.
+        
+        Uses watchfiles if available, otherwise falls back to polling.
+        
+        Args:
+            interval: Polling interval in seconds (fallback only)
+            debounce: Debounce time in seconds to coalesce rapid changes
+            
+        Returns:
+            True if watch started successfully, False otherwise
+        """
+        if self._watch_thread is not None:
+            logger.warning("Watch already running")
+            return False
+        
+        try:
+            import watchfiles
+            self._watch_thread = WatchfilesWatcher(
+                roots=self.roots,
+                callback=self._on_watch_change,
+                debounce=debounce,
+            )
+            self._watch_thread.start()
+            logger.info(f"Started watchfiles watcher on {len(self.roots)} roots")
+            return True
+        except ImportError:
+            # Fallback to polling
+            self._watch_thread = PollingWatcher(
+                roots=self.roots,
+                callback=self._on_watch_change,
+                interval=interval,
+                debounce=debounce,
+            )
+            self._watch_thread.start()
+            logger.info(f"Started polling watcher on {len(self.roots)} roots (interval={interval}s)")
+            return True
+    
+    def stop_watch(self) -> None:
+        """Stop watching for project changes."""
+        if self._watch_thread is not None:
+            self._watch_thread.stop()
+            self._watch_thread.join(timeout=2.0)
+            self._watch_thread = None
+            logger.info("Stopped project watcher")
+    
+    def _on_watch_change(self, changes: list[tuple[str, str]]) -> None:
+        """Handle filesystem changes detected by watcher."""
+        # Debounced refresh
+        import time
+        now = time.time()
+        if hasattr(self, '_last_watch_refresh'):
+            if now - self._last_watch_refresh < getattr(self, '_watch_debounce', 0.5):
+                return
+        self._last_watch_refresh = now
+        self._scan()
+        logger.debug(f"Auto-refreshed project index due to {len(changes)} changes")
+
+    # Watch state
+    _watch_thread: Any = None
+    _watch_debounce: float = 0.5
+    _last_watch_refresh: float = 0
+    
     def add_project(self, project: ProjectInfo) -> None:
         """Manually add a project to the index.
         
@@ -892,6 +956,135 @@ class ProjectIndexer:
             "by_health": by_health,
             "roots": self.roots,
         }
+
+
+# --------------------------------------------------------------------------- Watch Mode Implementation
+
+class _BaseWatcher:
+    """Base class for filesystem watchers."""
+    
+    def __init__(
+        self,
+        roots: list[str],
+        callback: callable,
+        debounce: float = 0.5,
+    ):
+        self.roots = roots
+        self.callback = callback
+        self.debounce = debounce
+        self._running = False
+        self._thread = None
+    
+    def start(self) -> None:
+        self._running = True
+        import threading
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+    
+    def stop(self) -> None:
+        self._running = False
+    
+    def join(self, timeout: float = 2.0) -> None:
+        if self._thread:
+            self._thread.join(timeout=timeout)
+    
+    def _run(self) -> None:
+        raise NotImplementedError
+
+
+class PollingWatcher(_BaseWatcher):
+    """Polling-based filesystem watcher (fallback when watchfiles not available)."""
+    
+    def __init__(
+        self,
+        roots: list[str],
+        callback: callable,
+        interval: float = 1.0,
+        debounce: float = 0.5,
+    ):
+        super().__init__(roots, callback, debounce)
+        self.interval = interval
+        self._snapshots: dict[str, dict[str, float]] = {}
+    
+    def _run(self) -> None:
+        import time
+        import os
+        
+        # Initial snapshot
+        for root in self.roots:
+            self._snapshots[root] = self._scan_root(root)
+        
+        while self._running:
+            time.sleep(self.interval)
+            if not self._running:
+                break
+            
+            changes = []
+            for root in self.roots:
+                new_snapshot = self._scan_root(root)
+                old_snapshot = self._snapshots.get(root, {})
+                
+                # Detect changes
+                all_paths = set(old_snapshot.keys()) | set(new_snapshot.keys())
+                for path in all_paths:
+                    old_mtime = old_snapshot.get(path)
+                    new_mtime = new_snapshot.get(path)
+                    
+                    if old_mtime is None and new_mtime is not None:
+                        changes.append(("created", path))
+                    elif old_mtime is not None and new_mtime is None:
+                        changes.append(("deleted", path))
+                    elif old_mtime != new_mtime:
+                        changes.append(("modified", path))
+                
+                self._snapshots[root] = new_snapshot
+            
+            if changes:
+                self.callback(changes)
+    
+    def _scan_root(self, root: str) -> dict[str, float]:
+        """Scan a root directory and return path -> mtime mapping."""
+        import os
+        snapshot = {}
+        try:
+            for dirpath, dirnames, filenames in os.walk(root):
+                # Skip hidden directories
+                dirnames[:] = [d for d in dirnames if not d.startswith('.')]
+                for fname in filenames:
+                    if fname.startswith('.'):
+                        continue
+                    path = os.path.join(dirpath, fname)
+                    try:
+                        snapshot[path] = os.path.getmtime(path)
+                    except OSError:
+                        pass
+        except OSError:
+            pass
+        return snapshot
+
+
+class WatchfilesWatcher(_BaseWatcher):
+    """Filesystem watcher using watchfiles library."""
+    
+    def __init__(
+        self,
+        roots: list[str],
+        callback: callable,
+        debounce: float = 0.5,
+    ):
+        super().__init__(roots, callback, debounce)
+        import watchfiles
+        self._watch = watchfiles.watch(*roots, debounce=debounce)
+    
+    def _run(self) -> None:
+        import watchfiles
+        for changes in self._watch:
+            if not self._running:
+                break
+            if changes:
+                # Convert watchfiles changes to our format
+                formatted = [(change_type.name.lower(), path) for change_type, path in changes]
+                self.callback(formatted)
 
 
 # --------------------------------------------------------------------------- Convenience Functions

@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .core.config import Config, _user_dir
+from .core.catalog import create_catalog_from_toolkit, get_catalog_manager
 from .core.engine import Engine
 from .core.ledger import Ledger
 from .core.profile import CapabilityProfile, Prober
@@ -49,6 +50,7 @@ class Toolkit:
     live: Any = None                    # live.runtime.LiveManager (HMR subsystem)
     projects: ProjectIndexer | None = None  # P5: Project indexer for external projects
     integrations: IntegrationManager | None = None  # P5.1: Integration manager
+    catalog_manager: Any = None  # Tool catalog manager
     build_report: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -156,6 +158,11 @@ class Toolkit:
                 "by_category": stats["by_category"],
                 "by_platform": stats["by_platform"],
             }
+        
+        # P5: Add catalog information if available
+        if self.catalog_manager:
+            stats = self.catalog_manager.get_statistics()
+            desc["catalog"] = stats
         
         return desc
 
@@ -298,7 +305,8 @@ def build(*, config: Config | None = None, overrides: dict[str, Any] | None = No
     
     # P5.1: Initialize integration manager (wired to the engine registry so a
     # loaded integration's tools become callable engine tools, P5.4).
-    integrations = IntegrationManager(cfg, tool_registry=registry)
+    # Pass the global PathSandbox for per-integration sandbox enforcement.
+    integrations = IntegrationManager(cfg, tool_registry=registry, global_sandbox=sandbox)
     report["integrations"] = integrations.get_statistics()
     
     # P5.2/P5.3: Register integration management tools
@@ -307,10 +315,29 @@ def build(*, config: Config | None = None, overrides: dict[str, Any] | None = No
         registry, engine=engine, integrations_manager=integrations
     )
     
+    # P5: Initialize catalog manager and auto-index
+    catalog_manager = get_catalog_manager(cfg.state.dir)
+    
+    # Create a temporary minimal toolkit for catalog indexing
+    temp_toolkit = Toolkit(config=cfg, profile=profile, sandbox=sandbox, fs=fs, journal=journal, shells=shells,
+                   registry=registry, engine=engine, skills=skills, ledger=ledger,
+                   publish=publish_store, live=live_manager, projects=projects,
+                   integrations=integrations, catalog_manager=catalog_manager)
+    # Auto-index using the catalog manager (not creating a new one)
+    catalog = catalog_manager.auto_index(temp_toolkit)
+    report["catalog"] = catalog_manager.get_statistics()
+    
+    # Register catalog tools
+    from .core.catalog_tools import register_catalog_tools
+    report["catalog_tools"] = register_catalog_tools(
+        registry, engine=engine, toolkit=temp_toolkit
+    )
+    
+    # Create final toolkit with the now-initialized catalog_manager
     return Toolkit(config=cfg, profile=profile, sandbox=sandbox, fs=fs, journal=journal, shells=shells,
                    registry=registry, engine=engine, skills=skills, ledger=ledger,
                    publish=publish_store, live=live_manager, projects=projects,
-                   integrations=integrations, build_report=report)
+                   integrations=integrations, catalog_manager=catalog_manager, build_report=report)
 
 
 def _mk_overrides(overrides: dict[str, Any] | None, roots: list[str] | None,

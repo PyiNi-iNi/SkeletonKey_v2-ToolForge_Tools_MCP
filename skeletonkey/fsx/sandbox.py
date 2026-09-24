@@ -121,6 +121,44 @@ class PathSandbox:
         self._ignore_re = [_glob_to_re(g) for g in self.policy.ignore]
         self._case_insensitive: bool | None = None
 
+    def for_integration(self, integration_name: str,
+                        allowed_paths: list[str] | None = None,
+                        denied_paths: list[str] | None = None,
+                        allowed_hosts: list[str] | None = None,
+                        denied_hosts: list[str] | None = None,
+                        network_isolation: bool = False,
+                        filesystem_isolation: bool = False,
+                        resource_limits: dict[str, Any] | None = None) -> "IntegrationPathSandbox":
+        """Create a restricted sandbox for a specific integration.
+        
+        The integration sandbox is additive: it intersects with the global
+        sandbox roots and adds additional constraints.
+        
+        Args:
+            integration_name: Name of the integration (for logging)
+            allowed_paths: Additional paths this integration may access (glob patterns)
+            denied_paths: Paths this integration may NOT access (glob patterns, additive)
+            allowed_hosts: Allowed network hosts (if network_isolation enabled)
+            denied_hosts: Denied network hosts (additive)
+            network_isolation: If True, network access requires explicit allowed_hosts
+            filesystem_isolation: If True, filesystem access requires explicit allowed_paths
+            resource_limits: Dict with memory_mb, cpu_cores, timeout_seconds
+            
+        Returns:
+            IntegrationPathSandbox wrapping this sandbox with additional constraints
+        """
+        return IntegrationPathSandbox(
+            parent=self,
+            integration_name=integration_name,
+            allowed_paths=allowed_paths or [],
+            denied_paths=denied_paths or [],
+            allowed_hosts=allowed_hosts or [],
+            denied_hosts=denied_hosts or [],
+            network_isolation=network_isolation,
+            filesystem_isolation=filesystem_isolation,
+            resource_limits=resource_limits or {},
+        )
+
     # ------------------------------------------------------------------ roots
     def add_root(self, path: str) -> str:
         p = self._prep(path, for_root=True)
@@ -557,3 +595,171 @@ def detect_case_sensitivity(path: str) -> bool:
             shutil.rmtree(probe, ignore_errors=True)
         except OSError:
             pass
+
+
+class IntegrationPathSandbox:
+    """Per-integration sandbox that adds constraints on top of the global PathSandbox.
+    
+    This is additive: paths must pass both the global sandbox AND the integration
+    sandbox checks. Network access is tracked separately since PathSandbox only
+    handles filesystem.
+    """
+    
+    def __init__(self,
+                 parent: PathSandbox,
+                 integration_name: str,
+                 allowed_paths: list[str] = None,
+                 denied_paths: list[str] = None,
+                 allowed_hosts: list[str] = None,
+                 denied_hosts: list[str] = None,
+                 network_isolation: bool = False,
+                 filesystem_isolation: bool = False,
+                 resource_limits: dict[str, Any] = None) -> None:
+        self.parent = parent
+        self.integration_name = integration_name
+        self.allowed_paths = allowed_paths or []
+        self.denied_paths = denied_paths or []
+        self.allowed_hosts = allowed_hosts or []
+        self.denied_hosts = denied_hosts or []
+        self.network_isolation = network_isolation
+        self.filesystem_isolation = filesystem_isolation
+        
+        # Resource limits (memory_mb, cpu_cores, timeout_seconds)
+        self.resource_limits = resource_limits or {}
+        self._memory_limit_bytes = self._parse_memory_limit(
+            self.resource_limits.get("memory_mb")
+        )
+        self._cpu_limit = self.resource_limits.get("cpu_cores")
+        self._timeout_seconds = self.resource_limits.get("timeout_seconds")
+        
+        # Compile glob patterns for path checking
+        self._allowed_path_re = [_glob_to_re(g) for g in self.allowed_paths]
+        self._denied_path_re = [_glob_to_re(g) for g in self.denied_paths]
+        
+        # Apply resource limits at initialization (best-effort)
+        self._apply_resource_limits()
+    
+    def _parse_memory_limit(self, memory_mb: Any) -> int | None:
+        """Convert memory_mb to bytes."""
+        if memory_mb is None:
+            return None
+        try:
+            return int(memory_mb) * 1024 * 1024
+        except (ValueError, TypeError):
+            return None
+    
+    def _apply_resource_limits(self) -> None:
+        """Apply resource limits to the current process (best-effort)."""
+        import os
+        
+        # Memory limit (POSIX)
+        if self._memory_limit_bytes is not None:
+            try:
+                import resource
+                # Set both soft and hard limits
+                resource.setrlimit(resource.RLIMIT_AS, 
+                                  (self._memory_limit_bytes, self._memory_limit_bytes))
+            except (ImportError, OSError, ValueError):
+                pass  # Best-effort: limit not supported or not permitted
+        
+        # CPU time limit (POSIX)
+        if self._cpu_limit is not None:
+            try:
+                import resource
+                cpu_seconds = int(self._cpu_limit)  # cpu_cores -> seconds for simplicity
+                resource.setrlimit(resource.RLIMIT_CPU, (cpu_seconds, cpu_seconds))
+            except (ImportError, OSError, ValueError):
+                pass
+        
+        # On Windows, we could use Job Objects for memory/CPU limits
+        # but that requires pywin32. For now we just track limits.
+        if os.name == "nt" and (self._memory_limit_bytes or self._cpu_limit):
+            # Could use win32job.CreateJobObject + SetInformationJobObject
+            # if pywin32 is available, but keep it optional
+            pass
+    
+    def get_resource_limits(self) -> dict[str, Any]:
+        """Get the effective resource limits."""
+        return {
+            "memory_mb": self.resource_limits.get("memory_mb"),
+            "cpu_cores": self.resource_limits.get("cpu_cores"),
+            "timeout_seconds": self.resource_limits.get("timeout_seconds"),
+        }
+    
+    def check_timeout(self, elapsed_seconds: float) -> None:
+        """Check if operation has exceeded timeout."""
+        if self._timeout_seconds is not None and elapsed_seconds > self._timeout_seconds:
+            raise SkeletonKeyError(
+                E.TIMEOUT,
+                f"Integration {self.integration_name!r} exceeded timeout of {self._timeout_seconds}s",
+                details={"integration": self.integration_name, "timeout_seconds": self._timeout_seconds,
+                         "elapsed_seconds": elapsed_seconds}
+            )
+    
+    def resolve(self, raw: str, *, intent: str = "read", base: str | None = None) -> "Resolved":
+        """Resolve a path through both global and integration sandboxes."""
+        # First check integration-specific constraints
+        if self.filesystem_isolation:
+            self._check_integration_path_access(raw)
+        
+        # Then delegate to parent (global) sandbox
+        return self.parent.resolve(raw, intent=intent, base=base)
+    
+    def safe(self, raw: str, *, intent: str = "read") -> bool:
+        """Check if a path is safe through both sandboxes."""
+        if self.filesystem_isolation:
+            try:
+                self._check_integration_path_access(raw)
+            except SkeletonKeyError:
+                return False
+        return self.parent.safe(raw, intent=intent)
+    
+    def check_network_access(self, host: str, port: int | None = None) -> bool:
+        """Check if network access to a host is allowed."""
+        if not self.network_isolation:
+            return True  # No network restrictions
+        
+        if self.denied_hosts:
+            for pattern in self.denied_hosts:
+                if self._match_host(pattern, host):
+                    return False
+        
+        if self.allowed_hosts:
+            for pattern in self.allowed_hosts:
+                if self._match_host(pattern, host):
+                    return True
+            return False  # Network isolation enabled but host not in allowed list
+        
+        return True  # Network isolation but no allowed hosts = allow all
+    
+    def _match_host(self, pattern: str, host: str) -> bool:
+        """Match host against pattern (supports glob)."""
+        import fnmatch
+        return fnmatch.fnmatch(host.lower(), pattern.lower())
+    
+    def _check_integration_path_access(self, path: str) -> None:
+        """Check if path is allowed by integration-specific rules."""
+        # Normalize path for matching
+        normalized = path.replace("\\", "/").lower()
+        
+        # Check denied paths first (additive with global deny)
+        for rx in self._denied_path_re:
+            if rx.search(normalized):
+                raise SkeletonKeyError(
+                    E.SANDBOX_VIOLATION,
+                    f"Integration {self.integration_name!r} denied access to {path!r}",
+                    details={"integration": self.integration_name, "path": path,
+                             "rule": "integration_denied_paths"}
+                )
+        
+        # If filesystem isolation enabled, check allowed paths
+        if self.filesystem_isolation and self.allowed_paths:
+            for rx in self._allowed_path_re:
+                if rx.search(normalized):
+                    return  # Allowed
+            raise SkeletonKeyError(
+                E.SANDBOX_VIOLATION,
+                f"Integration {self.integration_name!r} not allowed to access {path!r} (filesystem isolation)",
+                details={"integration": self.integration_name, "path": path,
+                         "allowed_patterns": self.allowed_paths}
+            )

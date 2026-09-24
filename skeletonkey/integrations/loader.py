@@ -86,6 +86,7 @@ class LoadResult:
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     dependencies_loaded: list[str] = field(default_factory=list)
+    load_order: list[str] = field(default_factory=list)
     
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -94,6 +95,7 @@ class LoadResult:
             "errors": self.errors,
             "warnings": self.warnings,
             "dependencies_loaded": self.dependencies_loaded,
+            "load_order": self.load_order,
         }
 
 
@@ -159,12 +161,240 @@ class IntegrationLoader:
                 warnings=[f"Integration {name} already loaded"],
             )
         
+        # Resolve load order for this integration and its dependencies
+        load_order = self._resolve_load_order(name)
+        if not load_order.success:
+            return load_order
+        
+        # Load all dependencies in order (excluding the target which we'll load last)
+        for dep_name in load_order.load_order:
+            if dep_name == name:
+                continue
+            if dep_name in self._loaded:
+                continue
+            dep_result = self._load_single(dep_name)
+            if not dep_result.success:
+                return LoadResult(
+                    success=False,
+                    errors=[f"Failed to load dependency {dep_name}: {dep_result.errors}"],
+                )
+        
+        # Now load the target integration with config
+        result = self._load_single(name, config)
+        if result.success:
+            result.load_order = load_order.load_order
+        return result
+    
+    def _load_single(self, name: str, config: dict[str, Any] | None = None) -> LoadResult:
+        """Load a single integration without resolving dependencies."""
+        IntegrationInstance = _get_integration_instance_class()
+        IntegrationInfo = _get_integration_info_class()
+        
+        # Check if already loaded
+        if name in self._loaded:
+            return LoadResult(
+                success=True,
+                instance=self._loaded[name],
+                warnings=[f"Integration {name} already loaded"],
+            )
+        
         # Check if currently loading (circular dependency)
         if name in self._loading:
             return LoadResult(
                 success=False,
                 errors=[f"Circular dependency detected: {name} is already being loaded"],
             )
+        
+        # Mark as loading
+        self._loading.add(name)
+        
+        try:
+            # Get integration info
+            info = self._get_integration_info(name)
+            if not info:
+                return LoadResult(
+                    success=False,
+                    errors=[f"Integration {name} not found"],
+                )
+            
+            # Check for conflicts
+            conflict_errors = self._check_conflicts(name, info)
+            if conflict_errors:
+                return LoadResult(
+                    success=False,
+                    errors=conflict_errors,
+                )
+            
+            # Check package dependencies
+            deps_loaded, dep_errors = self._load_dependencies(name, info)
+            if dep_errors:
+                return LoadResult(
+                    success=False,
+                    errors=dep_errors,
+                    dependencies_loaded=deps_loaded,
+                )
+            
+            # Create config
+            integration_config = self._create_config(name, info, config)
+            
+            # Create instance
+            integration_class = self.registry.get_integration_class(name)
+            if not integration_class:
+                return LoadResult(
+                    success=False,
+                    errors=[f"Integration class for {name} not found"],
+                )
+            
+            # Instantiate the integration
+            instance = integration_class(integration_config)
+            
+            # Initialize the instance
+            try:
+                initialized = instance.initialize()
+            except Exception as e:
+                return LoadResult(
+                    success=False,
+                    errors=[f"Failed to initialize {name}: {e}"],
+                )
+            if not initialized:
+                return LoadResult(
+                    success=False,
+                    errors=[f"Integration {name} reported initialization failure"],
+                )
+            
+            # Create integration instance wrapper
+            integration_instance = IntegrationInstance(
+                info=info,
+                instance=instance,
+                config=integration_config,
+                status=_get_integration_status_class().LOADED,
+            )
+            
+            # Store the loaded instance
+            self._loaded[name] = integration_instance
+            self._load_errors.pop(name, None)
+            
+            # Run health check
+            try:
+                integration_instance.health, integration_instance.health_message = \
+                    instance.check_health()
+            except Exception as e:
+                integration_instance.health = "unhealthy"
+                integration_instance.health_message = str(e)
+            
+            # Log success
+            logger.info(f"Loaded integration {name} v{info.version}")
+            
+            return LoadResult(
+                success=True,
+                instance=integration_instance,
+            )
+            
+        except Exception as e:
+            error = LoadError(
+                integration_name=name,
+                error_type=type(e).__name__,
+                message=str(e),
+                traceback=str(e.__traceback__) if hasattr(e, '__traceback__') else None,
+            )
+            self._load_errors[name] = error
+            return LoadResult(
+                success=False,
+                errors=[str(e)],
+            )
+        finally:
+            self._loading.discard(name)
+    
+    def _resolve_load_order(self, name: str) -> LoadResult:
+        """Resolve the load order for an integration and its dependencies using topological sort.
+        
+        Returns a LoadResult with load_order containing the list of integration names
+        in the order they should be loaded (dependencies first).
+        """
+        # Build dependency graph
+        graph: dict[str, set[str]] = {}
+        visited: set[str] = set()
+        temp_visited: set[str] = set()
+        load_order: list[str] = []
+        
+        def get_integration_deps(integration_name: str) -> list[str]:
+            """Get integration-type dependencies for an integration."""
+            info = self._get_integration_info(integration_name)
+            if not info:
+                return []
+            deps = []
+            for dep in getattr(info, 'dependencies', []):
+                dep_name = _dep_name(dep)
+                dep_kind = getattr(dep, 'kind', 'package')
+                if dep_name and dep_kind == 'integration':
+                    deps.append(dep_name)
+            return deps
+        
+        def visit(node: str) -> bool:
+            """DFS visit for topological sort. Returns False if cycle detected."""
+            if node in temp_visited:
+                return False  # Cycle detected
+            if node in visited:
+                return True
+            
+            temp_visited.add(node)
+            
+            # Visit dependencies
+            for dep in get_integration_deps(node):
+                # Only add to graph if the dependency is a known integration
+                if self.registry.has_integration(dep):
+                    graph.setdefault(node, set()).add(dep)
+                    if not visit(dep):
+                        return False
+                elif not _dep_optional(self._get_dependency_info(node, dep)):
+                    # Required integration dependency not found
+                    return False
+            
+            temp_visited.remove(node)
+            visited.add(node)
+            load_order.append(node)
+            return True
+        
+        # Start with the target integration
+        if not visit(name):
+            # Check if it's a cycle or missing dependency
+            if name in temp_visited:
+                return LoadResult(
+                    success=False,
+                    errors=[f"Circular dependency detected involving {name}"],
+                )
+            # Missing required integration dependency
+            info = self._get_integration_info(name)
+            if info:
+                for dep in getattr(info, 'dependencies', []):
+                    dep_name = _dep_name(dep)
+                    dep_kind = getattr(dep, 'kind', 'package')
+                    if dep_kind == 'integration' and dep_name and not self.registry.has_integration(dep_name):
+                        optional = _dep_optional(dep)
+                        if not optional:
+                            return LoadResult(
+                                success=False,
+                                errors=[f"Required integration dependency {dep_name!r} not found for {name}"],
+                            )
+            return LoadResult(
+                success=False,
+                errors=[f"Failed to resolve dependencies for {name}"],
+            )
+        
+        return LoadResult(
+            success=True,
+            load_order=load_order,
+        )
+    
+    def _get_dependency_info(self, integration_name: str, dep_name: str) -> Any:
+        """Get the IntegrationDependency object for a dependency."""
+        info = self._get_integration_info(integration_name)
+        if not info:
+            return None
+        for dep in getattr(info, 'dependencies', []):
+            if _dep_name(dep) == dep_name:
+                return dep
+        return None
         
         # Mark as loading
         self._loading.add(name)
@@ -342,6 +572,9 @@ class IntegrationLoader:
         ``stripe``...), not SkeletonKey integrations, so they are checked for
         importability rather than loaded through this loader. Optional
         dependencies are recorded when present and ignored when absent.
+        
+        Integration-type dependencies (kind="integration") are handled by
+        the topological sort in _resolve_load_order and are not checked here.
         """
         loaded: list[str] = []
         errors: list[str] = []
@@ -349,6 +582,10 @@ class IntegrationLoader:
         for dep in getattr(info, 'dependencies', []):
             dep_name = _dep_name(dep)
             if not dep_name:
+                continue
+            # Skip integration-type dependencies - they're handled by topological sort
+            dep_kind = getattr(dep, 'kind', 'package')
+            if dep_kind == 'integration':
                 continue
             if importlib.util.find_spec(dep_name) is not None:
                 loaded.append(dep_name)

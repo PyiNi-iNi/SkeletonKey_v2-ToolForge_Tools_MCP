@@ -129,7 +129,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # P5: Projects command
     pr = sub.add_parser("projects", help="list/describe/enable/disable external projects")
-    pr.add_argument("action", choices=["list", "describe", "enable", "disable", "scan", "stats"],
+    pr.add_argument("action", choices=["list", "describe", "enable", "disable", "scan", "stats", "watch"],
                    nargs="?", default="list")
     pr.add_argument("name", nargs="?", default="",
                    help="project name (describe, enable, disable)")
@@ -144,13 +144,25 @@ def main(argv: list[str] | None = None) -> int:
                    help="with list: refresh the project index before listing")
     pr.add_argument("--all", action="store_true",
                    help="with list: show all details")
+    pr.add_argument("--interval", type=float, default=1.0,
+                   help="with watch: polling interval in seconds")
+    pr.add_argument("--debounce", type=float, default=0.5,
+                   help="with watch: debounce time in seconds")
 
     # P5.1: Integrations command
-    in_ = sub.add_parser("integrations", help="list/describe/enable/disable/load/unload integrations")
-    in_.add_argument("action", choices=["list", "describe", "enable", "disable", "load", "unload", "health", "stats"],
+    in_ = sub.add_parser("integrations", help="list/describe/enable/disable/load/unload/validate/discover/generate integrations")
+    in_.add_argument("action", choices=["list", "describe", "enable", "disable", "load", "unload", "health", "stats", "validate", "discover-clis", "generate-cli"],
                     nargs="?", default="list")
     in_.add_argument("name", nargs="?", default="",
-                    help="integration name (describe, enable, disable, load, unload, health)")
+                    help="integration name (describe, enable, disable, load, unload, health) or CLI name for generate-cli")
+    in_.add_argument("--cli-names", nargs="+", default=None,
+                    help="with discover-clis: specific CLI names to check")
+    in_.add_argument("--output-dir", default=None,
+                    help="with generate-cli: directory to write integration file")
+    in_.add_argument("--subcommands", nargs="+", default=None,
+                    help="with generate-cli: specific subcommands to include")
+    in_.add_argument("--all-subcommands", action="store_true",
+                    help="with generate-cli: include all known subcommands")
     in_.add_argument("--type", default=None,
                     choices=["sdk", "api", "client-library", "api-generator", "framework", "toolchain", "cli", "runtime", "protocol-binding", "codegen", "platform-devkit", "3d-modeling", "billing-payment", "database", "agent-harness", "all"],
                     help="filter by integration type")
@@ -170,6 +182,34 @@ def main(argv: list[str] | None = None) -> int:
                     help="with list: show all details")
     in_.add_argument("--health", action="store_true",
                     help="with list: include health status")
+
+    # P5: Catalog command
+    ct = sub.add_parser("catalog", help="tool catalog management")
+    ct.add_argument("action", choices=["create", "load", "save", "stats", "list", "describe", "list-integrations", "list-projects", "distribution", "update", "remove", "export", "diff", "publish", "package", "watch"],
+                   nargs="?", default="stats")
+    ct.add_argument("arg", nargs="?", default="",
+                   help="tool ID (describe, update, remove) or path (load, save, export, diff)")
+    ct.add_argument("--path", default=None,
+                   help="file path (load, save, export, diff)")
+    ct.add_argument("--format", default="json",
+                   choices=["json", "jsonl", "csv"],
+                   help="output format (export)")
+    ct.add_argument("--risk", default=None,
+                   help="filter by risk level")
+    ct.add_argument("--tier", default=None,
+                   help="filter by tier")
+    ct.add_argument("--integration", default=None,
+                   help="filter by integration name")
+    ct.add_argument("--tag", default=None,
+                   help="filter by tag")
+    ct.add_argument("--limit", type=int, default=100,
+                   help="limit results")
+    ct.add_argument("--offset", type=int, default=0,
+                   help="pagination offset")
+    ct.add_argument("--token", default=None, help="auth token (publish)")
+    ct.add_argument("--interval", type=float, default=1.0, help="polling interval in seconds (watch)")
+    ct.add_argument("--debounce", type=float, default=0.5, help="debounce time in seconds (watch)")
+    ct.add_argument("--max-iterations", type=int, default=0, help="max iterations 0=infinite (watch)")
 
     pb = sub.add_parser("pub", help="publishing: credential store, placeholder injection, platform knowledge")
     pb.add_argument("action", choices=["list", "put", "delete", "placeholders", "inject",
@@ -1000,6 +1040,27 @@ def _dispatch(args: argparse.Namespace, tk: Any, call: Any, cfg: Config) -> int:
                 for health, count in sorted(stats['by_health'].items()):
                     print(f"  {health}: {count}")
             return 0
+        if args.action == "watch":
+            if not tk.projects:
+                print("Project indexer not available", file=sys.stderr)
+                return 1
+            interval = getattr(args, "interval", 1.0)
+            debounce = getattr(args, "debounce", 0.5)
+            print(f"Starting project watch (interval={interval}s, debounce={debounce}s)...")
+            print("Press Ctrl+C to stop")
+            success = tk.projects.start_watch(interval=interval, debounce=debounce)
+            if not success:
+                print("Failed to start watch", file=sys.stderr)
+                return 1
+            try:
+                import time
+                while True:
+                    time.sleep(1)
+            except KeyboardInterrupt:
+                print("\nStopping watch...")
+            finally:
+                tk.projects.stop_watch()
+            return 0
 
     # P5.1: Integrations command handling
     if cmd == "integrations":
@@ -1061,8 +1122,8 @@ def _dispatch(args: argparse.Namespace, tk: Any, call: Any, cfg: Config) -> int:
                         print(f"  {k}: {v}")
             else:
                 for i in integrations:
-                    status = "✓" if i.name in tk.integrations._enabled_integrations else "○"
-                    loaded = "🔥" if i.name in tk.integrations._instances else " "
+                    status = "+" if i.name in tk.integrations._enabled_integrations else "-"
+                    loaded = "*" if i.name in tk.integrations._instances else " "
                     print(f"  {status}{loaded} {i.name:25} {i.integration_type.value:20} {i.description[:40] if i.description else '-'}")
                 if integrations:
                     print(f"\n  Total: {len(integrations)} integrations")
@@ -1249,6 +1310,422 @@ def _dispatch(args: argparse.Namespace, tk: Any, call: Any, cfg: Config) -> int:
                     for platform, count in sorted(stats['by_platform'].items()):
                         print(f"  {platform}: {count}")
             return 0
+
+        if args.action == "validate":
+            if not tk.integrations:
+                print("Integration manager not available", file=sys.stderr)
+                return 1
+            
+            from skeletonkey.integrations.validation import validate_integration, validate_registry
+            
+            if args.name:
+                rep = validate_integration(args.name, include_health=args.health)
+                if json_out:
+                    print(compact_json(rep.to_dict()))
+                else:
+                    print(f"Integration: {rep.name}")
+                    print(f"Valid: {rep.valid}")
+                    if rep.errors:
+                        print("\nErrors:")
+                        for e in rep.errors:
+                            print(f"  [ERROR] {e.code}: {e.message}")
+                            if e.detail:
+                                print(f"    {e.detail}")
+                    if rep.warnings:
+                        print("\nWarnings:")
+                        for w in rep.warnings:
+                            print(f"  [WARN]  {w.code}: {w.message}")
+                            if w.detail:
+                                print(f"    {w.detail}")
+                    print(f"\nChecks: {rep.checks}")
+            else:
+                reports = validate_registry()
+                if json_out:
+                    print(compact_json({
+                        "integrations": [r.to_dict() for r in reports],
+                        "count": len(reports),
+                        "valid": all(r.valid for r in reports),
+                        "error_count": sum(len(r.errors) for r in reports),
+                        "warning_count": sum(len(r.warnings) for r in reports),
+                    }))
+                else:
+                    for rep in reports:
+                        status = "OK" if rep.valid else "FAIL"
+                        print(f"  [{status}] {rep.name} (errors: {len(rep.errors)}, warnings: {len(rep.warnings)})")
+                    print(f"\nTotal: {len(reports)} integrations")
+                    print(f"Valid: {sum(1 for r in reports if r.valid)}")
+                    print(f"Errors: {sum(len(r.errors) for r in reports)}")
+                    print(f"Warnings: {sum(len(r.warnings) for r in reports)}")
+            return 0
+
+        if args.action == "discover-clis":
+            from skeletonkey.integrations.cli_discovery import discover_cli_tools
+            
+            cli_names = getattr(args, "cli_names", None)
+            result = discover_cli_tools(names=cli_names)
+            
+            if json_out:
+                print(compact_json(result.to_dict()))
+            else:
+                if result.detected:
+                    print("Detected CLI Tools:")
+                    for cli in result.detected:
+                        version_str = f" v{cli.version}" if cli.version else ""
+                        print(f"  + {cli.name}{version_str} ({cli.spec.title})")
+                        print(f"    Path: {cli.path}")
+                        if cli.spec.examples:
+                            print(f"    Example: {cli.spec.examples[0]}")
+                if result.missing:
+                    print(f"\nNot found: {', '.join(result.missing)}")
+                if result.errors:
+                    print(f"\nErrors: {', '.join(result.errors)}")
+                print(f"\nTotal: {len(result.detected)} detected, {len(result.missing)} missing")
+            return 0
+
+        if args.action == "generate-cli":
+            if not args.name:
+                print("usage: sk integrations generate-cli <cli-name> [--output-dir <dir>] [--subcommands <cmd>...] [--all-subcommands]", file=sys.stderr)
+                return 2
+            if not tk.integrations:
+                print("Integration manager not available", file=sys.stderr)
+                return 1
+            
+            from skeletonkey.integrations.cli_discovery import generate_cli_integration
+            
+            subcommands = getattr(args, "subcommands", None)
+            all_subcommands = getattr(args, "all_subcommands", False)
+            output_dir = getattr(args, "output_dir", None)
+            
+            result = generate_cli_integration(
+                cli_name=args.name,
+                output_dir=output_dir,
+                custom_subcommands=subcommands,
+                include_all_subcommands=all_subcommands,
+            )
+            
+            if "error" in result:
+                print(f"Error: {result['error']}", file=sys.stderr)
+                return 1
+            
+            if json_out:
+                print(compact_json(result))
+            else:
+                if "output_path" in result:
+                    print(f"Generated integration: {result['output_path']}")
+                else:
+                    print("Generated integration code (use --output-dir to write to file)")
+                    print(result.get("code", ""))
+                if result.get("subcommands_included"):
+                    print(f"Subcommands included: {', '.join(result['subcommands_included'])}")
+            return 0
+
+    # P5: Catalog command handling
+    if cmd == "catalog":
+        json_out = getattr(args, "json", False)
+        if not tk.catalog_manager:
+            print("Catalog manager not available", file=sys.stderr)
+            return 1
+        
+        if args.action == "create":
+            result = tk.engine.call('catalog.create', {
+                'auto_index': True,
+                'save': True,
+            })
+            if json_out:
+                print(compact_json(result.data))
+            else:
+                if result.ok:
+                    print(f"Catalog created: {result.data.get('total_tools')} tools, {result.data.get('total_integrations')} integrations")
+                    print(f"Path: {result.data.get('path')}")
+                else:
+                    print(f"Error: {result.error}")
+            return 0 if result.ok else 1
+        
+        if args.action == "load":
+            path = args.path or args.arg
+            result = tk.engine.call('catalog.load', {'path': path} if path else {})
+            if json_out:
+                print(compact_json(result.data))
+            else:
+                if result.ok:
+                    print(f"Catalog loaded: {result.data.get('total_tools')} tools")
+                else:
+                    print(f"Error: {result.error}")
+            return 0 if result.ok else 1
+        
+        if args.action == "save":
+            path = args.path or args.arg
+            result = tk.engine.call('catalog.save', {'path': path} if path else {})
+            if json_out:
+                print(compact_json(result.data))
+            else:
+                if result.ok:
+                    print(f"Catalog saved to {result.data.get('path')}")
+                else:
+                    print(f"Error: {result.error}")
+            return 0 if result.ok else 1
+        
+        if args.action == "stats":
+            result = tk.engine.call('catalog.stats', {})
+            if json_out:
+                print(compact_json(result.data))
+            else:
+                if result.ok:
+                    d = result.data
+                    print(f"Total Tools: {d.get('total_tools')}")
+                    print(f"Total Integrations: {d.get('total_integrations')}")
+                    print(f"Total Projects: {d.get('total_projects')}")
+                    print(f"Generated: {d.get('generated_at')}")
+                    print(f"Dirty: {d.get('dirty')}")
+                    print("\nBy Risk:")
+                    for risk, count in sorted(d.get('by_risk', {}).items()):
+                        print(f"  {risk}: {count}")
+                    print("\nBy Tier:")
+                    for tier, count in sorted(d.get('by_tier', {}).items()):
+                        print(f"  {tier}: {count}")
+                    print("\nBy Integration:")
+                    for integ, count in sorted(d.get('by_integration', {}).items()):
+                        print(f"  {integ}: {count}")
+                else:
+                    print(f"Error: {result.error}")
+            return 0 if result.ok else 1
+        
+        if args.action == "list":
+            result = tk.engine.call('catalog.list_tools', {
+                'risk': args.risk,
+                'tier': args.tier,
+                'integration': args.integration,
+                'tag': args.tag,
+                'limit': args.limit,
+                'offset': args.offset,
+            })
+            if json_out:
+                print(compact_json(result.data))
+            else:
+                if result.ok:
+                    for t in result.data.get('tools', []):
+                        print(f"  {t['id']:45} risk={t['risk']:12} tier={t['tier']:6} integration={t.get('integration') or 'builtin'}")
+                    print(f"\nTotal: {result.data.get('total')}, Returned: {result.data.get('returned')}")
+                else:
+                    print(f"Error: {result.error}")
+            return 0 if result.ok else 1
+        
+        if args.action == "describe":
+            if not args.arg:
+                print("usage: sk catalog describe <tool-id>", file=sys.stderr)
+                return 2
+            result = tk.engine.call('catalog.describe', {'tool_id': args.arg})
+            if json_out:
+                print(compact_json(result.data))
+            else:
+                if result.ok:
+                    t = result.data
+                    print(f"ID: {t['id']}")
+                    print(f"Title: {t['title']}")
+                    print(f"Description: {t['description']}")
+                    print(f"Risk: {t['risk']}")
+                    print(f"Tier: {t['tier']}")
+                    print(f"Capability: {t['capability']}")
+                    print(f"Group: {t.get('group') or 'N/A'}")
+                    print(f"Provider: {t.get('provider') or 'N/A'}")
+                    print(f"Integration: {t.get('integration') or 'builtin'}")
+                    print(f"Tags: {', '.join(t.get('tags', []))}")
+                    if t.get('secret_args'):
+                        print(f"Secret Args: {', '.join(t['secret_args'])}")
+                    if t.get('input_schema'):
+                        print(f"Input Schema: {compact_json(t['input_schema'])}")
+                else:
+                    print(f"Error: {result.error}")
+            return 0 if result.ok else 1
+        
+        if args.action == "list-integrations":
+            result = tk.engine.call('catalog.list_integrations', {})
+            if json_out:
+                print(compact_json(result.data))
+            else:
+                if result.ok:
+                    for i in result.data.get('integrations', []):
+                        print(f"  {i['name']}: {i['tool_count']} tools ({i['type']}) enabled={i['enabled']} loaded={i['loaded']}")
+                    print(f"\nTotal: {result.data.get('total')}")
+                else:
+                    print(f"Error: {result.error}")
+            return 0 if result.ok else 1
+        
+        if args.action == "list-projects":
+            result = tk.engine.call('catalog.list_projects', {})
+            if json_out:
+                print(compact_json(result.data))
+            else:
+                if result.ok:
+                    for p in result.data.get('projects', []):
+                        print(f"  {p['name']}: {p['type']} ({p['tool_count']} tools) {p['path']}")
+                    print(f"\nTotal: {result.data.get('total')}")
+                else:
+                    print(f"Error: {result.error}")
+            return 0 if result.ok else 1
+        
+        if args.action == "distribution":
+            result = tk.engine.call('catalog.get_distribution', {})
+            if json_out:
+                print(compact_json(result.data))
+            else:
+                if result.ok:
+                    print("By Risk:")
+                    for risk, count in sorted(result.data.get('by_risk', {}).items()):
+                        print(f"  {risk}: {count}")
+                    print("\nBy Tier:")
+                    for tier, count in sorted(result.data.get('by_tier', {}).items()):
+                        print(f"  {tier}: {count}")
+                    print("\nBy Integration:")
+                    for integ, count in sorted(result.data.get('by_integration', {}).items()):
+                        print(f"  {integ}: {count}")
+                else:
+                    print(f"Error: {result.error}")
+            return 0 if result.ok else 1
+        
+        if args.action == "update":
+            if not args.arg:
+                print("usage: sk catalog update <tool-id> [fields...]", file=sys.stderr)
+                return 2
+            fields = {}
+            for f in sys.argv[3:]:
+                if '=' in f:
+                    k, v = f.split('=', 1)
+                    fields[k] = v
+            result = tk.engine.call('catalog.update_tool', {'tool_id': args.arg, **fields})
+            if json_out:
+                print(compact_json(result.data))
+            else:
+                if result.ok:
+                    print(f"Tool {args.arg} updated")
+                else:
+                    print(f"Error: {result.error}")
+            return 0 if result.ok else 1
+        
+        if args.action == "remove":
+            if not args.arg:
+                print("usage: sk catalog remove <tool-id>", file=sys.stderr)
+                return 2
+            result = tk.engine.call('catalog.remove_tool', {'tool_id': args.arg})
+            if json_out:
+                print(compact_json(result.data))
+            else:
+                if result.ok:
+                    print(f"Tool {args.arg} removed")
+                else:
+                    print(f"Error: {result.error}")
+            return 0 if result.ok else 1
+        
+        if args.action == "export":
+            path = args.path
+            result = tk.engine.call('catalog.export', {
+                'format': args.format,
+                'path': path,
+                'filter_risk': args.risk,
+                'filter_tier': args.tier,
+                'filter_integration': args.integration,
+            })
+            if json_out:
+                print(compact_json(result.data))
+            else:
+                if result.ok:
+                    if path:
+                        print(f"Exported to {path} ({result.data.get('tool_count')} tools)")
+                    else:
+                        print(result.data.get('content', ''))
+                else:
+                    print(f"Error: {result.error}")
+            return 0 if result.ok else 1
+        
+        if args.action == "diff":
+            if not args.arg:
+                print("usage: sk catalog diff <old-path> [new-path]", file=sys.stderr)
+                return 2
+            new_path = args.path
+            result = tk.engine.call('catalog.diff', {
+                'old_path': args.arg,
+                'new_path': new_path,
+            })
+            if json_out:
+                print(compact_json(result.data))
+            else:
+                if result.ok:
+                    d = result.data
+                    print(f"Added: {d['summary']['added']}")
+                    print(f"Removed: {d['summary']['removed']}")
+                    print(f"Modified: {d['summary']['modified']}")
+                    if d['added']:
+                        print("\nAdded tools:")
+                        for t in d['added']:
+                            print(f"  + {t['id']}")
+                    if d['removed']:
+                        print("\nRemoved tools:")
+                        for t in d['removed']:
+                            print(f"  - {t['id']}")
+                    if d['modified']:
+                        print("\nModified tools:")
+                        for m in d['modified']:
+                            print(f"  ~ {m['tool_id']}: {len(m['changes'])} changes")
+                else:
+                    print(f"Error: {result.error}")
+            return 0 if result.ok else 1
+        
+        if args.action == "publish":
+            if not args.arg:
+                print("usage: sk catalog publish <registry-url> [--token <auth-token>]", file=sys.stderr)
+                return 2
+            result = tk.engine.call('catalog.publish', {
+                'registry_url': args.arg,
+                'auth_token': getattr(args, 'token', None),
+            })
+            if json_out:
+                print(compact_json(result.data))
+            else:
+                if result.ok:
+                    print(f"Catalog published to {args.arg}")
+                    print(f"Tools: {result.data.get('tool_count')}")
+                else:
+                    print(f"Error: {result.error}")
+            return 0 if result.ok else 1
+        
+        if args.action == "package":
+            path = args.path
+            result = tk.engine.call('catalog.package', {
+                'path': path,
+                'format': args.format,
+            })
+            if json_out:
+                print(compact_json(result.data))
+            else:
+                if result.ok:
+                    if path:
+                        print(f"Package created at {path}")
+                    else:
+                        print(f"Package created: {result.data.get('path')}")
+                else:
+                    print(f"Error: {result.error}")
+            return 0 if result.ok else 1
+        
+        if args.action == "watch":
+            interval = getattr(args, 'interval', 1.0)
+            debounce = getattr(args, 'debounce', 0.5)
+            max_iter = getattr(args, 'max_iterations', 0)
+            result = tk.engine.call('catalog.watch', {
+                'interval': interval,
+                'debounce': debounce,
+                'max_iterations': max_iter,
+            })
+            if json_out:
+                print(compact_json(result.data))
+            else:
+                if result.ok:
+                    print(f"Watch stopped: {result.data.get('iterations')} iterations")
+                else:
+                    print(f"Error: {result.error}")
+            return 0 if result.ok else 1
+        
+        print(f"Unknown catalog action: {args.action}", file=sys.stderr)
+        return 1
     if cmd == "pub":
         a, arg = args.action, (args.arg or "")
         if a == "list":

@@ -63,6 +63,7 @@ def build_manifest(
     instance: Any,
     integration_name: str,
     tool: dict[str, Any],
+    integration_sandbox: Any = None,
 ) -> ToolManifest | None:
     """Build an engine ToolManifest for one integration tool dict.
 
@@ -70,6 +71,12 @@ def build_manifest(
     tool that declares metadata but no ``tool_*`` method). Both the modern dict
     shape (``title``/``capability``/``input_schema``/``risk``/``tier``) and the
     legacy P5.1 shape (``name``/``category``/``parameters``) are accepted.
+    
+    Args:
+        instance: The integration instance
+        integration_name: Name of the integration
+        tool: Tool definition dict
+        integration_sandbox: Optional IntegrationPathSandbox for sandbox enforcement
     """
     tool_id = tool.get("id")
     if not tool_id or not isinstance(tool_id, str):
@@ -79,7 +86,7 @@ def build_manifest(
     if suffix is None:
         return None
 
-    handler = _make_handler(instance, suffix)
+    handler = _make_handler(instance, suffix, integration_sandbox)
     if handler is None:
         return None
 
@@ -118,16 +125,63 @@ def build_manifest(
     )
 
 
-def _make_handler(instance: Any, suffix: str) -> Any | None:
+def _make_handler(instance: Any, suffix: str, integration_sandbox: Any = None) -> Any | None:
     """Return a handler that dispatches to ``instance.tool_<suffix>(**args)``.
 
     Returns None when the instance has no such method, so a tool dict with no
     backing implementation is skipped rather than registered as a broken call.
+    
+    If integration_sandbox is provided, it wraps the handler to enforce
+    per-integration sandbox constraints.
     """
     if not callable(getattr(instance, f"tool_{suffix}", None)):
         return None
 
+    base_handler = getattr(instance, f"tool_{suffix}")
+    
+    if integration_sandbox is None:
+        def handler(**kwargs: Any) -> Any:
+            return instance.call_tool(suffix, kwargs)
+        return handler
+    
     def handler(**kwargs: Any) -> Any:
+        # Check filesystem access for path-like arguments
+        # Heuristic: check string args that look like paths
+        for arg_name, arg_value in kwargs.items():
+            if isinstance(arg_value, str) and _looks_like_path(arg_value):
+                try:
+                    integration_sandbox.resolve(arg_value, intent="read")
+                except Exception as e:
+                    raise SkeletonKeyError(
+                        E.SANDBOX_VIOLATION,
+                        f"Integration sandbox denied access to {arg_name}={arg_value!r}: {e}",
+                        details={"integration": integration_sandbox.integration_name, "arg": arg_name}
+                    ) from e
+        
+        # Check network access if the tool might make network calls
+        # This is a heuristic - tools should declare network capability
+        # For now, we'll skip automatic network checking and rely on capability declarations
+        
         return instance.call_tool(suffix, kwargs)
-
+    
     return handler
+
+
+def _looks_like_path(s: str) -> bool:
+    """Heuristic to detect if a string argument looks like a filesystem path."""
+    if not isinstance(s, str) or len(s) > 4096:
+        return False
+    # Common path patterns
+    if s.startswith(("/", "./", "../", "~")):
+        return True
+    if os.name == "nt" and (len(s) >= 2 and s[1] == ":" and s[0].isalpha()):
+        return True
+    if "\\" in s or "/" in s:
+        # Has path separators
+        return True
+    return False
+
+
+# Import for SkeletonKeyError
+from ..core.errors import E, SkeletonKeyError
+import os

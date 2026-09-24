@@ -56,6 +56,40 @@ logger = logging.getLogger(__name__)
 
 T = TypeVar('T', bound='Integration')
 
+# Lazy-loaded example integrations (PEP 562)
+__examples_loaded = False
+_simple_demo = None
+_rest_api = None
+_aws_devkit = None
+
+
+def _load_examples() -> None:
+    """Lazy-load example integrations to avoid circular imports."""
+    global __examples_loaded, _simple_demo, _rest_api, _aws_devkit
+    if __examples_loaded:
+        return
+    try:
+        from .examples import simple_demo, rest_api, aws_devkit
+        _simple_demo = simple_demo
+        _rest_api = rest_api
+        _aws_devkit = aws_devkit
+    except Exception as e:
+        logger.debug(f"Could not load example integrations: {e}")
+    finally:
+        __examples_loaded = True
+
+
+def __getattr__(name: str):
+    """PEP 562 lazy module attribute access for example integrations."""
+    if name in {"simple_demo", "rest_api", "aws_devkit"}:
+        _load_examples()
+        return globals()[f"_{name}"]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__():
+    return list(globals().keys()) + ["simple_demo", "rest_api", "aws_devkit"]
+
 
 # =============================================================================
 # Enums and Constants
@@ -172,6 +206,7 @@ class IntegrationDependency:
     version: str | None = None
     optional: bool = False
     description: str = ""
+    kind: str = "package"  # "package" or "integration"
 
 
 @dataclass
@@ -297,6 +332,7 @@ class IntegrationInstance:
     health: str = "unknown"
     health_message: str = ""
     instance: Any = None  # The actual loaded integration instance
+    sandbox: Any = None  # IntegrationPathSandbox instance
     
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for serialization."""
@@ -312,6 +348,7 @@ class IntegrationInstance:
             "error": self.error,
             "health": self.health,
             "health_message": self.health_message,
+            "sandbox": self.sandbox.__dict__ if self.sandbox else None,
         }
 
 
@@ -810,7 +847,12 @@ class IntegrationManager:
     - Dependency resolution
     """
     
-    def __init__(self, config: Config | None = None, tool_registry: Any = None):
+    def __init__(
+        self,
+        config: Config | None = None,
+        tool_registry: Any = None,
+        global_sandbox: Any = None,
+    ):
         """Initialize the integration manager.
 
         Args:
@@ -819,10 +861,14 @@ class IntegrationManager:
                 integration tools into. When provided, loading an integration
                 registers its ``tool_*`` handlers as engine tools and unloading
                 removes them.
+            global_sandbox: The global ``PathSandbox`` to use as the base for
+                per-integration sandboxes. When provided, each loaded integration
+                gets a restricted sandbox based on its configuration.
         """
         self.config = config or Config.load()
         self.registry = registry  # the integration class registry (global)
         self._tool_registry = tool_registry
+        self._global_sandbox = global_sandbox
         self._tool_ids: dict[str, list[str]] = {}
         self._instances: dict[str, IntegrationInstance] = {}
         self._enabled_integrations: set[str] = set()
@@ -984,6 +1030,20 @@ class IntegrationManager:
         # Load the integration
         instance = self.registry.load_integration(name, integration_config)
         if instance and instance.status == IntegrationStatus.LOADED:
+            # Create per-integration sandbox if global sandbox available
+            if self._global_sandbox and instance.info.sandbox:
+                sandbox_config = instance.info.sandbox
+                instance.sandbox = self._global_sandbox.for_integration(
+                    integration_name=name,
+                    allowed_paths=sandbox_config.allowed_paths,
+                    denied_paths=sandbox_config.denied_paths,
+                    allowed_hosts=sandbox_config.allowed_hosts,
+                    denied_hosts=sandbox_config.denied_hosts,
+                    network_isolation=sandbox_config.network_isolation,
+                    filesystem_isolation=sandbox_config.filesystem_isolation,
+                    resource_limits=sandbox_config.resource_limits,
+                )
+            
             self._instances[name] = instance
             self._enabled_integrations.add(name)
             
@@ -1149,8 +1209,9 @@ class IntegrationManager:
         from .bridge import build_manifest
 
         registered: list[str] = []
+        sandbox = instance.sandbox
         for tool in instance.instance.get_tools():
-            manifest = build_manifest(instance.instance, name, tool)
+            manifest = build_manifest(instance.instance, name, tool, integration_sandbox=sandbox)
             if manifest is None:
                 continue
             try:
@@ -1423,8 +1484,18 @@ class IntegrationManager:
         
         result = self._loader.load(name, config)
         if result.success and result.instance:
-            # Store in instances
+            # Store the target integration
             self._instances[name] = result.instance
+            
+            # Also store any dependencies that were loaded
+            for dep_name in getattr(result, 'load_order', []):
+                if dep_name != name and dep_name in self._loader._loaded:
+                    dep_instance = self._loader._loaded[dep_name]
+                    if dep_name not in self._instances:
+                        self._instances[dep_name] = dep_instance
+                        self._register_tools(dep_name)
+            
+            # Register tools for the target integration
             self._register_tools(name)
             return result.instance
         
