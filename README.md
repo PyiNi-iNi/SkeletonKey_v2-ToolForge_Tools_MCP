@@ -66,7 +66,10 @@ tk.engine.call("shell.run", {"script": 'printf "[%s]" "$@"', "dialect": "bash",
 | --- | --- | --- |
 | `fs.*` | 16 | read/write/patch/search/list/glob/stat/sniff/move/delete/mkdir/chmod + journal_list, undo, redo, undo_task |
 | `shell.*` | 11 | run (with `argv`)/quote/quote_check/available/jobs/job_wait/job_kill/job_watch/sessions/session_reset/selftest; bash, sh, zsh, fish, pwsh, powershell 5.1+7, python |
+| `catalog.*` | 20 | the persistent tool/project catalog: list_tools/list_projects/list_integrations, describe/diff/stats/get_distribution, generate_inventory/audit/schema, and the write side (create/save/merge/update_tool/remove_tool/package/publish/watch) |
+| `integrations.*` | 19 | discovery and lifecycle for optional integrations: list/describe/discover/discover-clis/generate-cli-integration, enable/disable/load/unload/config, health/validate/stats/secrets, and `packs.*` (list/info/install/uninstall/updates) |
 | `registry.*` | 7 | describe/list/search/stats/route/expand/explain_all — the agent's view of its own capabilities, ranked for a task (`route`), tiered (`expand`), and with every gate explained (`explain_all`) |
+| `planner.*` | 2 | plan — turn a task into a DAG over the advertised tools (respecting `parallel_safe`/`stateful`), export — hand the plan to another agent format |
 | `capabilities.*` | 1 | explain — why a capability is gated here, with the provider receipt |
 | `skills.*` | 5 | list/load/match/install/uninstall — progressive disclosure, plus a skill that ships a script becoming a callable tool |
 | `pub.*` | 9 | publishing: write-only credential store (store_put/store_list/store_delete), `{{PUB.<id>}}` placeholder scan + journaled injection (placeholders/inject), platform/payment/packaging knowledge (platforms/payments/packaging), AI-executable release test plans (testers) |
@@ -76,8 +79,8 @@ tk.engine.call("shell.run", {"script": 'printf "[%s]" "$@"', "dialect": "bash",
 | `sandbox.*` | 4 | isolated scratch workspaces from a skill pack: `create` (dir + template + own venv + git), `runtime` (pin python_version / install packages into its venv), `run` (command inside it, venv on PATH, time/output limits), `status` (inventory / deep inspect + log) |
 | `remote.*` | 0 by default | other MCP servers under `[mcp.remotes.<name>]`, enrolled as `remote.<server>.<tool>` (risk inherited, error codes pass through) |
 
-66 registered, 64 advertised, ~6.7 k tokens of advertisement at the default `full` tier
-(12 tools / 1.1 k at `core`, 39 / 3.6 k at `task`). Every call returns the same
+107 registered, 105 advertised, ~8.2 k tokens of advertisement at the default `full` tier
+(12 tools / 1.1 k at `core`, 78 / 4.7 k at `task`). Every call returns the same
 envelope and the same error taxonomy: see
 [`docs/TOOL-CONTRACT.md`](docs/TOOL-CONTRACT.md). The two not advertised are
 `shell.selftest` (declared `advertised = false` by its skill) and `skills.install`
@@ -91,7 +94,7 @@ $ sk live patch --name render --file new_render.py --via-panel   # hot-swap code
 $ sk live reload --force-source hue --via-panel   # hand one name back to the file after REPL experiments
 ```
 
-Six of the 66 are **synthesized from skill packs**, which is the part a toolset usually makes
+Six of the 107 are **synthesized from skill packs**, which is the part a toolset usually makes
 you code: `skills/shell-crossplatform/tool.toml` declares `shell.quote_check` with an inline
 handler body and `shell.selftest` with `scripts/selftest.sh` (+ a PowerShell sibling), and the
 `sandbox` pack ships the four `sandbox.*` workspace tools above (shared logic in
@@ -148,7 +151,7 @@ $ sk viz --drift            # lint the manifests against the ledger; non-zero if
 
 Four things it answers that nothing else did:
 
-- **what is here** — 81 registered / 79 advertised, 11 groups, 74 capabilities, all
+- **what is here** — 107 registered / 105 advertised, 13 groups, 100 capabilities, all
   filterable, with schemas and worked examples one click away;
 - **why you cannot call this** — a 10-step decision chain mirroring
   `Registry.gate()`, each step carrying its evidence and an actionable fix

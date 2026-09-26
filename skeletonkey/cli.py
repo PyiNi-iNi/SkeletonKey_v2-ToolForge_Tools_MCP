@@ -1122,7 +1122,9 @@ def _dispatch(args: argparse.Namespace, tk: Any, call: Any, cfg: Config) -> int:
                 print("Failed to start watch", file=sys.stderr)
                 return 1
             try:
-                import time
+                # `time` is imported at module scope; a local re-import here
+                # would shadow it for the whole function and make every earlier
+                # `time.sleep` in `_dispatch` an unbound local (F823).
                 while True:
                     time.sleep(1)
             except KeyboardInterrupt:

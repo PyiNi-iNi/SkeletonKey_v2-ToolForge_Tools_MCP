@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from skeletonkey.core.util import short_hash, stable_json
-from skeletonkey.viz.model import VizModel, VizNode, build_viz_model
+from skeletonkey.viz.model import VizNode, build_viz_model
 
 from .catalog import AGENT_PROFILES, AgentProfile
 

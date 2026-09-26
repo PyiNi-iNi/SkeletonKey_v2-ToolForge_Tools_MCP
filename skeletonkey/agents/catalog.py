@@ -8,8 +8,9 @@ roles to delegate to.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any
 
 from skeletonkey.core.manifest import ToolManifest
 from skeletonkey.core.subagent import SubagentSpec
@@ -62,16 +63,13 @@ class AgentProfile:
 
     def matches(self, manifest: ToolManifest) -> bool:
         """Return whether this purpose owns the manifest's tool family."""
-        if self.groups and manifest.group in self.groups:
-            return True
-        if self.id_prefixes and any(
-            manifest.id == prefix.rstrip(".") or manifest.id.startswith(prefix)
-            for prefix in self.id_prefixes
-        ):
-            return True
-        if self.capabilities and manifest.capability in self.capabilities:
-            return True
-        return False
+        return bool(
+            (self.groups and manifest.group in self.groups)
+            or (self.id_prefixes and any(
+                manifest.id == prefix.rstrip(".") or manifest.id.startswith(prefix)
+                for prefix in self.id_prefixes))
+            or (self.capabilities and manifest.capability in self.capabilities)
+        )
 
     def subagent_spec(self, tool_ids: Iterable[str]) -> SubagentSpec:
         """Build the enforcement boundary used by the real engine."""
