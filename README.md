@@ -107,6 +107,21 @@ $ sk skills install ./my-skill                # needs skills.allow_install = tru
 $ sk call skill.my-skill.wordcount '{"path": "notes.txt"}'
 ```
 
+## Purpose-driven agent workspace
+
+```bash
+sk agents -o agents.html  # map every live tool to a bounded agent purpose
+sk agents --serve         # catalog at /, purpose UI at /agents
+```
+
+The workspace is a read-only projection of the same registry model as `sk viz`.
+It shows each autonomous agent's purpose, mission, limits, specific actions,
+and the tooling that is ready, gated, or withheld on this host. It does not
+execute from browser controls. Applications delegate through
+`create_agent()`/`call_as_subagent()` so policy, approvals, roots, budgets,
+journaling, and the ledger stay in force. See [`docs/AGENT-UI.md`](docs/AGENT-UI.md)
+and [ADR-0019](docs/adr/0019-purpose-driven-agent-ui.md).
+
 ## The dev viewport
 
 ```bash
@@ -162,6 +177,7 @@ handler at all. Details in [`docs/TOOL-VISUALIZER.md`](docs/TOOL-VISUALIZER.md).
 | [`docs/CONNECT-A-HOST.md`](docs/CONNECT-A-HOST.md) | you are wiring a host or debugging an install (`sk wire`, `sk doctor`) |
 | [`docs/VISUALIZE-YOUR-TOOLS.md`](docs/VISUALIZE-YOUR-TOOLS.md) | you have tool definitions from somewhere else (OpenAI functions, an MCP `tools/list`) and just want a page — no adoption required (`sk viz --from`) |
 | [`docs/TOOL-VISUALIZER.md`](docs/TOOL-VISUALIZER.md) | you want to *see* the toolset — the catalog, the graph, why a tool is withheld, whether a manifest still tells the truth (`sk viz`) |
+| [`docs/AGENT-UI.md`](docs/AGENT-UI.md) | you want to choose an autonomous agent by purpose and inspect its live tooling (`sk agents`) |
 | [`docs/ROADMAP-V10-V16.md`](docs/ROADMAP-V10-V16.md) | you want to know what is planned next, what is deliberately declined, and why |
 | [`docs/SECURITY-MODEL.md`](docs/SECURITY-MODEL.md) | you need to know what is and is *not* enforced |
 | [`docs/adr/`](docs/adr) | you are about to disagree with a decision |

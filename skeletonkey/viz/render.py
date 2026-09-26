@@ -148,7 +148,8 @@ def _group_rail(model: VizModel) -> str:
     return "".join(rows)
 
 
-def _header(model: VizModel, title: str, panel_url: str | None = None) -> str:
+def _header(model: VizModel, title: str, panel_url: str | None = None,
+            agent_url: str | None = None) -> str:
     agg = model.aggregates
     host = model.host
     where = " ".join(x for x in (host.get("os"), host.get("arch")) if x) or "unknown host"
@@ -161,12 +162,15 @@ def _header(model: VizModel, title: str, panel_url: str | None = None) -> str:
         hypo = (f'<p class="hypo">Hypothetical {_esc(host.get("os"))} host: this is what '
                 f'such a box <em>would</em> advertise, derived from this host\'s profile. '
                 f'Nothing was probed.</p>')
-    panel = ""
+    links = []
     if panel_url:
-        panel = (f'<a class="panel-link" href="{_esc(panel_url)}" rel="noopener">'
-                 f'live panel &rarr;</a>')
+        links.append(f'<a class="panel-link" href="{_esc(panel_url)}" rel="noopener">'
+                     f'live panel &rarr;</a>')
+    if agent_url:
+        links.append(f'<a class="agent-link" href="{_esc(agent_url)}" rel="noopener">'
+                     f'agent workspace &rarr;</a>')
     return (
-        f'<header><div class="hrow"><h1>{_esc(title)}</h1>{panel}'
+        f'<header><div class="hrow"><h1>{_esc(title)}</h1>{"".join(links)}'
         f'<span class="dim">{_esc(where)} &middot; tier {_esc(model.snapshot["tier"])} '
         f'&middot; digest <code>{_esc(model.snapshot["digest"])}</code></span></div>'
         f'<div class="stats">'
@@ -189,7 +193,8 @@ def _header(model: VizModel, title: str, panel_url: str | None = None) -> str:
 def render_html(model: VizModel, *, title: str = "SkeletonKey toolset",
                 embed_model: bool = True, live: bool = False,
                 poll_ms: int = 2000, chains: dict[str, Any] | None = None,
-                panel_url: str | None = None, api_base: str | None = None) -> str:
+                panel_url: str | None = None, api_base: str | None = None,
+                agent_url: str | None = None) -> str:
     """Render the whole model as one standalone HTML document.
 
     `live=True` adds the drift banner: the page polls `/api/digest` and, when
@@ -238,7 +243,7 @@ def render_html(model: VizModel, *, title: str = "SkeletonKey toolset",
   <button id="reload">reload</button>
   <span id="drift-what" class="dim"></span>
 </div>
-{_header(model, title, panel_url)}
+{_header(model, title, panel_url, agent_url)}
 <div class="layout">
   <nav id="rail">{_group_rail(model)}</nav>
   <main>
@@ -315,7 +320,7 @@ code { font-family:inherit; }
 .dim { color:var(--dim); }
 header { padding:14px 18px; background:var(--panel); border-bottom:1px solid var(--line); }
 .hrow { display:flex; gap:14px; align-items:baseline; flex-wrap:wrap; }
-.panel-link { margin-left:auto; font-size:12px; text-decoration:none;
+.panel-link,.agent-link { margin-left:auto; font-size:12px; text-decoration:none;
               border:1px solid var(--line); border-radius:999px; padding:3px 10px; }
 h1 { font-size:15px; margin:0; letter-spacing:.02em; }
 .stats { display:flex; gap:22px; flex-wrap:wrap; margin-top:10px; }

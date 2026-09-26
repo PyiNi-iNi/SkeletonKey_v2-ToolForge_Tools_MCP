@@ -14,6 +14,8 @@ Routes:
   GET /api/explain   V4 decision chains: why every tool is (not) advertised
   GET /api/runtime   V5 ledger overlay: measurements and contract drift
   GET /api/tool/<id> one node, plus its edges
+  GET /agents        purpose-driven agent workspace (read-only projection)
+  GET /api/agents    purpose-agent model as JSON
   GET /healthz       {ok, uptime_s, requests}
 
 Threading mirrors `live/panel.py`: `ThreadingHTTPServer` on a daemon thread,
@@ -44,6 +46,14 @@ from ..core.http_security import (
 )
 from .model import build_viz_model
 from .render import render_html
+
+
+def _agent_projection(registry: Any, *, tier: str | None = None,
+                      read_only: bool = False) -> Any:
+    """Lazy import keeps the core visualizer import graph lightweight."""
+    from skeletonkey.agents import build_agent_model
+
+    return build_agent_model(registry, tier=tier, read_only=read_only)
 
 
 class _ReusableHTTPServer(ThreadingHTTPServer):
@@ -198,6 +208,12 @@ class VizServer:
                 "edges": [e.to_json() for e in model.edges
                           if e.source == tool_id or e.target == tool_id]}
 
+    def agent_model(self) -> Any:
+        """Build the purpose directory from this server's live registry."""
+        with self._lock:
+            return _agent_projection(self.registry, tier=self.tier,
+                                     read_only=self.read_only)
+
     # ----------------------------------------------------------------- server
     def _handler_class(self) -> type[BaseHTTPRequestHandler]:
         viz = self
@@ -263,9 +279,23 @@ class VizServer:
                         page = render_html(viz.model(), title=viz.title,
                                            live=True, poll_ms=viz.poll_ms,
                                            chains=viz.chains(),
-                                           panel_url=viz.panel_url)
+                                           panel_url=viz.panel_url,
+                                           agent_url="/agents")
                         self._send(200, inject_auth_bootstrap(page).encode("utf-8"),
                                    "text/html; charset=utf-8")
+                    elif route == "/agents":
+                        from skeletonkey.agents.render import render_agent_html
+
+                        page = render_agent_html(
+                            viz.agent_model(), live=True, api_base="/api/agents",
+                            catalog_url="/")
+                        self._send(200, inject_auth_bootstrap(page).encode("utf-8"),
+                                   "text/html; charset=utf-8")
+                    elif route == "/api/agents":
+                        agent_model = viz.agent_model()
+                        doc = agent_model.to_json()
+                        doc["agent_digest"] = agent_model.digest()
+                        self._json(200, doc)
                     elif route == "/api/model":
                         model = viz.model()
                         doc = model.to_json()
@@ -290,7 +320,8 @@ class VizServer:
                         self._json(200, {"ok": True, **viz.status()})
                     else:
                         self._json(404, {"error": "no such route", "path": route,
-                                         "routes": ["/", "/api/model", "/api/digest",
+                                         "routes": ["/", "/agents", "/api/model",
+                                                    "/api/agents", "/api/digest",
                                                     "/api/explain", "/api/runtime",
                                                     "/api/tool/<id>", "/healthz"]})
                 except Exception as exc:            # a broken page beats a dead server

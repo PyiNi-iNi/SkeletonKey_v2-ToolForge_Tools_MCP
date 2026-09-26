@@ -140,6 +140,7 @@ surprise in production.
 | CLI | `sk viz [--json\|-o FILE] [--serve] [--explain\|--why-not] [--as-host] [--diff] [--runtime\|--drift] [--tier] [--read-only]` |
 | export | `sk export viz-html -o tools.html` |
 | HTTP | `sk viz --serve` → `/`, `/api/model`, `/api/digest`, `/api/explain`, `/api/runtime`, `/api/tool/<id>`, `/healthz` |
+| Agent UI | `/agents` and `/api/agents` map the live tool projection to purpose-driven autonomous agents; see [`AGENT-UI.md`](AGENT-UI.md) |
 | MCP | resource `skeletonkey://viz/model` |
 | Python | `from skeletonkey.viz import build_viz_model, render_html` |
 | doctor | the `viz` check fails if the model stops covering every registered tool |
