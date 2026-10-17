@@ -399,6 +399,22 @@ def main(argv: list[str] | None = None) -> int:
     vz.add_argument("--output", "-o", default=None,
                     help="write to a file (.json implies --json; .html the page)")
 
+    ag = sub.add_parser("agents", help="purpose-driven agent workspace: map live tools to bounded agents")
+    ag.add_argument("--json", dest="agents_json", action="store_true",
+                    help="emit the purpose-agent model as JSON")
+    ag.add_argument("--serve", action="store_true",
+                    help="serve the catalog and agent workspace together")
+    ag.add_argument("--port", type=int, default=0,
+                    help="port for --serve (default: an unused one)")
+    ag.add_argument("--host", default="127.0.0.1",
+                    help="bind address for --serve (default: loopback only)")
+    ag.add_argument("--tier", default=None, choices=["core", "task", "full"],
+                    help="project the agent tools at this advertisement tier")
+    ag.add_argument("--read-only", dest="agents_read_only", action="store_true",
+                    help="project a read-only host")
+    ag.add_argument("--output", "-o", default=None,
+                    help="write the standalone agent workspace (.html) or model (.json)")
+
     args = ap.parse_args(argv)
     if args.cmd == "doctor":
         # Doctor builds its own scratch-state toolkit: the operator's real state dir is
@@ -665,6 +681,59 @@ def _dispatch(args: argparse.Namespace, tk: Any, call: Any, cfg: Config) -> int:
         return 0
     if cmd == "dev":
         return _cmd_dev(args, tk, cfg)
+    if cmd == "agents":
+        from .agents import build_agent_model, render_agent_html
+
+        agent_model = build_agent_model(
+            tk.engine.registry,
+            tier=getattr(args, "tier", None),
+            read_only=bool(getattr(args, "agents_read_only", False)),
+        )
+        if getattr(args, "serve", False):
+            from .viz.server import VizServer
+
+            try:
+                server = VizServer(
+                    tk.engine.registry,
+                    host=args.host,
+                    port=args.port,
+                    tier=args.tier,
+                    read_only=args.agents_read_only,
+                    title="SkeletonKey toolset",
+                )
+            except ValueError as exc:
+                print(f"agent server refused: {exc}", file=sys.stderr)
+                return 2
+            server.start()
+            print(f"agent workspace serving at {server.url}/agents", file=sys.stderr)
+            print("  routes: /agents /api/agents / (tool catalog)", file=sys.stderr)
+            print("  ctrl-c to stop", file=sys.stderr)
+            try:
+                while True:
+                    time.sleep(0.5)
+            except KeyboardInterrupt:
+                print("", file=sys.stderr)
+            finally:
+                server.stop()
+            return 0
+
+        output_path = getattr(args, "output", None)
+        as_json = bool(getattr(args, "agents_json", False)) or not output_path
+        if output_path and output_path.lower().endswith(".json"):
+            as_json = True
+        if output_path and output_path.lower().endswith((".html", ".htm")):
+            as_json = False
+        output = (pretty_json(agent_model.to_json()) if as_json
+                  else render_agent_html(agent_model))
+        if output_path:
+            with open(output_path, "w", encoding="utf-8") as fh:
+                fh.write(output if output.endswith("\n") else output + "\n")
+            print(f"agent workspace written to {output_path} "
+                  f"({agent_model.assigned_tool_count}/{agent_model.tool_count} tools mapped)",
+                  file=sys.stderr)
+        else:
+            print(output)
+        return 0
     if cmd == "viz":
         from .viz import build_viz_model, render_html
 
@@ -1053,7 +1122,9 @@ def _dispatch(args: argparse.Namespace, tk: Any, call: Any, cfg: Config) -> int:
                 print("Failed to start watch", file=sys.stderr)
                 return 1
             try:
-                import time
+                # `time` is imported at module scope; a local re-import here
+                # would shadow it for the whole function and make every earlier
+                # `time.sleep` in `_dispatch` an unbound local (F823).
                 while True:
                     time.sleep(1)
             except KeyboardInterrupt:

@@ -4,16 +4,36 @@
 #   <id>  <tier>  <risk>  <tokens>tok  <exposure>
 # Regenerate and commit this when the toolset changes.
 #
-registered      81
-advertised      79
+registered      107
+advertised      105
 withheld        2
-groups          11
-capabilities    74
+groups          13
+capabilities    100
 destructive     5
-tokens          7293
+tokens          8226
 tier            full
 
 capabilities.explain               core  none           96tok --IP advertised
+catalog.create                     task  write          29tok --IP advertised
+catalog.describe                   task  read           29tok --IP advertised
+catalog.diff                       task  read           31tok --IP advertised
+catalog.export                     task  read           21tok --IP advertised
+catalog.generate_audit             task  read           31tok --IP advertised
+catalog.generate_inventory         task  read           31tok --IP advertised
+catalog.generate_schema            task  read           27tok --IP advertised
+catalog.get_distribution           task  read           31tok --IP advertised
+catalog.list_integrations          task  read           23tok --IP advertised
+catalog.list_projects              task  read           23tok --IP advertised
+catalog.list_tools                 task  read           27tok --IP advertised
+catalog.load                       task  read           23tok --IP advertised
+catalog.merge                      task  write          23tok --IP advertised
+catalog.package                    task  write          23tok --IP advertised
+catalog.publish                    task  write          23tok --IP advertised
+catalog.remove_tool                task  write          23tok --IP advertised
+catalog.save                       task  write          21tok --IP advertised
+catalog.stats                      task  read           21tok --IP advertised
+catalog.update_tool                task  write          27tok --IP advertised
+catalog.watch                      task  read           29tok --IP advertised
 fs.chmod                           task  write         269tok -RI- advertised
 fs.delete                          task  destructive   164tok DR-- advertised
 fs.glob                            task  read           40tok --IP advertised
@@ -34,7 +54,9 @@ integrations.config                task  write          23tok --IP advertised
 integrations.describe              task  none           35tok --IP advertised
 integrations.disable               task  write          25tok --IP advertised
 integrations.discover              task  none           23tok --IP advertised
+integrations.discover-clis         task  none           48tok --IP advertised
 integrations.enable                task  write          29tok --IP advertised
+integrations.generate-cli-integration task  write          33tok --IP advertised
 integrations.health                task  none           27tok --IP advertised
 integrations.list                  task  none           38tok --IP advertised
 integrations.load                  task  write          23tok --IP advertised
@@ -52,7 +74,7 @@ live.reload                        full  write         189tok ---- advertised
 live.render                        full  read          120tok ---P advertised
 live.repl                          full  write         230tok ---- advertised
 live.scene                         full  write         133tok ---- advertised
-live.serve                         full  write         200tok ---P advertised
+live.serve                         full  write         256tok ---P advertised
 live.snapshot                      full  write          96tok ---P advertised
 live.start                         full  write         207tok ---- advertised
 live.state                         full  read           98tok --IP advertised
@@ -78,6 +100,10 @@ registry.list                      core  none          107tok --IP advertised
 registry.route                     core  none          129tok --IP advertised
 registry.search                    core  none           89tok --IP advertised
 registry.stats                     core  none           66tok --IP advertised
+sandbox.create                     full  write          82tok ---P advertised
+sandbox.run                        full  write          79tok ---- advertised
+sandbox.runtime                    full  write          79tok --I- advertised
+sandbox.status                     full  read           40tok --IP advertised
 shell.available                    task  none           62tok --IP advertised
 shell.job_kill                     task  destructive    30tok D-IP advertised
 shell.job_wait                     task  none           57tok --IP advertised

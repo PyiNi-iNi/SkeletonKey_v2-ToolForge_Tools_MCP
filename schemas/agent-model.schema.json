@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SkeletonKey purpose-agent projection",
+  "type": "object",
+  "required": ["schema_version", "tool_digest", "tool_count", "assigned_tool_count", "unassigned_tools", "host", "agents"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "tool_digest": {"type": "string", "minLength": 1},
+    "tool_count": {"type": "integer", "minimum": 0},
+    "assigned_tool_count": {"type": "integer", "minimum": 0},
+    "unassigned_tools": {"type": "array", "items": {"type": "string"}},
+    "host": {"type": "object"},
+    "agents": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "title", "purpose", "mission", "tier", "read_only", "limits", "actions", "tools"],
+        "properties": {
+          "id": {"type": "string"},
+          "title": {"type": "string"},
+          "purpose": {"type": "string"},
+          "mission": {"type": "string"},
+          "tier": {"enum": ["core", "task", "full"]},
+          "read_only": {"type": "boolean"},
+          "limits": {"type": "object"},
+          "actions": {"type": "array"},
+          "tools": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["id", "capability", "risk", "tier", "advertised", "status"],
+              "properties": {
+                "id": {"type": "string"},
+                "capability": {"type": "string"},
+                "risk": {"type": "string"},
+                "tier": {"enum": ["core", "task", "full"]},
+                "advertised": {"type": "boolean"},
+                "status": {"type": "string"}
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

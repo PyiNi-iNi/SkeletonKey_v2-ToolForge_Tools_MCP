@@ -44,6 +44,13 @@ from .model import build_viz_model
 from .render import render_html
 from .runtime import attach_runtime
 
+
+def _agent_projection(registry: Any, *, tier: str | None = None,
+                      read_only: bool = False) -> Any:
+    from skeletonkey.agents import build_agent_model
+
+    return build_agent_model(registry, tier=tier, read_only=read_only)
+
 #: Every path this mount will answer, relative to its prefix. The complete
 #: surface, as data: if it is not in here, it 404s.
 ROUTES: tuple[str, ...] = (
@@ -53,7 +60,9 @@ ROUTES: tuple[str, ...] = (
     "/api/digest",
     "/api/explain",
     "/api/runtime",
+    "/api/agents",
     "/api/tool/",    # prefix match, the only one
+    "/agents",
     "/healthz",
 )
 
@@ -141,8 +150,24 @@ class VizMount:
                 page = render_html(self.model(), title=self.title, live=True,
                                    poll_ms=self.poll_ms, chains=self.chains(),
                                    panel_url=self.panel_url,
-                                   api_base=self.prefix)
+                                   api_base=self.prefix,
+                                   agent_url=self.prefix + "/agents")
                 return 200, page.encode("utf-8"), "text/html; charset=utf-8"
+            if rel == "/agents":
+                from skeletonkey.agents.render import render_agent_html
+
+                page = render_agent_html(
+                    _agent_projection(self.registry_provider(), tier=self.tier,
+                                      read_only=self.read_only),
+                    live=True, api_base=self.prefix + "/api/agents",
+                    catalog_url=self.prefix)
+                return 200, page.encode("utf-8"), "text/html; charset=utf-8"
+            if rel == "/api/agents":
+                agent_model = _agent_projection(self.registry_provider(), tier=self.tier,
+                                                read_only=self.read_only)
+                doc = agent_model.to_json()
+                doc["agent_digest"] = agent_model.digest()
+                return self._json_body(200, doc)
             if rel == "/api/model":
                 model = self.model()
                 doc = model.to_json()
